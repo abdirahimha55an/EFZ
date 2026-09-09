@@ -53,13 +53,17 @@ export const validateCustomer = (customer: Partial<Customer>): { ok: boolean; er
 export const validateOrder = (order: Partial<Order>): { ok: boolean; error?: string } => {
   if (!order.id || !order.customerId) return { ok: false, error: "Order ID and Customer ID are required." };
   if (!order.items || order.items.length === 0) return { ok: false, error: "Order must contain at least one item." };
-  
+
   if (order.total === undefined || isNaN(order.total)) return { ok: false, error: "Order total must be a valid number." };
   if (order.total < 0) return { ok: false, error: "Order total cannot be negative." };
-  
+
   for (const item of order.items) {
+    if (!item.productId || !item.productName) return { ok: false, error: "Each order item requires a product ID and name." };
     if (item.quantity === undefined || isNaN(item.quantity) || item.quantity <= 0) return { ok: false, error: "Order item quantity must be greater than zero." };
-    if (item.price === undefined || isNaN(item.price) || item.price < 0) return { ok: false, error: "Order item price cannot be negative." };
+    const itemActual = Number(item.actualUnitPrice ?? item.price ?? 0);
+    const itemStandard = Number(item.standardUnitPrice ?? item.price ?? 0);
+    if (isNaN(itemActual) || itemActual < 0) return { ok: false, error: "Order item negotiated price cannot be negative." };
+    if (isNaN(itemStandard) || itemStandard < 0) return { ok: false, error: "Order item standard price cannot be negative." };
   }
 
   return { ok: true };

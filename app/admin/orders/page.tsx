@@ -23,12 +23,19 @@ export default function OrdersPage() {
 
   const [formData, setFormData] = useState({
     customerId: "",
-    productId: "",
-    actualUnitPrice: 0,
-    qty: 1,
+    orderType: "regular" as "regular" | "trial",
+    amountPaid: 0,
     status: "pending",
     notes: ""
   });
+  const [orderItems, setOrderItems] = useState<Array<{
+    id: string;
+    productId: string;
+    quantity: number;
+    actualUnitPrice: number;
+  }>>([
+    { id: `item-${Date.now()}`, productId: "", quantity: 1, actualUnitPrice: 0 }
+  ]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -259,6 +266,36 @@ export default function OrdersPage() {
   const canEditOrders = storage.canEditOrders(currentUser);
   const canDeleteOrders = storage.canDeleteOrders(currentUser);
 
+  const addOrderItem = () => {
+    setOrderItems(prev => [...prev, { id: `item-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, productId: "", quantity: 1, actualUnitPrice: 0 }]);
+  };
+
+  const updateOrderItem = (id: string, patch: Partial<{ productId: string; quantity: number; actualUnitPrice: number }>) => {
+    setOrderItems(prev => prev.map(item => item.id === id ? { ...item, ...patch } : item));
+  };
+
+  const removeOrderItem = (id: string) => {
+    setOrderItems(prev => prev.length > 1 ? prev.filter(item => item.id !== id) : prev);
+  };
+
+  const itemCalculations = orderItems.map(item => {
+    const product = products.find(p => p.id === item.productId);
+    const actualUnitPrice = Number(item.actualUnitPrice || 0);
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const standardUnitPrice = Number(product?.sellingPrice ?? product?.price ?? 0);
+    const costPrice = Number(product?.costPrice ?? 0);
+    const lineRevenue = actualUnitPrice * quantity;
+    const lineCost = costPrice * quantity;
+    const lineProfit = lineRevenue - lineCost;
+    return { product, quantity, actualUnitPrice, standardUnitPrice, costPrice, lineRevenue, lineCost, lineProfit };
+  });
+
+  const subtotal = itemCalculations.reduce((sum, item) => sum + item.lineRevenue, 0);
+  const totalCost = itemCalculations.reduce((sum, item) => sum + item.lineCost, 0);
+  const grossProfit = subtotal - totalCost;
+  const totalOutstanding = Math.max(0, subtotal - formData.amountPaid);
+  const computedPaymentStatus = formData.amountPaid <= 0 ? 'unpaid' : formData.amountPaid >= subtotal ? 'paid' : 'partial';
+
   const showNotification = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
   };
@@ -271,79 +308,119 @@ export default function OrdersPage() {
     }
 
     const customer = customers.find(c => c.id === formData.customerId);
-    const product = products.find(p => p.id === formData.productId);
-    
-    if (!customer || !product) {
-      showNotification('error', 'Please select both a customer and a product.');
+    if (!customer) {
+      showNotification('error', 'Please select a customer.');
       return;
     }
 
-    const qty = Number(formData.qty);
-    if (isNaN(qty) || qty <= 0) {
-      showNotification('error', 'Quantity must be a valid number greater than 0.');
+    const validItems = orderItems
+      .map(item => ({ ...item, quantity: Math.max(1, Number(item.quantity || 1)), actualUnitPrice: Number(item.actualUnitPrice || 0) }))
+      .filter(item => item.productId && item.quantity > 0);
+
+    if (!validItems.length) {
+      showNotification('error', 'Please add at least one product to the order.');
       return;
     }
 
-    if (product.stock < qty) {
-      showNotification('error', `Insufficient stock available! Only ${product.stock} units available.`);
-      return;
+    for (const item of validItems) {
+      const product = products.find(p => p.id === item.productId);
+      if (!product) {
+        showNotification('error', 'One or more selected items are invalid.');
+        return;
+      }
+      if (!Number.isFinite(item.actualUnitPrice) || item.actualUnitPrice < 0) {
+        showNotification('error', 'Each item must have a valid selling price greater than or equal to 0.');
+        return;
+      }
+      if (product.stock < item.quantity) {
+        showNotification('error', `Insufficient stock for ${product.name}! Only ${product.stock} units available.`);
+        return;
+      }
     }
 
-    const actualUnitPrice = Number(formData.actualUnitPrice);
-    if (!Number.isFinite(actualUnitPrice) || actualUnitPrice < 0) {
-      showNotification('error', 'Final selling price must be a valid number greater than or equal to 0.');
-      return;
-    }
+    const orderEntries = validItems.map(item => {
+      const product = products.find(p => p.id === item.productId)!;
+      const actualUnitPrice = Number(item.actualUnitPrice || 0);
+      const quantity = Number(item.quantity || 1);
+      const standardUnitPrice = Number(product.sellingPrice ?? product.price ?? 0);
+      const costPrice = Number(product.costPrice ?? 0);
+      const lineRevenue = actualUnitPrice * quantity;
+      const lineCost = costPrice * quantity;
+      const lineProfit = lineRevenue - lineCost;
+      return {
+        productId: product.id,
+        productName: product.name,
+        designName: product.name,
+        quantity,
+        standardUnitPrice,
+        actualUnitPrice,
+        price: actualUnitPrice,
+        historicalUnitCost: costPrice,
+        costPrice,
+        lineRevenue,
+        lineCost,
+        lineProfit,
+      };
+    });
 
-    const historicalUnitCost = Number(product.costPrice) || 0;
-    const total = actualUnitPrice * qty;
-    const cost = historicalUnitCost * qty;
-    const grossProfit = total - cost;
+    const paymentAmount = Math.max(0, Number(formData.amountPaid || 0));
+    const orderTotal = orderEntries.reduce((sum, item) => sum + item.lineRevenue, 0);
+    const orderCost = orderEntries.reduce((sum, item) => sum + item.lineCost, 0);
+    const orderGrossProfit = orderTotal - orderCost;
+    const outstandingBalance = Math.max(0, orderTotal - paymentAmount);
+    const paymentStatus = paymentAmount <= 0 ? 'unpaid' : paymentAmount >= orderTotal ? 'paid' : 'partial';
 
     const timestamp = Date.now().toString().slice(-4);
     const random = Math.floor(Math.random() * 900) + 100;
     const newOrder: Order & { customerName?: string, customerPhone?: string, totalAmount?: number } = {
       id: `ORD-${timestamp}${random}`,
       customer: customer.name,
-      customerName: customer.name, // Alias for verbose matching
+      customerName: customer.name,
       customerId: customer.id,
       marketingOfficerId: customer.marketingOfficerId || customer.registeredBy,
       phone: customer.phone,
-      customerPhone: customer.phone, // Alias for verbose matching
-      items: [{
-        productId: product.id,
-        productName: product.name,
-        quantity: qty,
-        price: actualUnitPrice,
-        costPrice: historicalUnitCost
-      }],
-      total: total,
-      cost: cost,
-      grossProfit: grossProfit,
-      totalAmount: total, // Alias for verbose matching
+      customerPhone: customer.phone,
+      items: orderEntries,
+      total: orderTotal,
+      cost: orderCost,
+      grossProfit: orderGrossProfit,
+      totalAmount: orderTotal,
       status: formData.status as any,
-      paymentStatus: formData.status === 'paid' ? 'paid' : 'unpaid',
+      paymentStatus,
       date: new Date().toISOString().split('T')[0],
-      deliveryNotes: formData.notes
+      deliveryNotes: formData.notes,
+      orderType: formData.orderType,
+      amountPaid: paymentAmount,
+      outstandingBalance,
+      payments: paymentAmount > 0 ? [{
+        id: `pay-${Date.now()}`,
+        orderId: `ORD-${timestamp}${random}`,
+        amount: paymentAmount,
+        paymentDate: new Date().toISOString().split('T')[0],
+        notes: 'Initial payment',
+      }] : [],
     };
 
-    // Update Inventory
-    const updatedProducts = products.map(p => 
-      p.id === product.id ? { ...p, stock: p.stock - qty } : p
-    );
+    const updatedProducts = products.map(p => {
+      const item = validItems.find(entry => entry.productId === p.id);
+      if (item) return { ...p, stock: p.stock - item.quantity };
+      return p;
+    });
     storage.saveProducts(updatedProducts);
     setProducts(updatedProducts);
 
-    // Record stock movement
-    storage.addStockMovement({ productId: product.id, productName: product.name, type: 'sale', quantityChange: -qty, reason: `Order ${newOrder.id} created`, createdBy: currentUser?.id || 'system' });
+    validItems.forEach(item => {
+      const product = products.find(p => p.id === item.productId)!;
+      storage.addStockMovement({ productId: product.id, productName: product.name, type: 'sale', quantityChange: -item.quantity, reason: `Order ${newOrder.id} created`, createdBy: currentUser?.id || 'system' });
+    });
 
-    // Save Order
     const newOrders = [newOrder, ...orders];
     saveOrders(newOrders);
-    storage.logger.log('FINANCIAL', 'INFO', `New order created: ${newOrder.id} for ${customer.name} ($${total})`, { targetId: newOrder.id, metadata: { total, grossProfit, qty, product: product.name, source: 'Order Tracking' } });
+    storage.logger.log('FINANCIAL', 'INFO', `New order created: ${newOrder.id} for ${customer.name} ($${orderTotal})`, { targetId: newOrder.id, metadata: { total: orderTotal, grossProfit: orderGrossProfit, items: orderEntries.length, orderType: formData.orderType, source: 'Order Tracking' } });
     
     setIsModalOpen(false);
-    setFormData({ customerId: "", productId: "", actualUnitPrice: 0, qty: 1, status: "pending", notes: "" });
+    setOrderItems([{ id: `item-${Date.now()}`, productId: "", quantity: 1, actualUnitPrice: 0 }]);
+    setFormData({ customerId: "", orderType: "regular", amountPaid: 0, status: "pending", notes: "" });
     showNotification('success', `Order ${newOrder.id} created successfully for ${customer.name}`);
   };
 
@@ -389,9 +466,13 @@ export default function OrdersPage() {
       if (!isOwner) return false;
     }
 
+    const legacyMatches = [order.legacyReferenceId, ...(order.legacyOrderIds || [])]
+      .filter((value): value is string => Boolean(value))
+      .some((value) => value.toLowerCase().includes(searchTerm.toLowerCase()));
     const matchesSearch = 
       order.customer.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      order.id.toLowerCase().includes(searchTerm.toLowerCase());
+      order.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      legacyMatches;
     const matchesStatus = statusFilter === "all" || order.status === statusFilter;
     return matchesSearch && matchesStatus;
   }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -410,7 +491,6 @@ export default function OrdersPage() {
   };
 
   const canViewStock = storage.canViewInventory(currentUser);
-  const selectedProduct = products.find(p => p.id === formData.productId);
 
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
@@ -521,7 +601,7 @@ export default function OrdersPage() {
                         {order.items.map((item, index) => (
                           <div key={`${order.id}-${item.productId}-${index}`}>
                             <p className="text-slate-900 font-bold truncate">{item.productName}</p>
-                            <p className="text-slate-500 text-[10px] mt-0.5 font-medium italic">Qty: {item.quantity} · Unit: ${item.price.toFixed(2)}</p>
+                            <p className="text-slate-500 text-[10px] mt-0.5 font-medium italic">Qty: {item.quantity} · Unit: ${(Number(item.actualUnitPrice ?? item.price ?? item.standardUnitPrice ?? 0)).toFixed(2)}</p>
                           </div>
                         ))}
                       </td>
@@ -642,117 +722,126 @@ export default function OrdersPage() {
                       }
                     </select>
                   </div>
- 
+
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-700 ml-1 flex items-center gap-2">
-                      <Package className="h-3 w-3 text-slate-400" /> Select Product
-                    </label>
-                    <select 
-                      required
-                      className="w-full h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-medium outline-none focus:ring-2 focus:ring-brand-blue/20 transition-all cursor-pointer"
-                      value={formData.productId}
-                      onChange={e => {
-                        const product = products.find(p => p.id === e.target.value);
-                        setFormData({
-                          ...formData,
-                          productId: e.target.value,
-                          actualUnitPrice: product?.sellingPrice || product?.price || 0
-                        });
-                      }}
-                    >
-                      <option value="">-- Choose product --</option>
-                      {products.map(p => {
-                        const stockText = canViewStock ? ` - ${p.stock} in stock` : "";
-                        return <option key={p.id} value={p.id}>{p.name} (${p.sellingPrice || p.price}${stockText})</option>;
-                      })}
-                    </select>
+                    <label className="text-[10px] font-bold text-slate-700 ml-1">Order Type</label>
+                    <div className="flex gap-2">
+                      {(['regular', 'trial'] as const).map(type => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setFormData({ ...formData, orderType: type })}
+                          className={cn(
+                            "flex-1 h-9 rounded-lg border text-[11px] font-bold uppercase tracking-wide transition-all",
+                            formData.orderType === type
+                              ? "border-slate-900 bg-slate-900 text-white"
+                              : "border-slate-200 bg-slate-50 text-slate-600"
+                          )}
+                        >
+                          {type}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-700 ml-1">Final Selling Price</label>
-                      <Input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        required
-                        value={formData.actualUnitPrice}
-                        onChange={e => setFormData({...formData, actualUnitPrice: parseFloat(e.target.value) || 0})}
-                        className="h-9 rounded-lg bg-slate-50 border-slate-200 text-xs"
-                      />
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-700 ml-1 flex items-center gap-2">
+                        <Package className="h-3 w-3 text-slate-400" /> Order Items
+                      </label>
+                      <button type="button" onClick={addOrderItem} className="text-[10px] font-bold text-brand-blue">+ Add Item</button>
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-700 ml-1">Quantity</label>
-                      <Input 
-                        type="number" 
-                        min="1" 
-                        required 
-                        value={formData.qty} 
-                        onChange={e => setFormData({...formData, qty: parseInt(e.target.value) || 1})}
-                        className="h-9 rounded-lg bg-slate-50 border-slate-200 text-xs" 
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-700 ml-1">Status</label>
-                      <select 
-                        className="w-full h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-medium outline-none focus:ring-2 focus:ring-brand-blue/20 transition-all"
-                        value={formData.status}
-                        onChange={e => setFormData({...formData, status: e.target.value})}
-                      >
-                        <option value="pending">Pending</option>
-                        <option value="confirmed">Confirmed</option>
-                      </select>
-                    </div>
+
+                    {orderItems.map((item, index) => {
+                      const product = products.find(p => p.id === item.productId);
+                      const lineTotal = (Number(item.actualUnitPrice || 0) * Number(item.quantity || 1));
+
+                      return (
+                        <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-slate-400">Item {index + 1}</span>
+                            {orderItems.length > 1 && (
+                              <button type="button" onClick={() => removeOrderItem(item.id)} className="text-[10px] font-bold text-red-500">Remove</button>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <select
+                              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium outline-none focus:ring-2 focus:ring-brand-blue/20"
+                              value={item.productId}
+                              onChange={e => updateOrderItem(item.id, { productId: e.target.value, actualUnitPrice: Number(products.find(p => p.id === e.target.value)?.sellingPrice ?? products.find(p => p.id === e.target.value)?.price ?? 0) })}
+                            >
+                              <option value="">Select product</option>
+                              {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+
+                            <Input
+                              type="number"
+                              min="1"
+                              value={item.quantity}
+                              onChange={e => updateOrderItem(item.id, { quantity: Math.max(1, Number(e.target.value || 1)) })}
+                              className="h-9 rounded-lg bg-white border-slate-200 text-xs"
+                              placeholder="Qty"
+                            />
+
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={item.actualUnitPrice}
+                              onChange={e => updateOrderItem(item.id, { actualUnitPrice: Number(e.target.value || 0) })}
+                              className="h-9 rounded-lg bg-white border-slate-200 text-xs"
+                              placeholder="Actual price"
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between text-[10px] text-slate-500">
+                            <span>{product ? product.name : 'No product selected'}</span>
+                            <span className="font-bold text-slate-900">Total: ${lineTotal.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
                 <div className="space-y-4">
                   <div className="bg-slate-900 rounded-2xl p-4 text-slate-300 shadow-xl border border-slate-800">
-                    <h3 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-3">Financial Summary</h3>
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-[10px]">
-                        <span className="text-slate-400">Standard Price</span>
-                        <span className="font-bold text-white">${(selectedProduct?.sellingPrice || selectedProduct?.price || 0).toFixed(2)}</span>
+                    <h3 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-3">Order Summary</h3>
+                    <div className="space-y-2 text-[10px]">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Subtotal</span>
+                        <span className="font-bold text-white">${subtotal.toFixed(2)}</span>
                       </div>
-                      <div className="flex justify-between text-[10px]">
-                        <span className="text-slate-400">Final Unit Price</span>
-                        <span className="font-bold text-white">${formData.actualUnitPrice.toFixed(2)}</span>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Cost</span>
+                        <span className="font-bold text-white">${totalCost.toFixed(2)}</span>
                       </div>
-                      {canViewStock && (
-                        <div className="flex justify-between text-[10px]">
-                          <span className="text-slate-400">Estimated/Actual Cost</span>
-                          <span className="font-bold text-slate-400">${((selectedProduct?.costPrice || 0) * formData.qty).toFixed(2)}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between text-[10px]">
-                        <span className="text-slate-400">Quantity</span>
-                        <span className="font-bold text-white">{formData.qty}</span>
-                      </div>
-                      {canViewStock && (
-                        <div className="flex justify-between text-[10px] border-t border-white/5 pt-2">
-                          <span className="text-slate-400 font-bold uppercase tracking-tighter">Actual Gross Profit</span>
-                          <span className="font-bold text-brand-blue">${((formData.actualUnitPrice - (selectedProduct?.costPrice || 0)) * formData.qty).toFixed(2)}</span>
-                        </div>
-                      )}
-                      <div className="h-[1px] bg-slate-800 my-1" />
-                      <div className="flex justify-between text-sm">
-                        <span className="font-bold text-white uppercase text-[10px] tracking-widest">Actual Revenue</span>
-                        <span className="font-bold text-brand-green">${(formData.actualUnitPrice * formData.qty).toFixed(2)}</span>
+                      <div className="flex justify-between border-t border-white/10 pt-2">
+                        <span className="text-slate-400 font-bold uppercase">Gross Profit</span>
+                        <span className="font-bold text-brand-blue">${grossProfit.toFixed(2)}</span>
                       </div>
                     </div>
-                    {selectedProduct && formData.actualUnitPrice < (selectedProduct.costPrice || 0) && (
-                      <div className="mt-3 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-300 text-[9px] leading-tight">
-                        Warning: Final selling price is below product cost.
-                      </div>
-                    )}
-                    {selectedProduct && selectedProduct.stock < formData.qty && (
-                      <div className="mt-3 p-2 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-1.5 text-red-400 text-[9px] leading-tight">
-                        <AlertCircle className="h-3 w-3 shrink-0" />
-                        <span>Insufficient stock: {selectedProduct.stock} left.</span>
-                      </div>
-                    )}
                   </div>
- 
+
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-700 ml-1">Amount Paid</label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={formData.amountPaid}
+                        onChange={e => setFormData({ ...formData, amountPaid: Number(e.target.value || 0) })}
+                        className="h-9 rounded-lg bg-slate-50 border-slate-200 text-xs"
+                      />
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2 text-[10px]">
+                      <div className="flex justify-between"><span className="text-slate-500">Payment Status</span><span className="font-bold uppercase text-slate-900">{computedPaymentStatus}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">Outstanding</span><span className="font-bold text-slate-900">${totalOutstanding.toFixed(2)}</span></div>
+                    </div>
+                  </div>
+
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-700 ml-1">Delivery Notes (Optional)</label>
                     <textarea 
@@ -767,7 +856,7 @@ export default function OrdersPage() {
  
               <div className="pt-2 flex gap-3">
                 <Button type="submit" className="flex-1 bg-slate-900 text-white h-11 rounded-xl font-bold text-sm hover:bg-slate-800 shadow-lg shadow-slate-200 transition-all">
-                  Confirm Order
+                  Create Order
                 </Button>
                 <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)} className="px-8 h-11 rounded-xl font-bold text-xs text-slate-400 hover:bg-slate-50 border-slate-200">
                   Cancel

@@ -21,6 +21,7 @@ import {
 import { Product } from "@/lib/data";
 import { storage, AdminUser, Order, Customer } from "@/lib/storage";
 import { cn } from "@/lib/utils";
+import { getFinancialSummary } from "@/lib/financial";
 
 export default function AdminDashboard() {
   const [isMounted, setIsMounted] = useState(false);
@@ -49,17 +50,15 @@ export default function AdminDashboard() {
     return true;
   });
 
-  // Calculate 12 detailed metrics
+  // Shared financial truth for dashboard metrics
+  const financialSummary = getFinancialSummary(filteredOrders);
+  const totalRevenue = financialSummary.revenueGenerated;
+  const totalProfit = financialSummary.grossProfit;
+  const totalCollected = financialSummary.cashCollected;
+  const outstandingReceivables = financialSummary.outstandingReceivables;
+  const totalOrdersCount = financialSummary.totalOrders;
 
-  // 1. Total Revenue (realized sales: paid/delivered orders)
-  const totalRevenue = filteredOrders
-    .filter(o => o.status === 'delivered' || o.paymentStatus === 'paid')
-    .reduce((sum, o) => sum + o.total, 0);
-
-  // 2. Total Profit (paid/delivered orders profit)
-  const totalProfit = filteredOrders
-    .filter(o => o.status === 'delivered' || o.paymentStatus === 'paid')
-    .reduce((sum, o) => sum + (o.grossProfit !== undefined ? o.grossProfit : (o.total - (o.cost || 0))), 0);
+  const totalOrdersLabel = `${totalOrdersCount} ${totalOrdersCount === 1 ? 'order' : 'orders'}`;
 
   // 3. Pending Payouts (sum of pending commissions for all Marketing Officers)
   const pendingPayouts = users.reduce((sum, u) => {
@@ -118,8 +117,10 @@ export default function AdminDashboard() {
             revenue: 0 
           };
         }
-        productSalesMap[item.productId].quantity += (item.quantity || 0);
-        productSalesMap[item.productId].revenue += (item.quantity * item.price);
+        const unitPrice = Number(item.actualUnitPrice ?? item.price ?? item.standardUnitPrice ?? 0);
+        const quantity = Number(item.quantity || 0);
+        productSalesMap[item.productId].quantity += quantity;
+        productSalesMap[item.productId].revenue += Number((unitPrice * quantity).toFixed(2));
       });
     } else if (o.product) {
       // Fallback for flat structure
@@ -165,8 +166,7 @@ export default function AdminDashboard() {
     ? `${topCustomerEntry.name} ($${topCustomerEntry.spend.toFixed(0)})` 
     : 'No Customers Yet';
 
-  // 12. Total Orders count
-  const totalOrdersCount = filteredOrders.length;
+  const orderText = totalOrdersLabel;
 
   // List of top 5 products by quantity sold
   const topProductsList = Object.entries(productSalesMap)
@@ -181,8 +181,11 @@ export default function AdminDashboard() {
 
   // Stats cards configuration
   const statCards = [
-    { title: "Realized Revenue", value: `$${totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: DollarSign, color: "text-emerald-600", bg: "bg-emerald-50" },
-    { title: "Net Realized Profit", value: `$${totalProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: TrendingUp, color: "text-blue-600", bg: "bg-blue-50" },
+    { title: "Revenue Generated", value: `$${totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: DollarSign, color: "text-emerald-600", bg: "bg-emerald-50" },
+    { title: "Cash Collected", value: `$${totalCollected.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: CheckCircle2, color: "text-blue-600", bg: "bg-blue-50" },
+    { title: "Outstanding Receivables", value: `$${outstandingReceivables.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: Clock, color: "text-orange-600", bg: "bg-orange-50" },
+    { title: "Gross Profit", value: `$${totalProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: TrendingUp, color: "text-indigo-600", bg: "bg-indigo-50" },
+    { title: "Total Orders", value: `${totalOrdersCount}`, icon: ShoppingBag, color: "text-slate-600", bg: "bg-slate-50" },
     { title: "Pending Payouts", value: `$${pendingPayouts.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Clock, color: "text-orange-600", bg: "bg-orange-50" },
     { title: "Inventory Value", value: `$${inventoryValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Layers, color: "text-indigo-600", bg: "bg-indigo-50" },
     { title: "Monthly Sales Volume", value: `$${monthlySales.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: BarChart3, color: "text-purple-600", bg: "bg-purple-50" },
@@ -192,7 +195,7 @@ export default function AdminDashboard() {
     { title: "Active Accounts", value: totalCustomers, icon: Users, color: "text-cyan-600", bg: "bg-cyan-50" },
     { title: "Top Selling Product", value: topSellingProduct, icon: Star, color: "text-teal-600", bg: "bg-teal-50", isString: true },
     { title: "Top Spending Customer", value: topCustomer, icon: Sparkles, color: "text-violet-600", bg: "bg-violet-50", isString: true },
-    { title: "Total Booked Orders", value: totalOrdersCount, icon: ShoppingBag, color: "text-slate-600", bg: "bg-slate-50" }
+    { title: "Total Booked Orders", value: orderText, icon: ShoppingBag, color: "text-slate-600", bg: "bg-slate-50", isString: true }
   ];
 
   return (

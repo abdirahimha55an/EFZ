@@ -86,6 +86,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   // Handle Initial Mount
   useEffect(() => {
     setIsMounted(true);
+
+    storage.activateApprovedHistoricalMigration();
     
     // Load initial data
     setProfile(storage.getProfile());
@@ -251,7 +253,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     }
 
     const products = storage.getProducts().filter(p => p.name.toLowerCase().includes(q.toLowerCase()) || p.category.toLowerCase().includes(q.toLowerCase())).slice(0, 4);
-    const orders = storage.getOrders().filter(o => o.customer.toLowerCase().includes(q.toLowerCase()) || o.id.toLowerCase().includes(q.toLowerCase())).slice(0, 4);
+    const orders = storage.getOrders().filter(o => {
+      const haystack = [
+        o.customer,
+        o.id,
+        o.legacyReferenceId,
+        ...(o.legacyOrderIds || [])
+      ].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(q.toLowerCase());
+    }).slice(0, 4);
     
     setSearchResults({ products, orders });
     setIsSearchOpen(true);

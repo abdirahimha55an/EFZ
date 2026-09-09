@@ -1,4 +1,4 @@
-import { AdminUser, AdminProfile, Customer, Order, Product, Notification, AdminSettings, SystemLog, LogSeverity, LogCategory, SystemIssue, Permission, UserRole, OFFICIAL_PERMISSIONS, OrderStatus, PaymentStatus, ORDER_STATUS_TRANSITIONS, StockMovement } from "./types";
+import { AdminUser, AdminProfile, Customer, Order, Product, Notification, AdminSettings, SystemLog, LogSeverity, LogCategory, SystemIssue, Permission, UserRole, OFFICIAL_PERMISSIONS, OrderStatus, PaymentStatus, ORDER_STATUS_TRANSITIONS, StockMovement, PaymentRecord } from "./types";
 import { storageCore } from "./storage/core";
 import { EFZ_KEYS, PRODUCTS_KEY, ORDERS_KEY, SETTINGS_KEY, NOTIFICATIONS_KEY, SESSION_KEY, LOGS_KEY, USERS_KEY, CUSTOMERS_KEY, INITIALIZED_KEY, AUTO_BACKUP_KEY, LAST_EXPORT_KEY, LAST_SAVE_KEY, STOCK_MOVEMENTS_KEY } from "./storage/keys";
 import { authService } from "./services/auth.service";
@@ -175,6 +175,44 @@ export const storage = {
     storage.createAutoBackup();
     storage.updateLastSaveTime();
   },
+  addPaymentToOrder: (order: Order, payment: Omit<PaymentRecord, 'id' | 'orderId' | 'createdAt'> & { amount: number, recordedBy?: string, createdAt?: string }) => {
+    const payments = Array.isArray(order.payments) ? [...order.payments] : [];
+    const amount = Number(payment.amount || 0);
+    const total = Number(order.total || 0);
+    const currentCollected = payments.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+    const outstanding = Math.max(0, total - currentCollected);
+
+    if (!Number.isFinite(amount) || amount <= 0 || amount > outstanding) {
+      throw new Error('Invalid payment amount');
+    }
+
+    const record: PaymentRecord = {
+      id: `pay-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      orderId: order.id,
+      amount,
+      paymentDate: payment.paymentDate || new Date().toISOString().slice(0, 10),
+      paymentMethod: payment.paymentMethod || 'Cash',
+      notes: payment.notes || payment.note || '',
+      note: payment.note || payment.notes || '',
+      reference: payment.reference || '',
+      recordedBy: payment.recordedBy || 'System',
+      createdAt: payment.createdAt || new Date().toISOString(),
+    };
+
+    const nextPayments = [...payments, record];
+    const nextCollected = nextPayments.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+    const updatedOrder: Order = {
+      ...order,
+      payments: nextPayments,
+      amountPaid: Math.min(nextCollected, total),
+      outstandingBalance: Math.max(0, total - nextCollected),
+      paymentStatus: nextCollected <= 0 ? 'unpaid' : nextCollected >= total ? 'paid' : 'partial',
+    };
+
+    const orders = storage.getOrders().map(item => item.id === order.id ? updatedOrder : item);
+    storage.saveOrders(orders);
+    return updatedOrder;
+  },
 
   // Settings & Notifications
   getSettings: settingsService.getSettings,
@@ -191,6 +229,7 @@ export const storage = {
   // Backups
   exportBackup: backupService.exportBackup,
   importBackup: backupService.importBackup,
+  activateApprovedHistoricalMigration: backupService.activateApprovedHistoricalMigration,
   validateBackup: backupService.validateBackup,
   createAutoBackup: backupService.createAutoBackup,
   restoreAutoBackup: backupService.restoreAutoBackup,

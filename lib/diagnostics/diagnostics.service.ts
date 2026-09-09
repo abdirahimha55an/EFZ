@@ -250,7 +250,7 @@ export const diagnosticsService = {
     }
 
     const mismatchedTotals = orders.filter(o => {
-      const calculatedTotal = o.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const calculatedTotal = o.items.reduce((sum, item) => sum + ((Number(item.actualUnitPrice ?? item.price ?? item.standardUnitPrice ?? 0)) * item.quantity), 0);
       return Math.abs(calculatedTotal - o.total) > 0.01;
     });
     if (mismatchedTotals.length > 0) {
@@ -535,7 +535,7 @@ export const diagnosticsService = {
     const orders = orderService.getOrders();
     let count = 0;
     const repaired = orders.map(o => {
-      const calculatedTotal = o.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const calculatedTotal = o.items.reduce((sum, item) => sum + ((Number(item.actualUnitPrice ?? item.price ?? item.standardUnitPrice ?? 0)) * item.quantity), 0);
       if (Math.abs(calculatedTotal - o.total) > 0.01) {
         count++;
         return { ...o, total: calculatedTotal, grossProfit: calculatedTotal - o.cost };

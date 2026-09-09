@@ -39,10 +39,14 @@ export type Customer = {
   registeredBy: string; // User ID who registered them
   marketingOfficerId?: string; // Explicit link to Marketing Officer
   date: string;
+  notes?: string;
+  isArchived?: boolean;
+  status?: 'active' | 'archived';
 };
 
 export type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'delivered' | 'cancelled';
-export type PaymentStatus = 'unpaid' | 'paid' | 'refunded';
+export type OrderType = 'regular' | 'trial';
+export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded' | 'credit';
 
 // Valid fulfillment status transitions
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
@@ -53,19 +57,42 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   cancelled: ['pending'], // Reactivate — requires stock check + Super Admin
 };
 
+export type OrderItem = {
+  id?: string;
+  productId: string;
+  productName: string;
+  designName?: string;
+  quantity: number;
+  standardUnitPrice: number;
+  actualUnitPrice: number; // Actual negotiated unit selling price
+  historicalUnitCost?: number; // Historical unit cost snapshot
+  costPrice?: number;
+  price?: number; // Back-compat alias for actual negotiated unit price
+  lineRevenue?: number;
+  lineCost?: number;
+  lineProfit?: number;
+};
+
+export type PaymentRecord = {
+  id: string;
+  orderId: string;
+  amount: number;
+  paymentDate: string;
+  paymentMethod?: string;
+  notes?: string;
+  note?: string;
+  reference?: string;
+  recordedBy?: string;
+  createdAt?: string;
+};
+
 export type Order = {
   id: string;
   customer: string;
   customerId?: string;
   marketingOfficerId?: string;
   phone: string;
-  items: {
-    productId: string;
-    productName: string;
-    quantity: number;
-    price: number; // Actual negotiated unit selling price
-    costPrice?: number; // Historical unit cost snapshot
-  }[];
+  items: OrderItem[];
   total: number;
   status: OrderStatus;
   paymentStatus: PaymentStatus;
@@ -79,6 +106,14 @@ export type Order = {
   customerName?: string;
   customerPhone?: string;
   totalAmount?: number;
+  orderType?: OrderType;
+  legacyOrderIds?: string[];
+  legacyReferenceId?: string;
+  amountPaid?: number;
+  outstandingBalance?: number;
+  paymentMethod?: string;
+  createdAt?: string;
+  payments?: PaymentRecord[];
 };
 
 export type StockMovement = {

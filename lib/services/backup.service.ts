@@ -2,6 +2,9 @@ import { storageCore } from "../storage/core";
 import { EFZ_KEYS, LAST_EXPORT_KEY, AUTO_BACKUP_KEY } from "../storage/keys";
 import { loggerService } from "../diagnostics/logger";
 import { validateProduct, validateCustomer, validateOrder, validateUser } from "../validators";
+import approvedHistoricalBackup from "../../Backup/efz_approved_historical_parent_orders_2026-09-01.json";
+
+const APPROVED_MIGRATION_KEY = 'efz_approved_historical_migration_v1';
 
 const safeParse = (val: string | null) => {
   if (!val) return null;
@@ -10,6 +13,18 @@ const safeParse = (val: string | null) => {
   } catch (e) {
     return val;
   }
+};
+
+export const loadApprovedHistoricalDataIfNeeded = () => {
+  if (typeof window === "undefined") return false;
+
+  const migrationFlag = storageCore.get(APPROVED_MIGRATION_KEY) === 'true';
+  const hasStoredData = EFZ_KEYS.some((key) => !!storageCore.get(key));
+
+  if (migrationFlag && hasStoredData) return false;
+
+  const result = backupService.activateApprovedHistoricalMigration();
+  return result;
 };
 
 export const backupService = {
@@ -191,6 +206,38 @@ export const backupService = {
       loggerService.log('SYSTEM', 'ERROR', `Failed to restore snapshot: ${e.message}`);
       return { ok: false, error: e.message };
     }
+  },
+
+  activateApprovedHistoricalMigration: () => {
+    if (typeof window === "undefined") return false;
+
+    const hasMigrationFlag = storageCore.get(APPROVED_MIGRATION_KEY) === 'true';
+    const hasStoredData = EFZ_KEYS.some((key) => !!storageCore.get(key));
+
+    if (hasMigrationFlag && hasStoredData) return false;
+
+    const orders = approvedHistoricalBackup.data.efz_mock_orders as any[];
+    const customers = approvedHistoricalBackup.data.efz_mock_customers as any[];
+    const units = orders.reduce((sum, order) => sum + order.items.reduce((itemSum: number, item: any) => itemSum + Number(item.quantity || 0), 0), 0);
+    const revenue = orders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const cost = orders.reduce((sum, order) => sum + Number(order.cost || 0), 0);
+    const profit = orders.reduce((sum, order) => sum + Number(order.grossProfit || 0), 0);
+
+    if (orders.length !== 7 || customers.length !== 5 || units !== 11 || revenue !== 119 || cost !== 73.7 || profit !== 45.3) {
+      throw new Error('Approved historical migration payload failed reconciliation.');
+    }
+
+    if (!hasMigrationFlag) {
+      backupService.createAutoBackup();
+    }
+
+    const result = backupService.importBackup(JSON.stringify(approvedHistoricalBackup));
+    if (!result.ok) throw new Error(result.error || 'Approved historical migration failed.');
+
+    storageCore.set(APPROVED_MIGRATION_KEY, 'true');
+    storageCore.set('efz_initialized', 'true');
+    storageCore.set('efz_last_save_time', new Date().toISOString());
+    return true;
   },
 
   createAutoBackup: () => {

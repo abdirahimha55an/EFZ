@@ -2,6 +2,7 @@ import { storageCore } from "../storage/core";
 import { PRODUCTS_KEY, INITIALIZED_KEY } from "../storage/keys";
 import { Product } from "../types";
 import { MOCK_PRODUCTS } from "../data";
+import { backupService } from "./backup.service";
 
 // Defense-in-depth: sanitize a single product's numeric fields
 const sanitizeProduct = (p: any): Product => {
@@ -29,9 +30,16 @@ export const productService = {
       return repaired;
     }
     
-    if (typeof window !== "undefined" && localStorage.getItem(INITIALIZED_KEY) !== "true") {
-      productService.saveProducts(MOCK_PRODUCTS);
-      return MOCK_PRODUCTS;
+    if (typeof window !== "undefined") {
+      const approvedLoaded = backupService.activateApprovedHistoricalMigration();
+      if (approvedLoaded) {
+        const approved = storageCore.get(PRODUCTS_KEY);
+        if (approved) return JSON.parse(approved);
+      }
+      if (localStorage.getItem(INITIALIZED_KEY) !== "true") {
+        productService.saveProducts(MOCK_PRODUCTS);
+        return MOCK_PRODUCTS;
+      }
     }
     
     return [];
