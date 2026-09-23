@@ -1,62 +1,116 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Lock, ShieldCheck, Eye, EyeOff, Loader2 } from "lucide-react";
+import { ShieldCheck, Eye, EyeOff, Loader2 } from "lucide-react";
 
-import { storage } from "@/lib/storage";
+import { getDb, describeDbError } from "@/lib/supabase/db";
 
+/**
+ * useSearchParams() opts a route out of static prerendering unless it sits
+ * inside a Suspense boundary, so the form lives in its own component.
+ */
 export default function AdminLogin() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-slate-50">
+          <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        </div>
+      }
+    >
+      <AdminLoginForm />
+    </Suspense>
+  );
+}
+
+function AdminLoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
   const [settings, setSettings] = useState({
     businessName: "Elite Football Zone",
     logo: ""
   });
 
   useEffect(() => {
-    setIsMounted(true);
-    setSettings(storage.getSettings());
-    
-    // Redirect if already logged in
-    if (storage.isLoggedIn()) {
-      router.push("/admin");
-    }
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const db = getDb();
+
+        // Branding is readable without a session - settings is one of the two
+        // tables the public site is allowed to select from.
+        const [nextSettings, authUser] = await Promise.all([
+          db.settings.get(),
+          db.auth.getAuthUser(),
+        ]);
+        if (cancelled) return;
+
+        setSettings({ businessName: nextSettings.businessName, logo: nextSettings.logo });
+        if (authUser) router.replace("/admin");
+      } catch {
+        // A missing or misconfigured Supabase project should still leave a
+        // usable form on screen; the sign-in attempt will report the real error.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError("");
 
-    // Simple mock auth with storage session
-    const users = storage.getUsers();
-    const user = users.find(u => u.email === email && (u.password || "admin123") === password);
+    try {
+      const db = getDb();
+      await db.auth.login(email, password);
 
-    if (user) {
-      if (user.status === 'inactive') {
+      // Authenticating proves who they are. It does not prove they are staff:
+      // an auth user with no linked profile, or a suspended one, gets nothing.
+      const profile = await db.auth.getProfile();
+
+      if (!profile) {
+        await db.auth.logout();
+        setError("This account is not linked to a staff profile. Contact your Super Admin.");
+        setIsLoading(false);
+        return;
+      }
+
+      if (profile.status === "inactive") {
+        await db.auth.logout();
         setError("Your account has been suspended. Contact Super Admin.");
         setIsLoading(false);
         return;
       }
-      
-      // Handle Remember Me vs Session Only
-      console.log(`[AUTH] Initiating session for: ${user.name} (${user.id})`);
-      storage.login(user.id); 
-      storage.logger.log('SECURITY', 'INFO', `User login successful: ${user.name} (${user.role})`);
-      router.push("/admin");
-    } else {
-      storage.logger.log('SECURITY', 'WARNING', `Failed login attempt for: ${email}`);
-      setError("Authentication failed. Please check your credentials.");
+
+      await db.logs.write({
+        category: "SECURITY",
+        severity: "INFO",
+        message: `User login successful: ${profile.name} (${profile.role})`,
+        targetId: profile.id,
+      });
+
+      // refresh() lets proxy.ts see the new session cookie before /admin renders.
+      const next = searchParams.get("next");
+      router.replace(next && next.startsWith("/admin") ? next : "/admin");
+      router.refresh();
+    } catch (error) {
+      // A failed attempt cannot write to system_logs - the caller is not
+      // authenticated, and the insert policy is authenticated-only. Supabase
+      // Auth records failed sign-ins in its own logs instead.
+      setError(describeDbError(error));
       setIsLoading(false);
     }
   };
@@ -66,16 +120,14 @@ export default function AdminLogin() {
       <Card className="w-full max-w-md shadow-xl border-none">
         <div className="bg-brand-blue-dark rounded-t-xl p-8 text-center text-white">
           <div className="inline-flex h-20 w-20 items-center justify-center rounded-2xl bg-white/10 mb-4 overflow-hidden p-2">
-            {!isMounted ? (
-              <Lock className="h-8 w-8 text-brand-green" />
-            ) : settings.logo ? (
+            {settings.logo ? (
               <img src={settings.logo} alt={settings.businessName} className="h-full w-full object-contain" />
             ) : (
               <ShieldCheck className="h-10 w-10 text-brand-green" />
             )}
           </div>
           <h1 className="font-heading text-2xl font-bold">
-            {!isMounted ? "Admin Access" : settings.businessName}
+            {settings.businessName}
           </h1>
           <p className="text-slate-300 text-sm mt-2">Sign in to manage your platform</p>
         </div>
@@ -118,16 +170,10 @@ export default function AdminLogin() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between px-1">
-              <label className="flex items-center gap-2 cursor-pointer group">
-                <input 
-                  type="checkbox" 
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300 text-brand-blue focus:ring-brand-blue/20"
-                />
-                <span className="text-xs font-bold text-slate-500 group-hover:text-slate-700 transition-colors">Remember Session</span>
-              </label>
+            {/* "Remember Session" is gone: Supabase persists the session in a
+                cookie and rotates it on every request, so the choice no longer
+                exists to offer. */}
+            <div className="flex items-center justify-end px-1">
               <button type="button" className="text-xs font-bold text-brand-blue hover:underline">Forgot Access?</button>
             </div>
 

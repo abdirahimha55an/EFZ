@@ -5,18 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { getWhatsAppUrl, EFZ_WHATSAPP_NUMBER } from "@/lib/utils";
-import { storage } from "@/lib/storage";
+import { usePublicSettings } from "@/lib/settings";
 import Link from "next/link";
-import { useEffect, useState } from "react";
 
 export default function ContactPage() {
-  const [whatsappNumber, setWhatsappNumber] = useState(EFZ_WHATSAPP_NUMBER);
-
-  useEffect(() => {
-    const settings = storage.getSettings();
-    const cleanNumber = settings.whatsappNumber.replace(/\D/g, '');
-    setWhatsappNumber(cleanNumber || EFZ_WHATSAPP_NUMBER);
-  }, []);
+  const settings = usePublicSettings();
+  const whatsappNumber = settings.whatsappNumber.replace(/\D/g, '') || EFZ_WHATSAPP_NUMBER;
 
   const waUrl = getWhatsAppUrl(whatsappNumber, "Hello EFZ, I have a general inquiry.");
 

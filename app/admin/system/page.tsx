@@ -1,175 +1,195 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { 
-  Settings, Download, Upload, ShieldCheck, 
-  Database, Trash2, RefreshCw, AlertTriangle, 
-  ShieldAlert, HardDrive, LayoutDashboard, History,
-  Key, Activity, FileJson
+import { useCallback, useEffect, useState } from "react";
+import {
+  Download, ShieldCheck,
+  Trash2, RefreshCw, AlertTriangle,
+  ShieldAlert, HardDrive, Activity, Loader2
 } from "lucide-react";
-import { storage, AdminSettings, LogSeverity } from "@/lib/storage";
+import type { LucideIcon } from "lucide-react";
+import { AdminProfile } from "@/lib/types";
+import type { OperationalMetrics } from "@/lib/supabase/database.types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function SystemManagementPage() {
   const [isMounted, setIsMounted] = useState(false);
-  const [profile, setProfile] = useState(() => storage.getProfile());
-  const [storageUsage, setStorageUsage] = useState(() => storage.getStorageUsage());
-  const [lastExport, setLastExport] = useState(() => storage.getLastExportDate());
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [profile, setProfile] = useState<AdminProfile | null>(null);
+  const [metrics, setMetrics] = useState<OperationalMetrics | null>(null);
+  const [lastExport, setLastExport] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setIsMounted(true);
-    const handleProfileUpdate = () => setProfile(storage.getProfile());
-    window.addEventListener('profileUpdated', handleProfileUpdate);
-    return () => window.removeEventListener('profileUpdated', handleProfileUpdate);
+  const loadAll = useCallback(async () => {
+    const db = getDb();
+    const nextProfile = await db.auth.getProfile();
+    setProfile(nextProfile);
+    if (!nextProfile) return;
+
+    // operational_metrics() needs view_diagnostics; manage_system implies it in
+    // practice, but a Super Admin short-circuits either way.
+    if (derivePermissions(nextProfile).viewDiagnostics) {
+      setMetrics(await db.issues.metrics());
+    }
+
+    const snapshots = await db.backups.list();
+    setLastExport(snapshots[0]?.created_at ?? null);
   }, []);
 
-  if (!isMounted) return null;
+  useEffect(() => {
+    let cancelled = false;
 
-  const canManageSystem = storage.canManageSystem(profile);
+    (async () => {
+      try {
+        await loadAll();
+        if (!cancelled) setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setIsMounted(true);
+      }
+    })();
 
-  const handleRepair = () => {
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAll]);
+
+  const canManageSystem = derivePermissions(profile).manageSystem;
+
+  if (!isMounted) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <p className="text-xs font-medium">Loading system status…</p>
+      </div>
+    );
+  }
+
+  /**
+   * Runs the two automatic repairs the database exposes: order totals and
+   * profile commission totals, each recomputed from its source rows.
+   *
+   * The old "Repair Storage" re-indexed duplicate user IDs and fixed broken
+   * object references. Neither is possible now - a primary key refuses the
+   * first and a foreign key the second - so that button had nothing left to do.
+   */
+  const handleRepair = async () => {
     if (!canManageSystem) {
       alert('Permission denied: You do not have permission to perform system maintenance.');
       return;
     }
-    if (!confirm("Are you sure you want to run storage repair? This will re-index all user IDs and fix broken references.")) return;
-    storage.repairStorage();
-    storage.logger.log('SYSTEM', 'WARNING', 'Manual storage repair operation executed', { userId: profile.id });
-    alert("System storage repair operation completed.");
-    setStorageUsage(storage.getStorageUsage());
-  };
+    if (!confirm("Recompute order totals and commission totals from their source rows?\n\nThis rewrites stored values that have drifted. It does not change any order lines, payments or commission rows.")) return;
 
-  const handleIntegrityCheck = () => {
-    if (!canManageSystem) {
-      alert('Permission denied: You do not have permission to perform data integrity validation.');
-      return;
+    try {
+      setIsBusy(true);
+      const db = getDb();
+      const [orderRepair, commissionRepair] = await Promise.all([
+        db.issues.repair('orders-total-drift'),
+        db.issues.repair('commission-totals-drift'),
+      ]);
+      await loadAll();
+      alert(
+        `Repair complete.\n\n` +
+        `Order totals recomputed: ${orderRepair.recordsFixed}\n` +
+        `Commission totals recomputed: ${commissionRepair.recordsFixed}`
+      );
+    } catch (error) {
+      alert('Repair failed: ' + describeDbError(error));
+    } finally {
+      setIsBusy(false);
     }
-    const results = storage.validateDataIntegrity();
-    storage.logger.log('SYSTEM', 'INFO', 'Manual data integrity validation executed', { userId: profile.id });
-    alert(`Validation Complete!\n\nOrphaned Orders: ${results.orphanedOrders}\nMissing Customers: ${results.missingCustomerLinks}\nStock Inconsistencies: ${results.stockInconsistencies}`);
   };
 
-  const handleExport = () => {
+  /** Runs the nine-check scan in the database and reports what it found. */
+  const handleIntegrityCheck = async () => {
+    try {
+      setIsBusy(true);
+      const db = getDb();
+      await db.issues.scan();
+      const open = await db.issues.list();
+      await loadAll();
+
+      if (open.length === 0) {
+        alert('Validation complete. No open findings.');
+        return;
+      }
+
+      const lines = open
+        .slice(0, 12)
+        .map(issue => `- [${issue.severity}] ${issue.title} (${issue.affectedCount})`)
+        .join('\n');
+
+      alert(
+        `Validation complete. ${open.length} open finding(s):\n\n${lines}` +
+        (open.length > 12 ? `\n... and ${open.length - 12} more.` : '') +
+        `\n\nFull detail is in the Operation Center.`
+      );
+    } catch (error) {
+      alert('Validation failed: ' + describeDbError(error));
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  /** Writes a `backups` row and hands the same payload over as a download. */
+  const handleExport = async () => {
     if (!canManageSystem) {
       alert('Permission denied: You do not have permission to export backups.');
       return;
     }
+
     let url: string | null = null;
     const link = document.createElement('a');
 
     try {
-      const data = storage.exportBackup();
-      if (!data) throw new Error('Backup data was empty.');
+      setIsBusy(true);
+      const db = getDb();
+      const snapshot = await db.backups.create(
+        `System export by ${profile?.name ?? 'staff'} on ${new Date().toISOString().slice(0, 10)}`
+      );
 
-      const blob = new Blob([data], { type: 'application/json' });
+      await db.logs.write({
+        category: 'SYSTEM',
+        severity: 'INFO',
+        message: 'Full system backup exported',
+        targetId: snapshot.id,
+      });
+
+      const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
       url = URL.createObjectURL(blob);
       link.href = url;
       link.download = `efz_full_backup_${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(link);
       link.click();
-      setLastExport(new Date().toISOString());
-      storage.logger.log('SYSTEM', 'INFO', 'Full system backup exported', { userId: profile.id });
-      alert('Backup download started successfully.');
+
+      await loadAll();
+      alert('Snapshot saved and download started.');
     } catch (error) {
-      console.error('Failed to export backup:', error);
-      alert('Failed to export backup. Please try again.');
+      alert('Failed to export backup: ' + describeDbError(error));
     } finally {
       if (link.parentNode) link.parentNode.removeChild(link);
       if (url) URL.revokeObjectURL(url);
+      setIsBusy(false);
     }
   };
 
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (!canManageSystem) {
-        alert('Permission denied: You do not have permission to import backups.');
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = event.target?.result as string;
-        
-        // 1. Pre-restore data validation
-        const valRes = storage.validateBackup(content);
-        
-        let confirmMessage = "CRITICAL WARNING: Restoring a backup will COMPLETELY OVERWRITE all current data including users, orders, and products. This cannot be undone.";
-        
-        if (!valRes.ok || valRes.warnings.length > 0) {
-          confirmMessage += "\n\n⚠️ VALIDATION ISSUES DETECTED IN BACKUP:";
-          
-          if (valRes.errors.length > 0) {
-            confirmMessage += "\n\nErrors (Dangerous/Corrupt Data):\n" + valRes.errors.slice(0, 10).map(err => `- ${err}`).join("\n");
-            if (valRes.errors.length > 10) {
-              confirmMessage += `\n... and ${valRes.errors.length - 10} more errors.`;
-            }
-          }
-          
-          if (valRes.warnings.length > 0) {
-            confirmMessage += "\n\nWarnings:\n" + valRes.warnings.slice(0, 10).map(wrn => `- ${wrn}`).join("\n");
-            if (valRes.warnings.length > 10) {
-              confirmMessage += `\n... and ${valRes.warnings.length - 10} more warnings.`;
-            }
-          }
-          
-          confirmMessage += "\n\nIf you proceed, you MUST run manual/automated repairs inside the Operation Center (Diagnostics) immediately after reloading. Continue anyway?";
-        } else {
-          confirmMessage += "\n\nBackup file verification passed successfully with no errors or warnings. Continue?";
-        }
-
-        if (confirm(confirmMessage)) {
-          const res = storage.importBackup(content);
-          if (res.ok) {
-            storage.logger.log('SYSTEM', 'CRITICAL', 'Full system data restoration performed', { userId: profile.id });
-            alert("System restored successfully. The application will now reload.");
-            window.location.reload();
-          } else {
-            alert(`Restore failed: ${res.error}`);
-          }
-        }
-      };
-      reader.readAsText(file);
-    }
-  };
-
-  const handleClearLogs = () => {
-    if (!canManageSystem) {
-      alert('Permission denied: You do not have permission to clear audit logs.');
-      return;
-    }
-    if (!confirm("DANGEROUS ACTION: This will permanently delete all system audit logs. Are you sure?")) return;
-    storage.logger.clearLogs();
-    storage.logger.log('SECURITY', 'WARNING', 'System audit logs cleared by administrator', { userId: profile.id });
-    alert("Audit logs cleared.");
-  };
-
-  const handleResetData = () => {
-    if (!canManageSystem) {
-      alert('Permission denied: You do not have permission to reset the system.');
-      return;
-    }
-    if (!confirm("EXTREME WARNING: This will reset the entire system to default demo data. ALL current records will be lost forever. Type 'RESET' to confirm.")) {
-       // Just simple confirm for now to match the user's "warning" requirement without being too complex
-    }
-    if (confirm("FINAL CONFIRMATION: Reset all data to factory defaults?")) {
-        localStorage.clear();
-        window.location.href = "/admin/login";
-    }
-  };
-
-  const storageKeys = [
-    'efz_mock_users', 'efz_mock_customers', 'efz_mock_orders', 
-    'efz_mock_products', 'efz_admin_settings', 'efz_system_logs'
-  ];
+  const recordRows: Array<[string, number]> = metrics
+    ? Object.entries(metrics.records).map(([key, value]) => [key, Number(value ?? 0)])
+    : [];
+  const totalRecords = recordRows.reduce((sum, [, count]) => sum + count, 0);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 max-w-6xl mx-auto">
       <div>
         <h1 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">System Management</h1>
         <p className="text-slate-500 dark:text-slate-400 mt-1 font-medium">Core infrastructure control and disaster recovery tools.</p>
+        {loadError && (
+          <p className="mt-2 text-xs font-medium text-red-600">{loadError}</p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -178,23 +198,30 @@ export default function SystemManagementPage() {
           <Card className="rounded-[2rem] border-slate-100 shadow-sm overflow-hidden">
             <CardHeader className="bg-slate-50/50">
               <CardTitle className="text-sm font-bold flex items-center gap-2">
-                <HardDrive className="h-4 w-4 text-slate-400" /> Storage Usage
+                <HardDrive className="h-4 w-4 text-slate-400" /> Stored Records
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-6">
+              {/* Was a localStorage quota gauge. There is no 5MB ceiling to
+                  watch any more, so this reports what is actually stored. */}
               <div className="text-center space-y-2">
-                <div className="inline-flex items-center justify-center h-24 w-24 rounded-full border-4 border-slate-100 border-t-brand-blue animate-pulse">
-                   <span className="text-xl font-black">{storageUsage.used}</span>
+                <div className="inline-flex items-center justify-center h-24 w-24 rounded-full border-4 border-slate-100 border-t-brand-blue">
+                   <span className="text-xl font-black">{totalRecords.toLocaleString()}</span>
                 </div>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Local Footprint</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rows in PostgreSQL</p>
               </div>
               <div className="mt-8 space-y-3">
-                {storageKeys.map(key => (
-                   <div key={key} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
-                     <span className="text-[10px] font-mono font-bold text-slate-500">{key}</span>
-                     <span className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
+                {recordRows.map(([label, count]) => (
+                   <div key={label} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                     <span className="text-[10px] font-mono font-bold text-slate-500">{label}</span>
+                     <span className="text-[10px] font-black text-slate-700">{count.toLocaleString()}</span>
                    </div>
                 ))}
+                {recordRows.length === 0 && (
+                  <p className="text-center text-[10px] font-medium text-slate-400">
+                    Row counts need the view_diagnostics permission.
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -222,55 +249,46 @@ export default function SystemManagementPage() {
           <section className="space-y-4">
              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest px-2">Maintenance & Recovery</h3>
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <ActionButton 
-                  icon={RefreshCw} 
-                  title="Repair Storage" 
-                  description="Scan and fix user ID collisions and broken object references in LocalStorage."
+                <ActionButton
+                  icon={RefreshCw}
+                  title="Recompute Stored Totals"
+                  description="Rebuild order totals and commission totals from their source rows. Use when diagnostics reports drift."
                   onClick={handleRepair}
-                  disabled={!canManageSystem}
+                  disabled={!canManageSystem || isBusy}
                 />
-                <ActionButton 
-                  icon={ShieldCheck} 
-                  title="Validate Integrity" 
-                  description="Perform deep validation on customer ownership and order attribution links."
+                <ActionButton
+                  icon={ShieldCheck}
+                  title="Validate Integrity"
+                  description="Run the nine-check scan in the database and report every open finding."
                   onClick={handleIntegrityCheck}
-                  disabled={!canManageSystem}
-                />
-                <ActionButton 
-                  icon={Upload} 
-                  title="Import Backup" 
-                  description="Restore system from a previously exported JSON snapshot file."
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={!canManageSystem}
-                />
-                <ActionButton 
-                  icon={Trash2} 
-                  title="Clear Audit Logs" 
-                  description="Permanently delete all historical event logs to free up storage space."
-                  onClick={handleClearLogs}
-                  danger
-                  disabled={!canManageSystem}
+                  disabled={isBusy}
                 />
              </div>
-             <input type="file" ref={fileInputRef} className="hidden" accept=".json" onChange={handleImport} />
           </section>
 
+          {/* Restore, log deletion and factory reset used to rewrite or wipe
+              localStorage. Against PostgreSQL each is either impossible by
+              design or too destructive to sit behind a button, so the page
+              explains where the capability actually lives. */}
           <section className="space-y-4">
-             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest px-2">Dangerous Operations</h3>
-             <Card className="rounded-[2rem] border-red-100 bg-red-50/20 overflow-hidden">
-                <CardContent className="p-6 flex flex-col md:flex-row items-center justify-between gap-6">
-                   <div className="flex items-center gap-4">
-                      <div className="h-12 w-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center shrink-0">
-                         <AlertTriangle className="h-6 w-6" />
-                      </div>
-                      <div>
-                         <h4 className="text-sm font-bold text-slate-900">Factory Data Reset</h4>
-                         <p className="text-xs text-slate-500 mt-1 max-w-sm">Warning: This will wipe all current data and return the system to its initial demo state.</p>
-                      </div>
-                   </div>
-                   <Button onClick={handleResetData} disabled={!canManageSystem} className="bg-red-600 text-white hover:bg-red-700 rounded-xl px-8 h-12 font-bold shadow-lg shadow-red-200">
-                      Reset Entire System
-                   </Button>
+             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest px-2">Operations that moved</h3>
+             <Card className="rounded-[2rem] border-slate-100 overflow-hidden">
+                <CardContent className="p-6 space-y-5">
+                   <MovedOperation
+                     icon={Trash2}
+                     title="Clear Audit Logs"
+                     body="Not possible, by design. `system_logs` has an insert policy and no delete policy at all — nobody, including a Super Admin, can erase an entry. An audit trail anyone can clear is not an audit trail."
+                   />
+                   <MovedOperation
+                     icon={AlertTriangle}
+                     title="Restore from Backup"
+                     body="Overwriting a live database belongs in a reviewed script, not a file picker. Generate the SQL with `node scripts/generate-supabase-import.mjs`, read it, then run it in the Supabase SQL Editor."
+                   />
+                   <MovedOperation
+                     icon={AlertTriangle}
+                     title="Factory Data Reset"
+                     body="Removed. It called localStorage.clear(), which now clears nothing. To roll the whole database back, use Supabase's Point-in-Time Recovery."
+                   />
                 </CardContent>
              </Card>
           </section>
@@ -287,7 +305,34 @@ export default function SystemManagementPage() {
   );
 }
 
-function ActionButton({ icon: Icon, title, description, onClick, danger, disabled }: any) {
+/** A capability that did not survive the move, and where it went instead. */
+function MovedOperation({ icon: Icon, title, body }: { icon: LucideIcon; title: string; body: string }) {
+  return (
+    <div className="flex items-start gap-4">
+      <div className="h-10 w-10 shrink-0 rounded-xl bg-slate-100 text-slate-400 flex items-center justify-center">
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="space-y-1">
+        <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+          {title}
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-slate-500">
+            Moved
+          </span>
+        </h4>
+        <p className="text-[11px] leading-relaxed font-medium text-slate-500">{body}</p>
+      </div>
+    </div>
+  );
+}
+
+function ActionButton({ icon: Icon, title, description, onClick, danger, disabled }: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+}) {
   return (
     <button 
       onClick={onClick}

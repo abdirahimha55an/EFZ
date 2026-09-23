@@ -1,35 +1,14 @@
-import { useState, useEffect } from "react";
-import { storage } from "@/lib/storage";
+"use client";
+
 import Link from "next/link";
 import { MapPin, Phone, Mail } from "lucide-react";
+import { usePublicSettings } from "@/lib/settings";
 
 export function Footer() {
-  const [isMounted, setIsMounted] = useState(false);
-  const [settings, setSettings] = useState({
-    businessName: "Elite Football Zone",
-    whatsappNumber: "+252 61 412 9991",
-    contactEmail: "sales@efz.so"
-  });
+  // The spinner this used to show has gone: the defaults are real content, so
+  // the footer can render immediately and update in place.
+  const settings = usePublicSettings();
 
-  useEffect(() => {
-    setIsMounted(true);
-    const s = storage.getSettings();
-    setSettings({
-      businessName: s.businessName,
-      whatsappNumber: s.whatsappNumber,
-      contactEmail: s.contactEmail
-    });
-  }, []);
-
-  if (!isMounted) return (
-    <footer className="bg-brand-blue-dark text-slate-300">
-      <div className="container mx-auto px-4 py-12 md:px-6 lg:py-16">
-        <div className="h-40 flex items-center justify-center">
-          <div className="w-8 h-8 border-2 border-slate-700 border-t-slate-500 rounded-full animate-spin"></div>
-        </div>
-      </div>
-    </footer>
-  );
   return (
     <footer className="bg-brand-blue-dark text-slate-300">
       <div className="container mx-auto px-4 py-12 md:px-6 lg:py-16">

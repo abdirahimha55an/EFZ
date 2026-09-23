@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { 
   Users, 
   UserPlus, 
@@ -21,13 +21,19 @@ import {
   UserCheck,
   X,
   User,
-  Plus
+  Plus,
+  Loader2,
+  RefreshCcw,
+  Info
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { storage, AdminUser, UserRole, Permission } from "@/lib/storage";
+import { AdminUser, UserRole, Permission } from "@/lib/types";
+import type { OfficerCommissionSummaryRow } from "@/lib/supabase/database.types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
 import { validateUser } from "@/lib/validators";
 
 const ROLES: UserRole[] = ['Super Admin', 'Manager', 'Marketing Officer', 'Inventory Staff', 'Delivery Staff'];
@@ -67,18 +73,56 @@ const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = 
   { id: 'view_own_customers_only', label: 'View Own Records Only (Restricted)', category: 'Customer Visibility' },
 ];
 
+/**
+ * Starting point when a role is picked in the form. Kept in step with
+ * grant_role_preset() in supabase/05_seed.sql - if you change one, change both.
+ *
+ * These are only a suggestion: what actually gets granted is whatever the
+ * checkboxes hold when the form is saved, written by set_user_permissions().
+ *
+ * Super Admin is given every box for clarity in the UI, but has_permission()
+ * short-circuits for that role anyway, so the rows are decoration.
+ */
 const DEFAULT_PERMISSIONS: Record<UserRole, Permission[]> = {
   'Super Admin': PERMISSIONS_LIST.filter(p => p.id !== 'view_own_customers_only').map(p => p.id),
-  'Manager': ['view_dashboard', 'view_orders', 'edit_orders', 'view_products', 'edit_products', 'view_inventory', 'view_customers', 'edit_customers', 'view_reports', 'view_all_customers'],
-  'Marketing Officer': ['view_dashboard', 'view_orders', 'create_orders', 'view_products', 'add_customers', 'view_customers', 'view_commissions', 'view_own_customers_only'],
-  'Inventory Staff': ['view_products', 'add_products', 'edit_products', 'view_inventory', 'adjust_stock'],
-  'Delivery Staff': ['view_orders', 'edit_orders']
+  'Manager': [
+    'view_dashboard',
+    'view_orders', 'create_orders', 'edit_orders',
+    'view_products', 'add_products', 'edit_products',
+    'view_inventory', 'adjust_stock',
+    'view_customers', 'add_customers', 'edit_customers', 'view_all_customers',
+    'view_reports', 'view_commissions', 'mark_commissions_paid',
+    'view_audit_trail',
+  ],
+  'Marketing Officer': [
+    'view_dashboard',
+    'view_orders', 'create_orders',
+    'view_products',
+    'add_customers', 'edit_customers', 'view_own_customers_only',
+    'view_commissions',
+  ],
+  'Inventory Staff': [
+    'view_dashboard',
+    'view_orders',
+    'view_products', 'add_products', 'edit_products',
+    'view_inventory', 'adjust_stock',
+  ],
+  'Delivery Staff': [
+    'view_dashboard',
+    'view_orders', 'edit_orders',
+    'view_customers',
+  ],
 };
 
 export default function UsersPage() {
-  const [isMounted, setIsMounted] = useState(false);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
+  // Earned / paid / pending per officer, straight from the ledger view. The old
+  // page re-derived these four separate times from the order list.
+  const [commissionRows, setCommissionRows] = useState<OfficerCommissionSummaryRow[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
@@ -97,11 +141,37 @@ export default function UsersPage() {
     permissions: DEFAULT_PERMISSIONS['Marketing Officer']
   });
 
-  useEffect(() => {
-    setIsMounted(true);
-    setUsers(storage.getUsers());
-    setCurrentUser(storage.getProfile());
+  const loadAll = useCallback(async () => {
+    const db = getDb();
+    const [nextUsers, nextProfile, nextCommissions] = await Promise.all([
+      db.users.list(),
+      db.auth.getProfile(),
+      db.commissions.summary(),
+    ]);
+    setUsers(nextUsers);
+    setCurrentUser(nextProfile);
+    setCommissionRows(nextCommissions);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setIsLoading(true);
+        await loadAll();
+        if (!cancelled) setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAll]);
 
   useEffect(() => {
     if (notification) {
@@ -110,12 +180,51 @@ export default function UsersPage() {
     }
   }, [notification]);
 
-  if (!isMounted) return null;
+  const perms = derivePermissions(currentUser);
 
-  const handleSaveUser = (e: React.FormEvent) => {
+  const showNotification = (type: 'success' | 'error', message: string) => {
+    setNotification({ type, message });
+  };
+
+  /** Earned / paid / pending for one officer, from the commissions ledger. */
+  const commissionsFor = (userId: string) => {
+    const row = commissionRows.find(r => r.user_id === userId);
+    return {
+      earned: Number(row?.earned_commission ?? 0),
+      paid: Number(row?.paid_commission ?? 0),
+      pending: Number(row?.pending_commission ?? 0),
+    };
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-green" />
+        <p className="text-xs font-medium">Loading users…</p>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Card className="border-none shadow-sm">
+        <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <ShieldAlert className="h-8 w-8 text-red-500" />
+          <div>
+            <h2 className="font-heading text-lg font-bold text-slate-900">Could not load users</h2>
+            <p className="mt-1 max-w-md text-xs text-slate-500">{loadError}</p>
+          </div>
+          <Button onClick={() => loadAll()} variant="outline" size="sm" className="rounded-lg text-xs">
+            <RefreshCcw className="mr-1.5 h-3.5 w-3.5" /> Try again
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    const allUsers = storage.getUsers();
-    
+
     // Clean duplicates and cast numeric types
     const cleanedPermissions = Array.from(new Set(formData.permissions));
     const validatedData = {
@@ -137,157 +246,134 @@ export default function UsersPage() {
       permissions: cleanedPermissions
     };
 
-    if (editingUser) {
-      console.log(`[AUTH] Saving user updates: ${savedData.name}`, savedData.permissions);
-      const oldPermissions = editingUser.permissions || [];
-      const newPermissions = savedData.permissions;
+    try {
+      setIsSaving(true);
+      const db = getDb();
 
-      const updated = allUsers.map(u => u.id === editingUser.id ? { ...u, ...savedData } : u);
-      storage.saveUsers(updated);
-      
-      // If editing self, update current session profile state immediately
-      if (currentUser && currentUser.id === editingUser.id) {
-        setCurrentUser({ ...currentUser, ...savedData } as AdminUser);
-        window.dispatchEvent(new Event('profileUpdated'));
+      if (editingUser) {
+        const oldPermissions = editingUser.permissions || [];
+
+        // users.update writes the profile fields and then replaces the whole
+        // permission set through set_user_permissions() in one call.
+        await db.users.update(editingUser.id, savedData);
+
+        await db.logs.write({
+          category: 'SECURITY',
+          severity: 'INFO',
+          message: `User privileges updated: ${savedData.name} (${savedData.role})`,
+          targetId: editingUser.id,
+          metadata: {
+            oldValue: oldPermissions,
+            newValue: savedData.permissions,
+            field: 'permissions',
+            source: 'Privilege Settings',
+          },
+        });
+      } else {
+        const created = await db.users.create({ ...savedData, avatar: "" });
+
+        await db.logs.write({
+          category: 'SECURITY',
+          severity: 'INFO',
+          message: `New user created: ${savedData.name} (${savedData.role})`,
+          targetId: created.id,
+          metadata: {
+            oldValue: [],
+            newValue: savedData.permissions,
+            field: 'permissions',
+            source: 'Privilege Settings',
+          },
+        });
       }
-      
-      storage.logger.log('SECURITY', 'INFO', `User privileges updated: ${savedData.name} (${savedData.role})`, { 
-        targetId: editingUser.id,
-        metadata: {
-          oldValue: oldPermissions,
-          newValue: newPermissions,
-          field: 'permissions',
-          source: 'Privilege Settings'
-        }
-      });
-      setUsers(updated);
-    } else {
-      const newUser: AdminUser = {
-        id: storage.generateId('u'),
-        avatar: "",
-        ...savedData
-      };
-      const updated = [...allUsers, newUser];
-      storage.saveUsers(updated);
-      storage.logger.log('SECURITY', 'INFO', `New user created: ${savedData.name} (${savedData.role})`, { 
-        targetId: newUser.id,
-        metadata: {
-          oldValue: [],
-          newValue: savedData.permissions,
-          field: 'permissions',
-          source: 'Privilege Settings'
-        }
-      });
-      setUsers(updated);
-    }
-    setIsModalOpen(false);
-    showNotification('success', editingUser ? "User profile updated" : "New user created");
-  };
 
-  const handleRecalculate = () => {
-    const orders = storage.getOrders();
-    const customers = storage.getCustomers();
-    const allUsers = storage.getUsers();
-    
-    const updatedUsers = allUsers.map(user => {
-      if (user.role !== 'Marketing Officer') return user;
-      
-      const myCustomers = customers.filter(c => String(c.marketingOfficerId || c.registeredBy) === String(user.id));
-      const officerOrders = orders.filter(o => 
-        String(o.marketingOfficerId) === String(user.id) || 
-        myCustomers.some(c => String(c.id) === String(o.customerId) || c.name === o.customer)
+      await loadAll();
+      setIsModalOpen(false);
+      showNotification(
+        'success',
+        editingUser
+          ? "User profile updated"
+          : "Profile created. Invite them in Supabase Auth with the same email so they can sign in."
       );
-      
-      const earned = officerOrders
-        .filter(o => o.status?.toLowerCase() === 'paid' || o.status?.toLowerCase() === 'delivered')
-        .reduce((sum, o) => sum + (o.total * user.commissionPercentage / 100), 0);
-      
-      return {
-        ...user,
-        earnedCommissionTotal: earned,
-        pendingCommissionTotal: earned - (user.paidCommissionTotal || 0)
-      };
-    });
-    
-    storage.saveUsers(updatedUsers);
-    setUsers(updatedUsers);
-    showNotification('success', 'Commissions recalculated from orders and customer links.');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handlePayout = (user: AdminUser) => {
-    if (!storage.canMarkCommissionsPaid(currentUser)) {
+  /**
+   * Recomputes every profile's commission totals from the ledger.
+   *
+   * The old version re-derived them from the order list at today's rate, which
+   * silently rewrote history whenever someone's percentage changed. This asks
+   * the database to re-add the commission rows that already exist, each with
+   * the rate it was earned at.
+   */
+  const handleRecalculate = async () => {
+    try {
+      setIsSaving(true);
+      const result = await getDb().issues.repair('commission-totals-drift');
+      await loadAll();
+      showNotification('success', `Commission totals recomputed from the ledger (${result.recordsFixed} profile(s)).`);
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handlePayout = async (user: AdminUser) => {
+    if (!perms.markCommissionsPaid) {
       showNotification('error', 'Permission denied: You are not allowed to mark commissions paid.');
       return;
     }
 
-    const orders = storage.getOrders();
-    const customers = storage.getCustomers();
-    const myCustomers = customers.filter(c => String(c.marketingOfficerId || c.registeredBy) === String(user.id));
-    
-    const officerOrders = orders.filter(o => 
-      String(o.marketingOfficerId) === String(user.id) || 
-      myCustomers.some(c => String(c.id) === String(o.customerId) || c.name === o.customer)
-    );
-    
-    const ELIGIBLE_STATUSES = ['confirmed', 'processing', 'delivered'];
-    
-    const eligibleOrders = officerOrders.filter(o => 
-      !o.commissionPaid && ELIGIBLE_STATUSES.includes(o.status?.toLowerCase())
-    );
+    try {
+      setIsSaving(true);
+      const db = getDb();
 
-    const payoutAmount = eligibleOrders.reduce((sum, o) => sum + (o.total * user.commissionPercentage / 100), 0);
+      // The ledger decides what is owed, not a recalculation from orders.
+      const pending = await db.commissions.list({ userId: user.id, status: 'pending' });
+      const payoutAmount = pending.reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
 
-    if (payoutAmount < 0.01) {
-      showNotification('error', 'No new eligible commissions to pay out.');
-      return;
-    }
+      if (payoutAmount < 0.01) {
+        showNotification('error', 'No new eligible commissions to pay out.');
+        return;
+      }
 
-    if (confirm(`Process commission payout of $${payoutAmount.toFixed(2)} for ${user.name}?`)) {
-      const payoutRef = `pay-ref-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
-      const oldPaidCommission = user.paidCommissionTotal || 0;
-      const newPaidCommission = oldPaidCommission + payoutAmount;
+      if (!confirm(`Process commission payout of $${payoutAmount.toFixed(2)} for ${user.name}?\n\n${pending.length} commission(s) will be marked paid and their orders locked.`)) {
+        return;
+      }
 
-      // 1. Mark orders as commissionPaid
-      const allOrders = storage.getOrders();
-      const updatedOrders = allOrders.map(o => {
-        if (eligibleOrders.some(eo => eo.id === o.id)) {
-          return { ...o, commissionPaid: true };
-        }
-        return o;
-      });
-      storage.saveOrders(updatedOrders);
+      // One transaction: creates the payout, marks each commission paid, links
+      // them to it, and the triggers roll the totals forward.
+      const payoutId = await db.commissions.pay(
+        user.id,
+        pending.map(row => row.id),
+        { method: 'Cash' }
+      );
 
-      // 2. Update user commission totals
-      const updatedUser = { 
-        ...user, 
-        paidCommissionTotal: newPaidCommission,
-        pendingCommissionTotal: 0
-      };
-      const updatedUsers = users.map(u => u.id === user.id ? updatedUser : u);
-      storage.saveUsers(updatedUsers);
-      
-      // 3. Log with enriched details
-      storage.logger.log('FINANCIAL', 'INFO', `Commission payout processed for ${user.name}: $${payoutAmount.toFixed(2)} (Ref: ${payoutRef}, Orders: ${eligibleOrders.length})`, {
+      await db.logs.write({
+        category: 'FINANCIAL',
+        severity: 'INFO',
+        message: `Commission payout processed for ${user.name}: $${payoutAmount.toFixed(2)} (${pending.length} commission(s))`,
         targetId: user.id,
         metadata: {
           officerName: user.name,
           amount: payoutAmount,
-          orderCount: eligibleOrders.length,
-          payoutRef,
-          oldPaidCommission,
-          newPaidCommission,
-          timestamp: new Date().toISOString(),
-          source: 'Payout Management'
-        }
+          commissionCount: pending.length,
+          payoutId,
+          source: 'Payout Management',
+        },
       });
-      
-      setUsers(updatedUsers);
-      showNotification('success', `Payout of $${payoutAmount.toFixed(2)} processed successfully! Ref: ${payoutRef}`);
-    }
-  };
 
-  const showNotification = (type: 'success' | 'error', message: string) => {
-    setNotification({ type, message });
+      await loadAll();
+      showNotification('success', `Payout of $${payoutAmount.toFixed(2)} processed successfully.`);
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const togglePermission = (perm: Permission) => {
@@ -316,17 +402,49 @@ export default function UsersPage() {
     });
   };
 
-  const deleteUser = (id: string) => {
-    if (id === "u-1") {
-      alert("Cannot delete primary Super Admin");
+  const deleteUser = async (id: string) => {
+    const user = users.find(u => u.id === id);
+    if (!user) return;
+
+    // Two invariants, checked against the actual data rather than a hardcoded
+    // id: you cannot lock yourself out, and the last Super Admin has to stay.
+    if (currentUser && currentUser.id === id) {
+      showNotification('error', 'You cannot delete your own account.');
       return;
     }
-    if (confirm("Permanently remove this user and all associated privileges?")) {
-      const user = users.find(u => u.id === id);
-      const updated = users.filter(u => u.id !== id);
-      storage.saveUsers(updated);
-      storage.logger.log('SECURITY', 'WARNING', `User deleted: ${user?.name || id}`, { targetId: id });
-      setUsers(updated);
+
+    const remainingSuperAdmins = users.filter(
+      u => u.role === 'Super Admin' && u.status === 'active' && u.id !== id
+    ).length;
+
+    if (user.role === 'Super Admin' && remainingSuperAdmins === 0) {
+      showNotification('error', 'This is the last active Super Admin. Promote someone else first.');
+      return;
+    }
+
+    if (!confirm(`Permanently remove ${user.name} and all associated privileges?\n\nTheir Supabase Auth account is separate and must be removed there too.`)) {
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      const db = getDb();
+
+      await db.logs.write({
+        category: 'SECURITY',
+        severity: 'WARNING',
+        message: `User deleted: ${user.name}`,
+        targetId: id,
+        metadata: { role: user.role, email: user.email },
+      });
+
+      await db.users.remove(id);
+      await loadAll();
+      showNotification('success', 'User removed.');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -346,14 +464,16 @@ export default function UsersPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          {storage.canManageUsers(currentUser) && (
-            <Button onClick={handleRecalculate} variant="outline" className="text-slate-500 border-slate-200 rounded-lg h-10 px-4 text-xs">
-              Recalculate Commissions
+          {perms.manageSystem && (
+            <Button onClick={handleRecalculate} disabled={isSaving} variant="outline" className="text-slate-500 border-slate-200 rounded-lg h-10 px-4 text-xs">
+              <RefreshCcw className={cn("h-3.5 w-3.5 mr-1.5", isSaving && "animate-spin")} /> Recalculate Commissions
             </Button>
           )}
-          <Button onClick={() => { setEditingUser(null); setIsModalOpen(true); }} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
-            <Plus className="h-4 w-4 mr-1" /> Add New Member
-          </Button>
+          {perms.manageUsers && (
+            <Button onClick={() => { setEditingUser(null); setIsModalOpen(true); }} disabled={isSaving} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
+              <Plus className="h-4 w-4 mr-1" /> Add New Member
+            </Button>
+          )}
         </div>
       </div>
 
@@ -449,28 +569,12 @@ export default function UsersPage() {
                           <span className="text-[9px] text-slate-400 font-medium uppercase tracking-tighter">Rate</span>
                         </div>
                         {user.role === 'Marketing Officer' && (() => {
-                          const orders = storage.getOrders();
-                          const customers = storage.getCustomers();
-                          const myCustomers = customers.filter(c => String(c.marketingOfficerId || c.registeredBy) === String(user.id));
-                          
-                          const officerOrders = orders.filter(o => 
-                            String(o.marketingOfficerId) === String(user.id) || 
-                            myCustomers.some(c => String(c.id) === String(o.customerId) || c.name === o.customer)
-                          );
-                          
-                          const ELIGIBLE_STATUSES = ['confirmed', 'processing', 'delivered'];
-                          
-                          const earnedOrders = officerOrders.filter(o => 
-                            o.commissionPaid || ELIGIBLE_STATUSES.includes(o.status?.toLowerCase())
-                          );
+                          const { earned, paid, pending } = commissionsFor(user.id);
 
-                          const totalEarned = earnedOrders.reduce((sum, o) => sum + (o.total * user.commissionPercentage / 100), 0);
-                          const pending = Math.max(0, totalEarned - (user.paidCommissionTotal || 0));
-                          
                           return (
                             <div className="flex items-center gap-2 mt-0.5 overflow-hidden">
-                              <p className="text-[9px] text-brand-green font-bold whitespace-nowrap">E: ${totalEarned.toFixed(0)}</p>
-                              <p className="text-[9px] text-blue-600 font-bold whitespace-nowrap">P: ${(user.paidCommissionTotal || 0).toFixed(0)}</p>
+                              <p className="text-[9px] text-brand-green font-bold whitespace-nowrap">E: ${earned.toFixed(0)}</p>
+                              <p className="text-[9px] text-blue-600 font-bold whitespace-nowrap">P: ${paid.toFixed(0)}</p>
                               {pending > 0.01 && <p className="text-[9px] text-orange-600 font-bold animate-pulse whitespace-nowrap">D: ${pending.toFixed(0)}</p>}
                             </div>
                           );
@@ -479,35 +583,20 @@ export default function UsersPage() {
                     </td>
                     <td className="px-6 py-3 text-right">
                       <div className="flex justify-end gap-1.5">
-                        {storage.canMarkCommissionsPaid(currentUser) && user.role === 'Marketing Officer' && (() => {
-                          const orders = storage.getOrders();
-                          const customers = storage.getCustomers();
-                          const myCustomers = customers.filter(c => String(c.marketingOfficerId || c.registeredBy) === String(user.id));
-                          
-                          const officerOrders = orders.filter(o => 
-                            String(o.marketingOfficerId) === String(user.id) || 
-                            myCustomers.some(c => String(c.id) === String(o.customerId) || c.name === o.customer)
-                          );
-                          
-                          const ELIGIBLE_STATUSES = ['confirmed', 'processing', 'delivered'];
+                        {perms.markCommissionsPaid && user.role === 'Marketing Officer' && (() => {
+                          const pendingPayout = commissionsFor(user.id).pending;
+                          const isButtonDisabled = pendingPayout < 0.01 || isSaving;
 
-                          const currentEarned = officerOrders
-                            .filter(o => o.commissionPaid || ELIGIBLE_STATUSES.includes(o.status?.toLowerCase()))
-                            .reduce((sum, o) => sum + (o.total * user.commissionPercentage / 100), 0);
-                          
-                          const pendingPayout = Math.max(0, currentEarned - (user.paidCommissionTotal || 0));
-                          const isButtonDisabled = pendingPayout < 0.01;
-                          
                           return (
-                            <Button 
+                            <Button
                               onClick={() => handlePayout(user)}
                               disabled={isButtonDisabled}
-                              variant="outline" 
-                              size="sm" 
+                              variant="outline"
+                              size="sm"
                               className={cn(
                                 "h-7 px-2 text-[9px] font-bold uppercase rounded-md transition-all shadow-sm",
                                 !isButtonDisabled
-                                  ? "text-brand-green border-brand-green bg-green-50/50 hover:bg-green-100" 
+                                  ? "text-brand-green border-brand-green bg-green-50/50 hover:bg-green-100"
                                   : "text-slate-300 border-slate-100 opacity-50 cursor-not-allowed"
                               )}
                             >
@@ -515,10 +604,10 @@ export default function UsersPage() {
                             </Button>
                           );
                         })()}
-                        <Button onClick={() => { setEditingUser(user); setFormData(user); setIsModalOpen(true); }} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-brand-blue hover:bg-blue-50 rounded-md">
+                        <Button onClick={() => { setEditingUser(user); setFormData(user); setIsModalOpen(true); }} disabled={isSaving} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-brand-blue hover:bg-blue-50 rounded-md">
                           <Edit className="h-3.5 w-3.5" />
                         </Button>
-                        <Button onClick={() => deleteUser(user.id)} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
+                        <Button onClick={() => deleteUser(user.id)} disabled={isSaving} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
@@ -571,10 +660,18 @@ export default function UsersPage() {
                           <label className="text-[10px] font-bold text-slate-700 ml-1">Phone Number</label>
                           <Input required value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="bg-white border-slate-200 h-9 text-xs" placeholder="+252 61..." />
                         </div>
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-700 ml-1">Access Password</label>
-                          <Input type="password" required value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="bg-white border-slate-200 h-9 text-xs" placeholder="••••••••" />
-                        </div>
+                      </div>
+
+                      {/* No password field: credentials live in Supabase Auth and
+                          never reach this database. A box here would look like it
+                          set something and quietly do nothing. */}
+                      <div className="mt-3 flex items-start gap-2 rounded-xl border border-blue-100 bg-blue-50/60 p-3">
+                        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-blue" />
+                        <p className="text-[10px] font-medium leading-relaxed text-slate-600">
+                          Passwords are handled by Supabase Auth, not here. After saving,
+                          invite this person under <span className="font-bold">Authentication &rarr; Users</span> using
+                          the same email and their profile links automatically.
+                        </p>
                       </div>
                     </div>
 
@@ -598,7 +695,7 @@ export default function UsersPage() {
                           <select 
                             className="w-full h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium outline-none focus:ring-2 focus:ring-brand-blue/20 transition-all"
                             value={formData.status}
-                            onChange={e => setFormData({...formData, status: e.target.value as any})}
+                            onChange={e => setFormData({...formData, status: e.target.value as AdminUser["status"]})}
                           >
                             <option value="active">Active Access</option>
                             <option value="inactive">Suspended</option>
@@ -667,10 +764,11 @@ export default function UsersPage() {
             </div>
  
             <div className="p-6 border-t bg-slate-50/50 flex gap-3 shrink-0">
-              <Button type="submit" form="user-form" className="flex-1 bg-slate-900 text-white h-11 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all shadow-lg shadow-slate-200">
+              <Button type="submit" form="user-form" disabled={isSaving} className="flex-1 bg-slate-900 text-white h-11 rounded-xl font-bold text-sm hover:bg-slate-800 transition-all shadow-lg shadow-slate-200">
+                {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {editingUser ? 'Save Privilege Updates' : 'Confirm & Grant Access'}
               </Button>
-              <Button variant="outline" onClick={() => setIsModalOpen(false)} className="px-8 h-11 rounded-xl font-bold text-xs text-slate-500 hover:bg-white border-slate-200">
+              <Button variant="outline" disabled={isSaving} onClick={() => setIsModalOpen(false)} className="px-8 h-11 rounded-xl font-bold text-xs text-slate-500 hover:bg-white border-slate-200">
                 Cancel
               </Button>
             </div>

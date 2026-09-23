@@ -37,13 +37,16 @@ import {
   Landmark,
   Smartphone,
   Banknote,
-  Info
+  Info,
+  Loader2
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { storage, AdminProfile, Customer, Order, Product } from "@/lib/storage";
+import { AdminProfile, Customer, Order, Product } from "@/lib/types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
 import {
   FinancialSummary,
   getFinancialSummary,
@@ -993,28 +996,56 @@ export default function AnalyticsPage() {
     note: "",
   });
 
+  const [isRecordingPayment, setIsRecordingPayment] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   // Notification Toast
   const [toastNotification, setToastNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
-  // Load storage state
-  useEffect(() => {
-    setOrders(storage.getOrders());
-    setProducts(storage.getProducts());
-    setCustomers(storage.getCustomers());
-    setProfile(storage.getProfile());
-    setMounted(true);
-
-    const handleProfileUpdate = () => setProfile(storage.getProfile());
-    window.addEventListener("profileUpdated", handleProfileUpdate);
-    return () => window.removeEventListener("profileUpdated", handleProfileUpdate);
+  // Everything this page charts comes from one read. Orders arrive from the
+  // order_details view with items and payments already nested, so the whole
+  // report is built from a single round trip rather than a fan-out per order.
+  const loadAll = useCallback(async () => {
+    const db = getDb();
+    const [nextOrders, nextProducts, nextCustomers, nextProfile] = await Promise.all([
+      db.orders.list(),
+      db.products.list(),
+      db.customers.list(),
+      db.auth.getProfile(),
+    ]);
+    setOrders(nextOrders);
+    setProducts(nextProducts);
+    setCustomers(nextCustomers);
+    setProfile(nextProfile);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await loadAll();
+        if (!cancelled) setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setMounted(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAll]);
 
   const { start, end } = useMemo(() => rangeDates(range, customStart, customEnd), [range, customStart, customEnd]);
 
-  // Role-based visibility
+  // Role-based visibility. RLS already narrows what comes back; this further
+  // restricts a user who holds view_orders but is scoped to their own customers.
   const visibleOrders = useMemo(() => {
+    const scoped = derivePermissions(profile).viewOwnCustomersOnly;
     return orders.filter(
-      order => !storage.canViewOwnCustomersOnly(profile) || String(order.marketingOfficerId) === String(profile?.id)
+      order => !scoped || String(order.marketingOfficerId) === String(profile?.id)
     );
   }, [orders, profile]);
 
@@ -1300,13 +1331,13 @@ export default function AnalyticsPage() {
   );
 
   // Payment execution handler
-  const handleRecordPayment = useCallback(() => {
+  const handleRecordPayment = useCallback(async () => {
     if (!paymentModalOrder) return;
-    const total = Number(paymentModalOrder.total || 0);
-    const collected = getOrderCollectedAmount(paymentModalOrder);
-    const outstanding = Math.max(0, total - collected);
+    const outstanding = Math.max(0, Number(paymentModalOrder.outstandingBalance ?? 0));
     const amountValue = Number(paymentForm.amount);
 
+    // Checked here for an instant answer; record_payment() checks it again in
+    // the transaction and is the one that actually decides.
     if (!paymentForm.amount || Number.isNaN(amountValue) || amountValue <= 0 || amountValue > outstanding) {
       setToastNotification({
         type: "error",
@@ -1315,18 +1346,30 @@ export default function AnalyticsPage() {
       return;
     }
 
+    const orderLabel = paymentModalOrder.customer;
+
     try {
-      const nextOrder = storage.addPaymentToOrder(paymentModalOrder, {
+      setIsRecordingPayment(true);
+      const db = getDb();
+
+      await db.orders.addPayment({
+        orderId: paymentModalOrder.id,
         amount: amountValue,
         paymentDate: paymentForm.paymentDate,
         paymentMethod: paymentForm.paymentMethod,
         reference: paymentForm.reference,
-        note: paymentForm.note,
-        recordedBy: profile?.name || "System",
+        notes: paymentForm.note,
       });
 
-      const updatedOrders = orders.map(item => (item.id === nextOrder.id ? nextOrder : item));
-      setOrders(updatedOrders);
+      await db.logs.write({
+        category: "FINANCIAL",
+        severity: "INFO",
+        message: `Payment of $${amountValue} recorded against order ${paymentModalOrder.id}`,
+        targetId: paymentModalOrder.id,
+        metadata: { amount: amountValue, method: paymentForm.paymentMethod, source: "Analytics" },
+      });
+
+      await loadAll();
       setPaymentForm({
         amount: "",
         paymentDate: new Date().toISOString().slice(0, 10),
@@ -1337,15 +1380,17 @@ export default function AnalyticsPage() {
       setPaymentModalOrder(null);
       setToastNotification({
         type: "success",
-        message: `Payment of ${money(amountValue)} recorded successfully for ${paymentModalOrder.customer}.`,
+        message: `Payment of ${money(amountValue)} recorded successfully for ${orderLabel}.`,
       });
-    } catch (err: any) {
+    } catch (error) {
       setToastNotification({
         type: "error",
-        message: err?.message || "Failed to record payment.",
+        message: describeDbError(error),
       });
+    } finally {
+      setIsRecordingPayment(false);
     }
-  }, [paymentModalOrder, paymentForm, profile, orders]);
+  }, [paymentModalOrder, paymentForm, loadAll]);
 
   // Export report to CSV
   const handleExportReport = useCallback(() => {
@@ -1434,7 +1479,28 @@ export default function AnalyticsPage() {
   }, [toastNotification]);
 
   // Deterministic hook completion check
-  if (!mounted || !profile) return null;
+  if (!mounted) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <p className="text-xs font-medium">Building report…</p>
+      </div>
+    );
+  }
+
+  if (loadError || !profile) {
+    return (
+      <Card className="border-none shadow-sm">
+        <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+          <AlertCircle className="h-8 w-8 text-red-500" />
+          <h2 className="font-heading text-lg font-bold text-slate-900">Could not build the report</h2>
+          <p className="max-w-md text-xs text-slate-500">
+            {loadError ?? "Your account is not linked to a staff profile."}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-12">
@@ -2944,6 +3010,7 @@ export default function AnalyticsPage() {
                 <Button
                   type="button"
                   variant="outline"
+                  disabled={isRecordingPayment}
                   onClick={() => setPaymentModalOrder(null)}
                   className="flex-1 h-11 rounded-xl text-xs font-bold"
                 >
@@ -2951,9 +3018,11 @@ export default function AnalyticsPage() {
                 </Button>
                 <Button
                   type="button"
+                  disabled={isRecordingPayment}
                   onClick={handleRecordPayment}
                   className="flex-1 h-11 rounded-xl bg-slate-900 text-white hover:bg-emerald-600 text-xs font-bold shadow-md"
                 >
+                  {isRecordingPayment && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Payment to Ledger
                 </Button>
               </div>

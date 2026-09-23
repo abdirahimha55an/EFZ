@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { Search, Filter } from "lucide-react";
+import { Search, Filter, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { MOCK_PRODUCTS, Product } from "@/lib/data";
-import { storage } from "@/lib/storage";
+import { Product } from "@/lib/types";
+import { getDb } from "@/lib/supabase/db";
+import { toPublicProduct } from "@/lib/supabase/mappers";
+import { usePublicSettings } from "@/lib/settings";
 import { getWhatsAppUrl, EFZ_WHATSAPP_NUMBER } from "@/lib/utils";
 import Link from "next/link";
 import { useEffect } from "react";
@@ -17,13 +19,39 @@ export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("All");
+  const settings = usePublicSettings();
 
   useEffect(() => {
-    setIsMounted(true);
-    setProducts(storage.getProducts());
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // public_products, not products: the view has no cost_price column at
+        // all, so there is nothing for a visitor to read even by accident.
+        const rows = await getDb().products.listPublic();
+        if (!cancelled) setProducts(rows.map(toPublicProduct));
+      } catch {
+        if (!cancelled) setProducts([]);
+      } finally {
+        if (!cancelled) setIsMounted(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  if (!isMounted) return null;
+  const cleanWa = settings.whatsappNumber.replace(/\D/g, '') || EFZ_WHATSAPP_NUMBER;
+
+  if (!isMounted) {
+    return (
+      <div className="bg-slate-50 min-h-screen flex flex-col items-center justify-center gap-3 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <p className="text-xs font-medium">Loading catalog…</p>
+      </div>
+    );
+  }
 
   const categories = ["All", "Football", "Futsal", "Accessories"];
 
@@ -72,8 +100,6 @@ export default function ProductsPage() {
         {filteredProducts.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {filteredProducts.map((product) => {
-              const settings = storage.getSettings();
-              const cleanWa = settings.whatsappNumber.replace(/\D/g, '') || EFZ_WHATSAPP_NUMBER;
               const orderMessage = `Hello ${settings.businessName}, I want to order the ${product.name} (${product.size}).`;
               const waUrl = getWhatsAppUrl(cleanWa, orderMessage);
 

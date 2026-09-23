@@ -1,21 +1,44 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Search, Eye, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Calendar, Plus, User, DollarSign, Package, AlertCircle, X, Loader2, Truck } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Search, Eye, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Plus, User, Package, AlertCircle, X, Loader2, Truck, RefreshCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { storage, AdminUser, Customer, Order, ORDER_STATUS_TRANSITIONS, OrderStatus } from "@/lib/storage";
-import { Product } from "@/lib/data";
+import { AdminUser, Customer, Order, Product, ORDER_STATUS_TRANSITIONS, OrderStatus } from "@/lib/types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
+
+/** One editable row in the create-order form. Not persisted as-is. */
+type OrderLineDraft = {
+  id: string;
+  productId: string;
+  quantity: number;
+  actualUnitPrice: number;
+};
+
+/**
+ * `suffix` keeps the initial row's key deterministic. Generating it from
+ * Date.now() during render is impure, and React's lint rule is right to object:
+ * a re-render would hand the row a new key and blow away what was typed in it.
+ */
+const blankOrderLine = (suffix?: string): OrderLineDraft => ({
+  id: `item-${suffix ?? `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`}`,
+  productId: "",
+  quantity: 1,
+  actualUnitPrice: 0,
+});
 
 export default function OrdersPage() {
-  const [isMounted, setIsMounted] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
-  
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -28,39 +51,53 @@ export default function OrdersPage() {
     status: "pending",
     notes: ""
   });
-  const [orderItems, setOrderItems] = useState<Array<{
-    id: string;
-    productId: string;
-    quantity: number;
-    actualUnitPrice: number;
-  }>>([
-    { id: `item-${Date.now()}`, productId: "", quantity: 1, actualUnitPrice: 0 }
-  ]);
+  const [orderItems, setOrderItems] = useState<OrderLineDraft[]>([blankOrderLine("first")]);
+
+  // The whole page in one read. Orders arrive from the order_details view with
+  // their items and payments already nested, so there is no N+1 fan-out here.
+  const refresh = useCallback(async () => {
+    const db = getDb();
+    const [nextOrders, nextCustomers, nextProducts, nextProfile] = await Promise.all([
+      db.orders.list(),
+      db.customers.list(),
+      db.products.list(),
+      db.auth.getProfile(),
+    ]);
+    setOrders(nextOrders);
+    setCustomers(nextCustomers);
+    setProducts(nextProducts);
+    setCurrentUser(nextProfile);
+  }, []);
 
   useEffect(() => {
-    setIsMounted(true);
-    const storedOrders = storage.getOrders();
-    
-    // Repair duplicate IDs if any exist in storage
-    const seenIds = new Set();
-    const repairedOrders = storedOrders.map(order => {
-      let uniqueId = order.id;
-      let counter = 1;
-      while (seenIds.has(uniqueId)) {
-        uniqueId = `${order.id.split('-')[0] || 'ORD'}-${Math.floor(Math.random() * 9000) + 1000}`;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setIsLoading(true);
+        const db = getDb();
+        const [nextOrders, nextCustomers, nextProducts, nextProfile] = await Promise.all([
+          db.orders.list(),
+          db.customers.list(),
+          db.products.list(),
+          db.auth.getProfile(),
+        ]);
+        if (cancelled) return;
+        setOrders(nextOrders);
+        setCustomers(nextCustomers);
+        setProducts(nextProducts);
+        setCurrentUser(nextProfile);
+        setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-      seenIds.add(uniqueId);
-      return { ...order, id: uniqueId };
-    });
+    })();
 
-    if (JSON.stringify(repairedOrders) !== JSON.stringify(storedOrders)) {
-      storage.saveOrders(repairedOrders);
-    }
-
-    setOrders(repairedOrders);
-    setCustomers(storage.getCustomers());
-    setProducts(storage.getProducts());
-    setCurrentUser(storage.getProfile());
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -70,19 +107,35 @@ export default function OrdersPage() {
     }
   }, [notification]);
 
-  if (!isMounted) return null;
+  const perms = derivePermissions(currentUser);
 
-  const saveOrders = (newOrders: any[]) => {
-    setOrders(newOrders);
-    storage.saveOrders(newOrders);
+  const showNotification = (type: 'success' | 'error', message: string) => {
+    setNotification({ type, message });
   };
 
-  const handleStatusChange = (id: string, newStatus: string) => {
+  const handleRefresh = async () => {
+    try {
+      setIsSaving(true);
+      await refresh();
+      showNotification('success', 'Orders refreshed');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /**
+   * The prompts and confirmations below are the operator's safety net. The
+   * actual rules live in update_order_status(): it validates the transition,
+   * demands Super Admin for anything illegal, and moves the stock. If this
+   * function's checks and the database ever disagree, the database wins.
+   */
+  const handleStatusChange = async (id: string, newStatus: string) => {
     const order = orders.find(o => o.id === id);
     if (!order) return;
 
-    const canUpdateStatus = storage.canEditOrders(currentUser);
-    if (!canUpdateStatus) {
+    if (!perms.editOrders) {
       showNotification('error', 'Permission denied: You are not allowed to update order status.');
       return;
     }
@@ -92,19 +145,12 @@ export default function OrdersPage() {
 
     if (oldStatus === targetStatus) return;
 
-    const hasOverridePermission = storage.canOverrideOrderStatus(currentUser);
+    const hasOverridePermission = perms.overrideOrderStatus;
 
-    // Normal transitions definition
-    const normalTransitions: Record<OrderStatus, OrderStatus[]> = {
-      pending: ['confirmed', 'cancelled'],
-      confirmed: ['processing', 'cancelled'],
-      processing: ['delivered', 'cancelled'],
-      delivered: [],
-      cancelled: [],
-    };
+    // Same table the database enforces, so the UI never offers a move the
+    // server will reject without warning.
+    const isNormalTransition = (ORDER_STATUS_TRANSITIONS[oldStatus] || []).includes(targetStatus);
 
-    const isNormalTransition = (normalTransitions[oldStatus] || []).includes(targetStatus);
-    
     let requiresOverride = !isNormalTransition;
     let warningMsg = "";
 
@@ -177,97 +223,52 @@ export default function OrdersPage() {
       if (!confirm(confirmMsg)) return;
     }
 
-    // 7. Stock Safety
-    const currentProducts = storage.getProducts();
+    // Stock is not touched here. update_order_status() restores it on cancel,
+    // takes it back on reactivation, and refuses the reactivation outright if
+    // the units are no longer on the shelf - all in one transaction, so the
+    // half-moved-stock state the old client-side version could produce is gone.
+    try {
+      setIsSaving(true);
+      const db = getDb();
 
-    // Reopening cancelled order -> deduct stock again
-    if (oldStatus === 'cancelled' && targetStatus !== 'cancelled') {
-      let hasSufficientStock = true;
-      const updatedProducts = currentProducts.map(p => {
-        const item = order.items.find(i => i.productId === p.id);
-        if (item) {
-          if (p.stock < item.quantity) {
-            hasSufficientStock = false;
-          }
-          return { ...p, stock: p.stock - item.quantity };
-        }
-        return p;
+      await db.orders.setStatus(id, targetStatus, reason);
+
+      const severity = requiresOverride ? 'WARNING' : 'INFO';
+      const auditMessage = requiresOverride
+        ? `OVERRIDE: Order #${id} status changed from ${oldStatus} to ${targetStatus}. Reason: ${reason}`
+        : `Order #${id} status changed from ${oldStatus} to ${targetStatus}`;
+
+      await db.logs.write({
+        category: 'FINANCIAL',
+        severity,
+        message: auditMessage,
+        targetId: id,
+        metadata: {
+          oldValue: oldStatus,
+          newValue: targetStatus,
+          isOverride: requiresOverride,
+          reason: reason || undefined,
+          changedBy: currentUser?.name || 'system',
+          userId: currentUser?.id,
+          source: 'Order Tracking',
+        },
       });
 
-      if (!hasSufficientStock) {
-        showNotification('error', "Insufficient stock to reopen this order.");
-        return;
-      }
-
-      storage.saveProducts(updatedProducts);
-      setProducts(updatedProducts);
-      order.items.forEach(item => {
-        storage.addStockMovement({
-          productId: item.productId,
-          productName: item.productName,
-          type: 'sale',
-          quantityChange: -item.quantity,
-          reason: `Order #${id} reopened override: ${reason}`,
-          createdBy: currentUser?.id || 'system'
-        });
-      });
-    } 
-    // Cancelling order -> restore stock
-    else if (oldStatus !== 'cancelled' && targetStatus === 'cancelled') {
-      const updatedProducts = currentProducts.map(p => {
-        const item = order.items.find(i => i.productId === p.id);
-        if (item) {
-          return { ...p, stock: p.stock + item.quantity };
-        }
-        return p;
-      });
-
-      storage.saveProducts(updatedProducts);
-      setProducts(updatedProducts);
-      order.items.forEach(item => {
-        storage.addStockMovement({
-          productId: item.productId,
-          productName: item.productName,
-          type: 'return',
-          quantityChange: item.quantity,
-          reason: `Order #${id} cancelled: ${reason}`,
-          createdBy: currentUser?.id || 'system'
-        });
-      });
+      await refresh();
+      showNotification('success', `Order #${id} updated: ${oldStatus} → ${targetStatus}`);
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
     }
-
-    // 6. Audit & Save
-    saveOrders(orders.map(o => o.id === id ? { ...o, status: targetStatus } : o));
-    
-    const severity = requiresOverride ? 'WARNING' : 'INFO';
-    const auditMessage = requiresOverride 
-      ? `OVERRIDE: Order #${id} status changed from ${oldStatus} to ${targetStatus}. Reason: ${reason}`
-      : `Order #${id} status changed from ${oldStatus} to ${targetStatus}`;
-
-    storage.logger.log('FINANCIAL', severity, auditMessage, {
-      targetId: id,
-      metadata: {
-        oldValue: oldStatus,
-        newValue: targetStatus,
-        isOverride: requiresOverride,
-        reason: reason || undefined,
-        changedBy: currentUser?.name || 'system',
-        userId: currentUser?.id,
-        timestamp: new Date().toISOString(),
-        source: 'Order Tracking'
-      }
-    });
-
-    showNotification('success', `Order #${id} updated: ${oldStatus} → ${targetStatus}`);
   };
 
-  const canCreateOrders = storage.canCreateOrders(currentUser);
-  const canViewInventory = storage.canViewInventory(currentUser);
-  const canEditOrders = storage.canEditOrders(currentUser);
-  const canDeleteOrders = storage.canDeleteOrders(currentUser);
+  const canCreateOrders = perms.createOrders;
+  const canViewInventory = perms.viewInventory;
+  const canDeleteOrders = perms.deleteOrders;
 
   const addOrderItem = () => {
-    setOrderItems(prev => [...prev, { id: `item-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, productId: "", quantity: 1, actualUnitPrice: 0 }]);
+    setOrderItems(prev => [...prev, blankOrderLine()]);
   };
 
   const updateOrderItem = (id: string, patch: Partial<{ productId: string; quantity: number; actualUnitPrice: number }>) => {
@@ -296,11 +297,7 @@ export default function OrdersPage() {
   const totalOutstanding = Math.max(0, subtotal - formData.amountPaid);
   const computedPaymentStatus = formData.amountPaid <= 0 ? 'unpaid' : formData.amountPaid >= subtotal ? 'paid' : 'partial';
 
-  const showNotification = (type: 'success' | 'error', message: string) => {
-    setNotification({ type, message });
-  };
-
-  const handleCreateOrder = (e: React.FormEvent) => {
+  const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canCreateOrders) {
       showNotification('error', 'Permission denied: You are not allowed to create new orders.');
@@ -338,93 +335,79 @@ export default function OrdersPage() {
       }
     }
 
-    const orderEntries = validItems.map(item => {
-      const product = products.find(p => p.id === item.productId)!;
-      const actualUnitPrice = Number(item.actualUnitPrice || 0);
-      const quantity = Number(item.quantity || 1);
-      const standardUnitPrice = Number(product.sellingPrice ?? product.price ?? 0);
-      const costPrice = Number(product.costPrice ?? 0);
-      const lineRevenue = actualUnitPrice * quantity;
-      const lineCost = costPrice * quantity;
-      const lineProfit = lineRevenue - lineCost;
-      return {
-        productId: product.id,
-        productName: product.name,
-        designName: product.name,
-        quantity,
-        standardUnitPrice,
-        actualUnitPrice,
-        price: actualUnitPrice,
-        historicalUnitCost: costPrice,
-        costPrice,
-        lineRevenue,
-        lineCost,
-        lineProfit,
-      };
-    });
-
     const paymentAmount = Math.max(0, Number(formData.amountPaid || 0));
-    const orderTotal = orderEntries.reduce((sum, item) => sum + item.lineRevenue, 0);
-    const orderCost = orderEntries.reduce((sum, item) => sum + item.lineCost, 0);
-    const orderGrossProfit = orderTotal - orderCost;
-    const outstandingBalance = Math.max(0, orderTotal - paymentAmount);
-    const paymentStatus = paymentAmount <= 0 ? 'unpaid' : paymentAmount >= orderTotal ? 'paid' : 'partial';
 
-    const timestamp = Date.now().toString().slice(-4);
-    const random = Math.floor(Math.random() * 900) + 100;
-    const newOrder: Order & { customerName?: string, customerPhone?: string, totalAmount?: number } = {
-      id: `ORD-${timestamp}${random}`,
-      customer: customer.name,
-      customerName: customer.name,
-      customerId: customer.id,
-      marketingOfficerId: customer.marketingOfficerId || customer.registeredBy,
-      phone: customer.phone,
-      customerPhone: customer.phone,
-      items: orderEntries,
-      total: orderTotal,
-      cost: orderCost,
-      grossProfit: orderGrossProfit,
-      totalAmount: orderTotal,
-      status: formData.status as any,
-      paymentStatus,
-      date: new Date().toISOString().split('T')[0],
-      deliveryNotes: formData.notes,
-      orderType: formData.orderType,
-      amountPaid: paymentAmount,
-      outstandingBalance,
-      payments: paymentAmount > 0 ? [{
-        id: `pay-${Date.now()}`,
-        orderId: `ORD-${timestamp}${random}`,
-        amount: paymentAmount,
-        paymentDate: new Date().toISOString().split('T')[0],
-        notes: 'Initial payment',
-      }] : [],
-    };
+    try {
+      setIsSaving(true);
+      const db = getDb();
 
-    const updatedProducts = products.map(p => {
-      const item = validItems.find(entry => entry.productId === p.id);
-      if (item) return { ...p, stock: p.stock - item.quantity };
-      return p;
-    });
-    storage.saveProducts(updatedProducts);
-    setProducts(updatedProducts);
+      // One transaction: the order, its lines with their frozen cost snapshots,
+      // the stock deductions and the movement ledger. If any line is short on
+      // stock the whole thing is rejected and nothing is written.
+      const created = await db.orders.create({
+        customerId: customer.id,
+        customerName: customer.name,
+        phone: customer.phone,
+        marketingOfficerId: customer.marketingOfficerId || customer.registeredBy,
+        orderType: formData.orderType,
+        status: formData.status as OrderStatus,
+        orderDate: new Date().toISOString().split('T')[0],
+        deliveryNotes: formData.notes,
+        items: validItems.map(item => ({
+          productId: item.productId,
+          quantity: item.quantity,
+          actualUnitPrice: item.actualUnitPrice,
+        })),
+      });
 
-    validItems.forEach(item => {
-      const product = products.find(p => p.id === item.productId)!;
-      storage.addStockMovement({ productId: product.id, productName: product.name, type: 'sale', quantityChange: -item.quantity, reason: `Order ${newOrder.id} created`, createdBy: currentUser?.id || 'system' });
-    });
+      // A separate call, because the payment is its own audited event. If it
+      // fails the order still stands - just unpaid - and the message says so.
+      if (paymentAmount > 0) {
+        try {
+          await db.orders.addPayment({
+            orderId: created.id,
+            amount: paymentAmount,
+            paymentDate: new Date().toISOString().split('T')[0],
+            notes: 'Initial payment',
+          });
+        } catch (paymentError) {
+          await refresh();
+          setIsModalOpen(false);
+          showNotification(
+            'error',
+            `Order ${created.id} was created, but the initial payment failed: ${describeDbError(paymentError)}. Record it from the order list.`
+          );
+          return;
+        }
+      }
 
-    const newOrders = [newOrder, ...orders];
-    saveOrders(newOrders);
-    storage.logger.log('FINANCIAL', 'INFO', `New order created: ${newOrder.id} for ${customer.name} ($${orderTotal})`, { targetId: newOrder.id, metadata: { total: orderTotal, grossProfit: orderGrossProfit, items: orderEntries.length, orderType: formData.orderType, source: 'Order Tracking' } });
-    
-    setIsModalOpen(false);
-    setOrderItems([{ id: `item-${Date.now()}`, productId: "", quantity: 1, actualUnitPrice: 0 }]);
-    setFormData({ customerId: "", orderType: "regular", amountPaid: 0, status: "pending", notes: "" });
-    showNotification('success', `Order ${newOrder.id} created successfully for ${customer.name}`);
+      await db.logs.write({
+        category: 'FINANCIAL',
+        severity: 'INFO',
+        message: `New order created: ${created.id} for ${customer.name} ($${created.total})`,
+        targetId: created.id,
+        metadata: {
+          total: created.total,
+          grossProfit: created.grossProfit,
+          items: created.items.length,
+          orderType: formData.orderType,
+          source: 'Order Tracking',
+        },
+      });
+
+      await refresh();
+      setIsModalOpen(false);
+      setOrderItems([blankOrderLine("first")]);
+      setFormData({ customerId: "", orderType: "regular", amountPaid: 0, status: "pending", notes: "" });
+      showNotification('success', `Order ${created.id} created successfully for ${customer.name}`);
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     const order = orders.find(o => o.id === id);
     if (!order) return;
 
@@ -438,30 +421,47 @@ export default function OrdersPage() {
       return;
     }
 
-    if (confirm("Are you sure you want to delete this order? This will remove it from all records.")) {
-      // Restore stock if the deleted order is not cancelled
-      if (order.status.toLowerCase() !== 'cancelled') {
-        const currentProducts = storage.getProducts();
-        const updatedProducts = currentProducts.map(p => {
-          const item = order.items.find(i => i.productId === p.id);
-          if (item) {
-            return { ...p, stock: p.stock + item.quantity };
-          }
-          return p;
-        });
-        storage.saveProducts(updatedProducts);
-        setProducts(updatedProducts);
+    const needsRestock = order.status !== 'cancelled';
+    const confirmed = confirm(
+      needsRestock
+        ? `Delete order ${id}?\n\nIt will be cancelled first so its ${order.items.length} line(s) go back into stock, then removed along with its items and payments. This cannot be undone.`
+        : `Delete order ${id}? Its items and payments go with it. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setIsSaving(true);
+      const db = getDb();
+
+      // Cancel before deleting so the stock returns through the ledger rather
+      // than vanishing with the row. Deleting outright would leave the units
+      // permanently deducted with nothing left to explain why.
+      if (needsRestock) {
+        await db.orders.setStatus(id, 'cancelled', `Cancelled ahead of deletion of order ${id}`);
       }
 
-      saveOrders(orders.filter(o => o.id !== id));
-      storage.logger.log('FINANCIAL', 'WARNING', `Order deleted: ${id}`, { targetId: id });
+      await db.logs.write({
+        category: 'FINANCIAL',
+        severity: 'WARNING',
+        message: `Order deleted: ${id}`,
+        targetId: id,
+        metadata: { restocked: needsRestock, total: order.total },
+      });
+
+      await db.orders.remove(id);
+      await refresh();
       showNotification('success', 'Order deleted');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
     }
   };
 
   const filteredOrders = orders.filter(order => {
-    // Visibility Filtering
-    if (storage.canViewOwnCustomersOnly(currentUser)) {
+    // RLS already limits what comes back; this narrows it further for a user who
+    // holds view_orders but is scoped to their own customers.
+    if (perms.viewOwnCustomersOnly) {
       const isOwner = currentUser ? String(order.marketingOfficerId) === String(currentUser.id) : false;
       if (!isOwner) return false;
     }
@@ -477,7 +477,7 @@ export default function OrdersPage() {
     return matchesSearch && matchesStatus;
   }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  const canChangeStatus = storage.canEditOrders(currentUser);
+  const canChangeStatus = perms.editOrders;
 
   const getStatusConfig = (status: string) => {
     switch (status) {
@@ -490,7 +490,31 @@ export default function OrdersPage() {
     }
   };
 
-  const canViewStock = storage.canViewInventory(currentUser);
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <p className="text-xs font-medium">Loading orders…</p>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Card className="border-none shadow-sm">
+        <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <AlertCircle className="h-8 w-8 text-red-500" />
+          <div>
+            <h2 className="font-heading text-lg font-bold text-slate-900">Could not load orders</h2>
+            <p className="mt-1 max-w-md text-xs text-slate-500">{loadError}</p>
+          </div>
+          <Button onClick={handleRefresh} variant="outline" size="sm" className="rounded-lg text-xs">
+            <RefreshCcw className="mr-1.5 h-3.5 w-3.5" /> Try again
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
@@ -503,11 +527,11 @@ export default function OrdersPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" className="text-slate-500 border-slate-200 rounded-lg h-10 px-4 text-xs">
-            <Calendar className="h-4 w-4 mr-1.5" /> Export History
+          <Button onClick={handleRefresh} disabled={isSaving} variant="outline" size="sm" className="text-slate-500 border-slate-200 rounded-lg h-10 px-4 text-xs">
+            <RefreshCcw className={cn("h-4 w-4 mr-1.5", isSaving && "animate-spin")} /> Refresh
           </Button>
-          {storage.canCreateOrders(currentUser) && (
-            <Button onClick={() => setIsModalOpen(true)} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
+          {perms.createOrders && (
+            <Button onClick={() => setIsModalOpen(true)} disabled={isSaving} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
               <Plus className="h-4 w-4 mr-1" /> Create New Order
             </Button>
           )}
@@ -624,6 +648,7 @@ export default function OrdersPage() {
                             config.color
                           )}
                           value={order.status}
+                          disabled={isSaving}
                           onChange={(e) => handleStatusChange(order.id, e.target.value)}
                         >
                           <option value="pending">Pending</option>
@@ -651,8 +676,8 @@ export default function OrdersPage() {
                           <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-brand-blue hover:bg-blue-50 rounded-md">
                             <Eye className="h-3.5 w-3.5" />
                           </Button>
-                          {storage.canDeleteOrders(currentUser) && (
-                            <Button onClick={() => handleDelete(order.id)} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
+                          {perms.deleteOrders && (
+                            <Button onClick={() => handleDelete(order.id)} disabled={isSaving} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           )}
@@ -713,7 +738,7 @@ export default function OrdersPage() {
                       <option value="">-- Choose registered customer --</option>
                       {customers
                         .filter(c => {
-                          if (storage.canViewOwnCustomersOnly(currentUser)) {
+                          if (perms.viewOwnCustomersOnly) {
                             return currentUser ? String(c.marketingOfficerId || c.registeredBy) === String(currentUser.id) : false;
                           }
                           return true;
@@ -855,10 +880,11 @@ export default function OrdersPage() {
               </div>
  
               <div className="pt-2 flex gap-3">
-                <Button type="submit" className="flex-1 bg-slate-900 text-white h-11 rounded-xl font-bold text-sm hover:bg-slate-800 shadow-lg shadow-slate-200 transition-all">
+                <Button type="submit" disabled={isSaving} className="flex-1 bg-slate-900 text-white h-11 rounded-xl font-bold text-sm hover:bg-slate-800 shadow-lg shadow-slate-200 transition-all">
+                  {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Create Order
                 </Button>
-                <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)} className="px-8 h-11 rounded-xl font-bold text-xs text-slate-400 hover:bg-slate-50 border-slate-200">
+                <Button type="button" variant="outline" disabled={isSaving} onClick={() => setIsModalOpen(false)} className="px-8 h-11 rounded-xl font-bold text-xs text-slate-400 hover:bg-slate-50 border-slate-200">
                   Cancel
                 </Button>
               </div>

@@ -1,41 +1,122 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { storage, SystemLog, LogSeverity, LogCategory, AdminUser } from "@/lib/storage";
-import { Search, Filter, Shield, AlertTriangle, Info, AlertCircle, Clock, Trash2, Database, User } from "lucide-react";
+import { useCallback, useEffect, useState, useMemo } from "react";
+import { SystemLog, LogSeverity, LogCategory, AdminUser } from "@/lib/types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
+import { Search, Filter, Shield, AlertTriangle, Info, AlertCircle, Clock, Trash2, Database, User, Loader2, RefreshCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
+/**
+ * How many log lines to pull. The audit trail is append-only and grows without
+ * bound, so it is paged rather than loaded whole.
+ */
+const PAGE_SIZE = 500;
+
 export default function AuditTrailPage() {
-  const [isMounted, setIsMounted] = useState(false);
   const [logs, setLogs] = useState<SystemLog[]>([]);
+  const [totalEvents, setTotalEvents] = useState(0);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
-  
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   // Filters
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
   const [severityFilter, setSeverityFilter] = useState<string>("ALL");
 
-  useEffect(() => {
-    setIsMounted(true);
-    setCurrentUser(storage.getProfile());
-    setLogs(storage.logger.getLogs());
+  const loadAll = useCallback(async () => {
+    const db = getDb();
+    const nextUser = await db.auth.getProfile();
+    setCurrentUser(nextUser);
+
+    // Asking without view_audit_trail is an RLS refusal, so don't ask.
+    if (!derivePermissions(nextUser).viewAuditTrail) {
+      setLogs([]);
+      setTotalEvents(0);
+      return;
+    }
+
+    const [nextLogs, nextTotal] = await Promise.all([
+      db.logs.list({ limit: PAGE_SIZE }),
+      db.logs.count(),
+    ]);
+    setLogs(nextLogs);
+    setTotalEvents(nextTotal);
   }, []);
 
-  if (!isMounted || !currentUser) return null;
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setIsLoading(true);
+        await loadAll();
+        if (!cancelled) setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAll]);
+
+  const handleRefresh = async () => {
+    try {
+      setIsRefreshing(true);
+      await loadAll();
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(describeDbError(error));
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <p className="text-xs font-medium">Loading audit trail…</p>
+      </div>
+    );
+  }
 
   // Permission Check
-  const canViewAudit = storage.canViewAuditTrail(currentUser);
+  const canViewAudit = derivePermissions(currentUser).viewAuditTrail;
 
-  if (!canViewAudit) {
+  if (!currentUser || !canViewAudit) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
         <Shield className="h-16 w-16 text-slate-300" />
         <h2 className="text-xl font-bold text-slate-700">Access Denied</h2>
         <p className="text-slate-500">You do not have permission to view the audit trail.</p>
       </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Card className="border-none shadow-sm">
+        <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <AlertCircle className="h-8 w-8 text-red-500" />
+          <div>
+            <h2 className="font-heading text-lg font-bold text-slate-900">Could not load the audit trail</h2>
+            <p className="mt-1 max-w-md text-xs text-slate-500">{loadError}</p>
+          </div>
+          <Button onClick={handleRefresh} variant="outline" size="sm" className="rounded-lg text-xs">
+            <RefreshCcw className="mr-1.5 h-3.5 w-3.5" /> Try again
+          </Button>
+        </CardContent>
+      </Card>
     );
   }
 
@@ -85,8 +166,10 @@ export default function AuditTrailPage() {
     downloadAnchorNode.remove();
   };
 
+  // `total` is the row count in the database; every other figure is counted over
+  // the page that was actually loaded.
   const summary = {
-    total: logs.length,
+    total: totalEvents,
     failedLogins: logs.filter(l => l.category === 'AUTH' && l.severity === 'WARNING').length,
     privilegeChanges: logs.filter(l => l.message.toLowerCase().includes('permission') || l.message.toLowerCase().includes('role')).length,
     payouts: logs.filter(l => l.category === 'FINANCIAL' && l.message.toLowerCase().includes('payout')).length,
@@ -107,21 +190,38 @@ export default function AuditTrailPage() {
           <p className="text-slate-500 dark:text-slate-400 font-medium pl-1">
             Comprehensive immutable log of all system activities and administrative actions.
           </p>
+          {totalEvents > logs.length && (
+            <p className="pl-1 text-[11px] font-medium text-slate-400">
+              Showing the {logs.length.toLocaleString()} most recent of {totalEvents.toLocaleString()} events.
+            </p>
+          )}
         </div>
-        <Button onClick={exportLogs} className="bg-slate-900 text-white hover:bg-slate-800 rounded-2xl px-6 h-12 font-bold shadow-xl">
-          Export to JSON
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={handleRefresh} disabled={isRefreshing} variant="outline" className="rounded-2xl px-5 h-12 font-bold border-slate-200 text-slate-500">
+            <RefreshCcw className={cn("h-4 w-4 mr-2", isRefreshing && "animate-spin")} /> Refresh
+          </Button>
+          <Button onClick={exportLogs} className="bg-slate-900 text-white hover:bg-slate-800 rounded-2xl px-6 h-12 font-bold shadow-xl">
+            Export to JSON
+          </Button>
+        </div>
       </div>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between h-24">
           <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Total Events</span>
-          <span className="text-2xl font-black text-slate-900 dark:text-white">{summary.total}</span>
+          <span className="text-2xl font-black text-slate-900 dark:text-white">{summary.total.toLocaleString()}</span>
         </div>
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between h-24">
+        {/* A failed sign-in cannot be written here: the caller is not
+            authenticated and the insert policy is authenticated-only. Supabase
+            Auth keeps its own record of them. */}
+        <div
+          className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between h-24"
+          title="Failed sign-ins are recorded by Supabase Auth, not in this table. Check Authentication → Logs in the Supabase dashboard."
+        >
           <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Failed Logins</span>
           <span className="text-2xl font-black text-amber-500">{summary.failedLogins}</span>
+          <span className="text-[9px] font-medium text-slate-400 leading-tight">Tracked in Supabase Auth</span>
         </div>
         <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col justify-between h-24">
           <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Privilege Changes</span>

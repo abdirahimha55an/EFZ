@@ -1,21 +1,20 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { FloatingWhatsApp } from "@/components/FloatingWhatsApp";
-import { storage } from "@/lib/storage";
+import { usePublicSettings } from "@/lib/settings";
 
 export function LayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [isMounted, setIsMounted] = useState(false);
-  
+  const settings = usePublicSettings();
+
+  // Applies the configured brand colours and favicon to the document. Keyed on
+  // the settings themselves rather than the route, so it runs once when they
+  // load instead of on every navigation.
   useEffect(() => {
-    setIsMounted(true);
-    const settings = storage.getSettings();
-    
-    // Inject brand colors
     if (settings.primaryColor) {
       document.documentElement.style.setProperty('--brand-blue', settings.primaryColor);
       document.documentElement.style.setProperty('--brand-blue-dark', settings.primaryColor);
@@ -24,7 +23,6 @@ export function LayoutContent({ children }: { children: React.ReactNode }) {
       document.documentElement.style.setProperty('--brand-green', settings.secondaryColor);
     }
 
-    // Inject favicon
     if (settings.favicon) {
       let link: HTMLLinkElement | null = document.querySelector("link[rel*='icon']");
       if (!link) {
@@ -34,7 +32,7 @@ export function LayoutContent({ children }: { children: React.ReactNode }) {
       }
       link.href = settings.favicon;
     }
-  }, [pathname]); // Update on route change in case settings changed
+  }, [settings.primaryColor, settings.secondaryColor, settings.favicon]);
 
   // Check if current route is an admin route
   const isAdmin = pathname.startsWith("/admin");

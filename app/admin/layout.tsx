@@ -31,7 +31,6 @@ import {
   UserCheck,
   Database,
   Download,
-  Trash2,
   History,
   Clock,
   Sun,
@@ -40,9 +39,25 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { storage, AdminSettings, AdminProfile, Notification, Permission } from "@/lib/storage";
+import { AdminSettings, AdminProfile, Notification, Order, Permission, Product } from "@/lib/types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions, hasPermission as can, hasAnyPermission as canAny } from "@/lib/permissions";
 import { SystemStatusBadge } from "@/components/admin/SystemStatusBadge";
 
+// Shown until the real row arrives, so the chrome never renders blank.
+const DEFAULT_SETTINGS: AdminSettings = {
+  businessName: "Elite Football Zone",
+  shortName: "EFZ",
+  logo: "",
+  favicon: "",
+  whatsappNumber: "",
+  contactEmail: "",
+  defaultLowStockThreshold: 50,
+  currencySymbol: "$",
+  theme: "light",
+  primaryColor: "#0F172A",
+  secondaryColor: "#00E676",
+};
 
 const SIDEBAR_LINKS = [
   { name: "Overview", href: "/admin", icon: LayoutDashboard, permission: 'view_dashboard' as Permission },
@@ -70,73 +85,140 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<{products: any[], orders: any[]}>({ products: [], orders: [] });
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => storage.getTheme());
+  const [searchResults, setSearchResults] = useState<{products: Product[], orders: Order[]}>({ products: [], orders: [] });
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
-  const [profile, setProfile] = useState<AdminProfile>(() => storage.getProfile());
-  const [settings, setSettings] = useState<AdminSettings>(() => storage.getSettings());
+  const [profile, setProfile] = useState<AdminProfile | null>(null);
+  const [settings, setSettings] = useState<AdminSettings>(DEFAULT_SETTINGS);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [toast, setToast] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [dataCounts, setDataCounts] = useState<Record<string, number>>({});
+  const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
+  const [isBackingUp, setIsBackingUp] = useState(false);
 
   const profileRef = useRef<HTMLDivElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLDivElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle Initial Mount
+  const isLoginPage = pathname === "/admin/login";
+
+  // Load the chrome: who is signed in, the branding, and the alert feed.
   useEffect(() => {
-    setIsMounted(true);
+    // The login page renders without the chrome, so there is nothing to load.
+    if (isLoginPage) return;
 
-    storage.activateApprovedHistoricalMigration();
-    
-    // Load initial data
-    setProfile(storage.getProfile());
-    setSettings(storage.getSettings());
-    setTheme(storage.getTheme());
-    
-    // Generate/Fetch Notifications
-    const products = storage.getProducts();
-    const orders = storage.getOrders();
-    const existing = storage.getNotifications();
-    const newNotifications: Notification[] = [...existing];
-    
-    products.forEach(p => {
-      if (p.stock === 0 && !newNotifications.some(n => n.id === `out-${p.id}`)) {
-        newNotifications.push({ id: `out-${p.id}`, title: "Out of Stock", message: `${p.name} is out of stock!`, type: 'stock', date: new Date().toISOString(), read: false });
-      } else if (p.stock <= (p.lowStockThreshold || 50) && p.stock > 0 && !newNotifications.some(n => n.id === `low-${p.id}`)) {
-        newNotifications.push({ id: `low-${p.id}`, title: "Low Stock Alert", message: `${p.name} is low (${p.stock}).`, type: 'stock', date: new Date().toISOString(), read: false });
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const db = getDb();
+        const nextProfile = await db.auth.getProfile();
+
+        if (cancelled) return;
+
+        // proxy.ts already bounces signed-out visitors; this catches the case
+        // where the session is valid but no staff profile is linked to it.
+        if (!nextProfile) {
+          await db.auth.logout();
+          router.replace("/admin/login");
+          return;
+        }
+
+        setProfile(nextProfile);
+
+        const [nextSettings, products, orders, existing] = await Promise.all([
+          db.settings.get(),
+          db.products.list(),
+          db.orders.list({ limit: 200 }),
+          db.notifications.list(),
+        ]);
+        if (cancelled) return;
+
+        setSettings(nextSettings);
+        setTheme(nextSettings.theme || 'light');
+
+        // Alerts are derived from live data, with stable ids so the upsert is
+        // idempotent and an already-read alert is never resurrected.
+        const derived: Array<Pick<Notification, "id" | "title" | "message" | "type">> = [];
+
+        products.forEach(p => {
+          if (p.stock === 0) {
+            derived.push({ id: `out-${p.id}`, title: "Out of Stock", message: `${p.name} is out of stock!`, type: 'stock' });
+          } else if (p.stock <= (p.lowStockThreshold || nextSettings.defaultLowStockThreshold)) {
+            derived.push({ id: `low-${p.id}`, title: "Low Stock Alert", message: `${p.name} is low (${p.stock}).`, type: 'stock' });
+          }
+        });
+
+        orders.forEach(o => {
+          if (o.status === 'pending') {
+            derived.push({ id: `order-${o.id}`, title: "New Order", message: `Order from ${o.customer} pending.`, type: 'order' });
+          }
+        });
+
+        const unseen = derived.filter(alert => !existing.some(n => n.id === alert.id));
+        if (unseen.length > 0) {
+          await db.notifications.upsertAlerts(unseen);
+        }
+
+        const merged = unseen.length > 0 ? await db.notifications.list() : existing;
+        if (cancelled) return;
+
+        setNotifications(
+          [...merged].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        );
+      } catch (error) {
+        if (!cancelled) console.error("[ADMIN LAYOUT] Failed to load:", describeDbError(error));
+      } finally {
+        if (!cancelled) setIsMounted(true);
       }
-    });
+    })();
 
-    orders.forEach(o => {
-      if (o.status === 'pending' && !newNotifications.some(n => n.id === `order-${o.id}`)) {
-        newNotifications.push({ id: `order-${o.id}`, title: "New Order", message: `Order from ${o.customer} pending.`, type: 'order', date: new Date().toISOString(), read: false });
-      }
-    });
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately not keyed on pathname: the layout survives navigation
+    // between admin routes, so re-running this would refetch the whole catalog
+    // and order list on every click for nothing.
+  }, [isLoginPage, router]);
 
-    const sorted = newNotifications.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    setNotifications(sorted);
-    storage.saveNotifications(sorted);
-
-    // Click outside listeners
+  // Click-outside listeners for the header dropdowns.
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (profileRef.current && !profileRef.current.contains(event.target as Node)) setIsProfileOpen(false);
       if (notificationsRef.current && !notificationsRef.current.contains(event.target as Node)) setIsNotificationsOpen(false);
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) setIsSearchOpen(false);
     };
 
-    const onProfileUpdate = () => {
-      setProfile(storage.getProfile());
-    };
-
     document.addEventListener("mousedown", handleClickOutside);
-    window.addEventListener("profileUpdated", onProfileUpdate);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Row counts for the System Management panel, fetched only when it opens.
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const db = getDb();
+        const [counts, snapshots] = await Promise.all([
+          db.analytics.dataCounts(),
+          db.backups.list(),
+        ]);
+        if (cancelled) return;
+        setDataCounts(counts);
+        setLastBackupAt(snapshots[0]?.created_at ?? null);
+      } catch {
+        if (!cancelled) setDataCounts({});
+      }
+    })();
 
     return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      window.removeEventListener("profileUpdated", onProfileUpdate);
+      cancelled = true;
     };
-  }, [pathname]);
+  }, [isSettingsOpen]);
 
   // Handle Theme Application
   useEffect(() => {
@@ -150,35 +232,28 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     }
   }, [theme, isMounted]);
 
-  // Handle Protected Routes Redirection
-  useEffect(() => {
-    if (isMounted && !storage.isLoggedIn() && pathname !== "/admin/login") {
-      router.push("/admin/login");
-    }
-  }, [isMounted, pathname, router]);
-
   // Derived state
-  const isLoginPage = pathname === "/admin/login";
   const unreadCount = notifications.filter(n => !n.read).length;
+  const perms = derivePermissions(profile);
 
-  const hasPermission = (p: Permission) => storage.hasPermission(profile, p);
-  const hasAnyPermission = (perms: Permission[]) => storage.hasAnyPermission(profile, perms);
+  const hasPermission = (p: Permission) => can(profile, p);
+  const hasAnyPermission = (permissions: Permission[]) => canAny(profile, permissions);
 
   const currentLink = SIDEBAR_LINKS.find(link => link.href === pathname) || SYSTEM_LINKS.find(link => link.href === pathname);
 
   let isAccessDenied = false;
   if (currentLink) {
     if (currentLink.href === '/admin/customers') {
-      isAccessDenied = !storage.canAccessCustomerModule(profile);
+      isAccessDenied = !perms.accessCustomerModule;
     } else if (currentLink.href === '/admin/orders') {
-      isAccessDenied = !storage.canAccessOrdersModule(profile);
+      isAccessDenied = !perms.accessOrdersModule;
     } else {
-      isAccessDenied = !storage.hasPermission(profile, (currentLink as any).permission);
+      isAccessDenied = !can(profile, currentLink.permission);
     }
   }
 
   // Loading state (moved after all hooks)
-  if (!isMounted && !isLoginPage) {
+  if ((!isMounted || !profile) && !isLoginPage) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="w-8 h-8 border-4 border-brand-blue border-t-transparent rounded-full animate-spin"></div>
@@ -191,60 +266,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     return <>{children}</>;
   }
 
-  const updateNotifications = () => {
-    const products = storage.getProducts();
-    const orders = storage.getOrders();
-    const existing = storage.getNotifications();
-    
-    const newNotifications: Notification[] = [...existing];
-    
-    // Stock alerts
-    products.forEach(p => {
-      if (p.stock === 0 && !newNotifications.some(n => n.id === `out-${p.id}`)) {
-        newNotifications.push({
-          id: `out-${p.id}`,
-          title: "Out of Stock",
-          message: `${p.name} is currently out of stock!`,
-          type: 'stock',
-          date: new Date().toISOString(),
-          read: false
-        });
-      } else if (p.stock <= (p.lowStockThreshold || 50) && p.stock > 0 && !newNotifications.some(n => n.id === `low-${p.id}`)) {
-        newNotifications.push({
-          id: `low-${p.id}`,
-          title: "Low Stock Alert",
-          message: `${p.name} is running low (${p.stock} left).`,
-          type: 'stock',
-          date: new Date().toISOString(),
-          read: false
-        });
-      }
-    });
-
-    // Order alerts
-    orders.forEach(o => {
-      if (o.status === 'pending' && !newNotifications.some(n => n.id === `order-${o.id}`)) {
-        newNotifications.push({
-          id: `order-${o.id}`,
-          title: "New Order",
-          message: `Pending order from ${o.customer} needs review.`,
-          type: 'order',
-          date: new Date().toISOString(),
-          read: false
-        });
-      }
-    });
-
-    setNotifications(newNotifications.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-    storage.saveNotifications(newNotifications);
-  };
+  // Unreachable - the loading guard above already returns when profile is null.
+  // Present so the rest of this component can treat it as loaded.
+  if (!profile) return null;
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleSearch = (q: string) => {
+  // Searches the database rather than an in-memory copy, so results reflect what
+  // the user is actually allowed to see - RLS filters the rows server-side.
+  const handleSearch = async (q: string) => {
     setSearchQuery(q);
     if (q.length < 2) {
       setSearchResults({ products: [], orders: [] });
@@ -252,30 +285,58 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       return;
     }
 
-    const products = storage.getProducts().filter(p => p.name.toLowerCase().includes(q.toLowerCase()) || p.category.toLowerCase().includes(q.toLowerCase())).slice(0, 4);
-    const orders = storage.getOrders().filter(o => {
-      const haystack = [
-        o.customer,
-        o.id,
-        o.legacyReferenceId,
-        ...(o.legacyOrderIds || [])
-      ].filter(Boolean).join(" ").toLowerCase();
-      return haystack.includes(q.toLowerCase());
-    }).slice(0, 4);
-    
-    setSearchResults({ products, orders });
-    setIsSearchOpen(true);
+    try {
+      const db = getDb();
+      const [allProducts, allOrders] = await Promise.all([
+        db.products.list(),
+        db.orders.list({ limit: 200 }),
+      ]);
+
+      const needle = q.toLowerCase();
+
+      const products = allProducts
+        .filter(p => p.name.toLowerCase().includes(needle) || p.category.toLowerCase().includes(needle))
+        .slice(0, 4);
+
+      const orders = allOrders.filter(o => {
+        const haystack = [
+          o.customer,
+          o.id,
+          o.legacyReferenceId,
+          ...(o.legacyOrderIds || [])
+        ].filter(Boolean).join(" ").toLowerCase();
+        return haystack.includes(needle);
+      }).slice(0, 4);
+
+      setSearchResults({ products, orders });
+      setIsSearchOpen(true);
+    } catch (error) {
+      showToast('error', describeDbError(error));
+    }
   };
 
-  const handleLogout = () => {
-    storage.logger.log('SECURITY', 'INFO', 'User logged out of the system');
-    storage.logout();
-    router.push("/admin/login");
+  const handleLogout = async () => {
+    try {
+      const db = getDb();
+      // Logged while still authenticated - after signOut the insert policy
+      // would reject it.
+      await db.logs.write({
+        category: 'SECURITY',
+        severity: 'INFO',
+        message: 'User logged out of the system',
+      });
+      await db.auth.logout();
+    } catch {
+      // Never trap someone in the app because the log write failed.
+    } finally {
+      router.replace("/admin/login");
+      router.refresh();
+    }
   };
 
-  const saveProfile = (e: React.FormEvent) => {
+  const saveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     // Validation
     if (profile.name.trim().length < 2) {
       showToast('error', 'Display name is too short');
@@ -287,40 +348,140 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       return;
     }
 
-    storage.saveProfile(profile);
-    storage.logger.log('SECURITY', 'INFO', 'Admin profile identity updated');
-    showToast('success', 'Profile identity updated successfully');
-    // We don't reload if we want instant sync, but some other components might need it
-    // For this prototype, state update is enough for the current session
+    try {
+      const db = getDb();
+      const updated = await db.users.update(profile.id, {
+        name: profile.name,
+        email: profile.email,
+        phone: profile.phone,
+        avatar: profile.avatar,
+      });
+      setProfile(updated);
+
+      await db.logs.write({
+        category: 'SECURITY',
+        severity: 'INFO',
+        message: 'Admin profile identity updated',
+        targetId: profile.id,
+      });
+      showToast('success', 'Profile identity updated successfully');
+    } catch (error) {
+      showToast('error', describeDbError(error));
+    }
   };
 
-  const saveSettings = (e: React.FormEvent) => {
+  const saveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
-    storage.saveSettings(settings);
-    storage.logger.log('SYSTEM', 'INFO', 'Global system settings modified');
-    showToast('success', 'System settings saved successfully');
-    
-    // Some settings (colors) require a reload or a direct DOM update
-    // For simplicity, we trigger the DOM update helper or just reload
-    window.location.reload(); 
+
+    try {
+      const db = getDb();
+      const saved = await db.settings.update(settings);
+      setSettings(saved);
+      setTheme(saved.theme || 'light');
+
+      await db.logs.write({
+        category: 'SYSTEM',
+        severity: 'INFO',
+        message: 'Global system settings modified',
+      });
+      showToast('success', 'System settings saved successfully');
+    } catch (error) {
+      showToast('error', describeDbError(error));
+    }
   };
 
-  const toggleTheme = () => {
+  const toggleTheme = async () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
-    setTheme(newTheme);
-    storage.setTheme(newTheme);
-    storage.logger.log('SYSTEM', 'INFO', `User switched theme to ${newTheme} mode`);
+    setTheme(newTheme);   // applied immediately; persistence follows
+
+    try {
+      const db = getDb();
+      await db.settings.update({ theme: newTheme });
+      await db.logs.write({
+        category: 'SYSTEM',
+        severity: 'INFO',
+        message: `User switched theme to ${newTheme} mode`,
+      });
+    } catch (error) {
+      // Theme is a shared setting, so anyone without change_settings can flip it
+      // for this visit but cannot save it for everyone.
+      showToast('error', describeDbError(error));
+    }
   };
 
-  const markAllRead = () => {
-    const updated = notifications.map(n => ({ ...n, read: true }));
-    setNotifications(updated);
-    storage.saveNotifications(updated);
+  /**
+   * Snapshots the core tables into a `backups` row, then hands the same payload
+   * to the browser as a download. The stored row is the copy that survives a
+   * lost laptop; the file is the copy you can hold on to.
+   */
+  const handleExportBackup = async () => {
+    setIsBackingUp(true);
+    let url: string | null = null;
+    const link = document.createElement('a');
+
+    try {
+      const db = getDb();
+      const snapshot = await db.backups.create(
+        `Manual export by ${profile.name} on ${new Date().toISOString().slice(0, 10)}`
+      );
+
+      const stored = await db.backups.list();
+      setLastBackupAt(stored[0]?.created_at ?? null);
+
+      const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+      url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = `efz_backup_${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(link);
+      link.click();
+
+      showToast('success', 'Snapshot saved and download started.');
+    } catch (error) {
+      showToast('error', describeDbError(error));
+    } finally {
+      if (link.parentNode) link.parentNode.removeChild(link);
+      if (url) URL.revokeObjectURL(url);
+      setIsBackingUp(false);
+    }
   };
 
-  const clearNotifications = () => {
+  const handleRefreshBackups = async () => {
+    try {
+      const db = getDb();
+      const [counts, snapshots] = await Promise.all([
+        db.analytics.dataCounts(),
+        db.backups.list(),
+      ]);
+      setDataCounts(counts);
+      setLastBackupAt(snapshots[0]?.created_at ?? null);
+      showToast('success', 'Snapshot list refreshed');
+    } catch (error) {
+      showToast('error', describeDbError(error));
+    }
+  };
+
+  const markAllRead = async () => {
+    const previous = notifications;
+    setNotifications(notifications.map(n => ({ ...n, read: true })));
+
+    try {
+      await getDb().notifications.markAllRead();
+    } catch (error) {
+      setNotifications(previous);
+      showToast('error', describeDbError(error));
+    }
+  };
+
+  const clearNotifications = async () => {
+    const previous = notifications;
     setNotifications([]);
-    storage.saveNotifications([]);
+
+    try {
+      await getDb().notifications.clearAll();
+    } catch (error) {
+      setNotifications(previous);
+      showToast('error', describeDbError(error));
+    }
   };
 
   return (
@@ -547,7 +708,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </div>
 
           <div className="flex items-center gap-3 md:gap-6">
-            {(storage.canViewDiagnostics(profile) || storage.canManageSystem(profile)) && (
+            {(perms.viewDiagnostics || perms.manageSystem) && (
             <div className="hidden sm:block">
               <SystemStatusBadge />
             </div>
@@ -903,7 +1064,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   </div>
                 </div>
                 <div className="mt-6 flex gap-3">
-                  <Button onClick={() => { storage.saveSettings(settings); window.location.reload(); }} className="flex-1 bg-brand-blue text-white">Save All System Settings</Button>
+                  <Button onClick={saveSettings} className="flex-1 bg-brand-blue text-white">Save All System Settings</Button>
                   <Button variant="outline" onClick={() => setIsSettingsOpen(false)} className="flex-1">Discard Changes</Button>
                 </div>
               </section>
@@ -915,7 +1076,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 </h3>
                 
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-                  {Object.entries(storage.getDataCounts()).map(([key, count]) => (
+                  {Object.entries(dataCounts).map(([key, count]) => (
                     <div key={key} className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{key}</p>
                       <p className="text-xl font-bold text-slate-900">{count}</p>
@@ -925,102 +1086,45 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
                 <div className="space-y-4">
                   <div className="flex flex-col md:flex-row gap-4">
-                    <Button 
-                      onClick={() => {
-                        let url: string | null = null;
-                        const link = document.createElement('a');
-
-                        try {
-                          const data = storage.exportBackup();
-                          if (!data) throw new Error('Backup data was empty.');
-
-                          const blob = new Blob([data], { type: 'application/json' });
-                          url = URL.createObjectURL(blob);
-                          link.href = url;
-                          link.download = `efz_backup_${new Date().toISOString().split('T')[0]}.json`;
-                          document.body.appendChild(link);
-                          link.click();
-                          showToast('success', 'Backup download started successfully.');
-                        } catch (error) {
-                          console.error('Failed to export backup:', error);
-                          showToast('error', 'Failed to export backup. Please try again.');
-                        } finally {
-                          if (link.parentNode) link.parentNode.removeChild(link);
-                          if (url) URL.revokeObjectURL(url);
-                        }
-                      }}
+                    <Button
+                      onClick={handleExportBackup}
+                      disabled={isBackingUp}
                       className="flex-1 bg-brand-blue text-white"
                     >
-                      <Download className="h-4 w-4 mr-2" /> Export Backup
+                      <Download className="h-4 w-4 mr-2" /> {isBackingUp ? 'Snapshotting…' : 'Export Backup'}
                     </Button>
-                    
-                    <div className="flex-1 relative">
-                      <input 
-                        type="file" 
-                        accept=".json" 
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) {
-                            const reader = new FileReader();
-                            reader.onload = (event) => {
-                              const content = event.target?.result as string;
-                              if (window.confirm("WARNING: This will overwrite ALL current data with the backup file. Are you sure?")) {
-                                if (storage.importBackup(content)) {
-                                  showToast('success', 'Backup restored successfully! Reloading...');
-                                  setTimeout(() => window.location.reload(), 2000);
-                                } else {
-                                  showToast('error', 'Invalid backup file format');
-                                }
-                              }
-                            };
-                            reader.readAsText(file);
-                          }
-                        }}
-                        className="absolute inset-0 opacity-0 cursor-pointer z-10"
-                      />
-                      <Button variant="outline" className="w-full">
-                        <Upload className="h-4 w-4 mr-2" /> Import Backup
-                      </Button>
-                    </div>
+
+                    <Button variant="outline" onClick={handleRefreshBackups} disabled={isBackingUp} className="flex-1">
+                      <History className="h-4 w-4 mr-2" /> Refresh Snapshot List
+                    </Button>
                   </div>
 
                   <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
                     <div className="flex items-center gap-2 text-amber-800 mb-2">
                       <Clock className="h-4 w-4" />
-                      <span className="text-xs font-bold uppercase tracking-wider">Auto Backup Status</span>
+                      <span className="text-xs font-bold uppercase tracking-wider">Snapshot Status</span>
                     </div>
                     <p className="text-xs text-amber-700">
-                      {storage.getLastExportDate() 
-                        ? `Last system snapshot: ${new Date(storage.getLastExportDate()!).toLocaleString()}`
-                        : "No automatic backup snapshot found yet."}
+                      {lastBackupAt
+                        ? `Last snapshot: ${new Date(lastBackupAt).toLocaleString()}`
+                        : "No snapshot recorded yet."}
                     </p>
                   </div>
 
+                  {/* Restore and factory reset used to rewrite localStorage in the
+                      browser. Against a real database those are destructive
+                      operations that belong in a reviewed, server-side script -
+                      not behind a button in the admin chrome. */}
                   <div className="pt-4 border-t border-slate-100">
-                    <p className="text-xs font-bold text-red-500 uppercase tracking-widest mb-3">Danger Zone</p>
-                    <div className="bg-red-50/50 border border-red-100 rounded-2xl p-4 mb-4">
-                      <p className="text-[10px] text-red-600 leading-relaxed font-medium">
-                        Resetting will clear all current users, products, customers, and orders, and replace them with the default demo dataset. This action is permanent.
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Restore</p>
+                    <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                      <p className="text-[10px] text-slate-600 leading-relaxed font-medium">
+                        Restoring a snapshot now runs against PostgreSQL, so it is handled outside the app:
+                        generate the SQL with <code className="font-mono text-slate-800">node scripts/generate-supabase-import.mjs</code>,
+                        review it, then run it in the Supabase SQL Editor. Supabase&apos;s own
+                        Point-in-Time Recovery covers full database rollbacks.
                       </p>
                     </div>
-                    <Button 
-                      variant="danger" 
-                      onClick={() => {
-                        if (window.confirm("CRITICAL WARNING: This will permanently DELETE all current data and reset to demo data. Are you sure?")) {
-                          const confirmText = window.prompt("Type 'RESET' to confirm factory reset:");
-                          if (confirmText === 'RESET') {
-                            storage.resetDemoData();
-                            showToast('success', 'System reset to demo data! Reloading...');
-                            setTimeout(() => window.location.reload(), 2000);
-                          } else if (confirmText !== null) {
-                            showToast('error', 'Reset cancelled: confirmation text did not match.');
-                          }
-                        }
-                      }}
-                      className="w-full bg-red-50 text-red-600 hover:bg-red-100 border-red-100"
-                    >
-                      <Trash2 className="h-4 w-4 mr-2" /> Reset to Demo Data
-                    </Button>
                   </div>
                 </div>
               </section>

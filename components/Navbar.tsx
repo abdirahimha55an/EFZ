@@ -1,8 +1,10 @@
-import { useState, useEffect } from "react";
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { storage } from "@/lib/storage";
+import { usePublicSettings } from "@/lib/settings";
 
 const NAV_LINKS = [
   { name: "Home", href: "/" },
@@ -13,20 +15,9 @@ const NAV_LINKS = [
 
 export function Navbar() {
   const [isOpen, setIsOpen] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
-  const [settings, setSettings] = useState({
-    businessName: "Elite Football Zone",
-    logo: ""
-  });
-
-  useEffect(() => {
-    setIsMounted(true);
-    const s = storage.getSettings();
-    setSettings({
-      businessName: s.businessName,
-      logo: s.logo
-    });
-  }, []);
+  // Renders the defaults first and swaps in the real row when it arrives, so
+  // there is no hydration mismatch and nothing to gate on.
+  const settings = usePublicSettings();
 
   return (
     <nav className="sticky top-0 z-40 w-full border-b border-slate-200 bg-white/80 backdrop-blur-md">
@@ -34,11 +25,7 @@ export function Navbar() {
         <div className="flex h-16 items-center justify-between">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2">
-            {!isMounted ? (
-              <span className="font-heading text-2xl font-bold tracking-tight text-brand-blue">
-                EFZ<span className="text-brand-green">.</span>
-              </span>
-            ) : settings.logo ? (
+            {settings.logo ? (
               <img src={settings.logo} alt={settings.businessName} className="h-10 w-auto object-contain" />
             ) : (
               <span className="font-heading text-2xl font-bold tracking-tight text-brand-blue">

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { 
-  UserCheck, 
+import { useCallback, useEffect, useState } from "react";
+import {
+  UserCheck,
   Plus, 
   Search, 
   Phone, 
@@ -22,20 +22,32 @@ import {
   Trash2,
   Eye,
   Archive,
-  ShieldAlert
+  ShieldAlert,
+  Loader2,
+  RefreshCcw
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { storage, AdminUser, Customer, Order } from "@/lib/storage";
-import { getOrderCollectionSummary, getOrderPaymentStatus } from "@/lib/financial";
+import { AdminUser, Customer, Order } from "@/lib/types";
+import type { CustomerFinancialsRow, OfficerCommissionSummaryRow } from "@/lib/supabase/database.types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
+import { getOrderPaymentStatus } from "@/lib/financial";
 
 export default function CustomersPage() {
-  const [isMounted, setIsMounted] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [profile, setProfile] = useState<AdminUser | null>(null);
+  // Receivables and commissions come from the database's own views, so the
+  // figures on this page are the same ones every other report would produce.
+  const [financials, setFinancials] = useState<CustomerFinancialsRow[]>([]);
+  const [commissionRows, setCommissionRows] = useState<OfficerCommissionSummaryRow[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -60,25 +72,105 @@ export default function CustomersPage() {
     notes: ""
   });
 
-  useEffect(() => {
-    setIsMounted(true);
-    setCustomers(storage.getCustomers());
-    setOrders(storage.getOrders());
-    
-    const updateProfile = () => setProfile(storage.getProfile());
-    updateProfile();
+  const loadAll = useCallback(async () => {
+    const db = getDb();
+    const [
+      nextCustomers,
+      nextOrders,
+      nextUsers,
+      nextProfile,
+      nextFinancials,
+      nextCommissions,
+    ] = await Promise.all([
+      db.customers.list({ includeArchived: true }),
+      db.orders.list(),
+      db.users.list(),
+      db.auth.getProfile(),
+      db.customers.financials(),
+      db.commissions.summary(),
+    ]);
 
-    window.addEventListener('profileUpdated', updateProfile);
-    return () => window.removeEventListener('profileUpdated', updateProfile);
+    setCustomers(nextCustomers);
+    setOrders(nextOrders);
+    setUsers(nextUsers);
+    setProfile(nextProfile);
+    setFinancials(nextFinancials);
+    setCommissionRows(nextCommissions);
   }, []);
 
-  if (!isMounted || !profile) return null;
+  useEffect(() => {
+    let cancelled = false;
 
-  const canAddCustomers = storage.canAddCustomers(profile);
+    (async () => {
+      try {
+        setIsLoading(true);
+        await loadAll();
+        if (!cancelled) setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAll]);
+
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
+
+  const perms = derivePermissions(profile);
+  const canAddCustomers = perms.addCustomers;
 
   const showNotification = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
   };
+
+  const handleRefresh = async () => {
+    try {
+      setIsSaving(true);
+      await loadAll();
+      showNotification('success', 'Customer data refreshed');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-green" />
+        <p className="text-xs font-medium">Loading customers…</p>
+      </div>
+    );
+  }
+
+  if (loadError || !profile) {
+    return (
+      <Card className="border-none shadow-sm">
+        <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <ShieldAlert className="h-8 w-8 text-red-500" />
+          <div>
+            <h2 className="font-heading text-lg font-bold text-slate-900">Could not load customers</h2>
+            <p className="mt-1 max-w-md text-xs text-slate-500">
+              {loadError ?? "Your account is not linked to a staff profile."}
+            </p>
+          </div>
+          <Button onClick={handleRefresh} variant="outline" size="sm" className="rounded-lg text-xs">
+            <RefreshCcw className="mr-1.5 h-3.5 w-3.5" /> Try again
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const openCreateModal = () => {
     setIsEditMode(false);
@@ -100,101 +192,142 @@ export default function CustomersPage() {
     setIsModalOpen(true);
   };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canAddCustomers) {
       showNotification('error', 'Permission denied: You are not allowed to register new customers.');
       return;
     }
-    if (isEditMode && editingCustomerId) {
-      const updated = customers.map((customer) => {
-        if (customer.id !== editingCustomerId) return customer;
-        return {
-          ...customer,
+
+    // A Marketing Officer always owns the customers they touch; nobody else's
+    // name can be put on the record from this form.
+    const officerId = profile.role === 'Marketing Officer'
+      ? profile.id
+      : (formData.marketingOfficerId || profile.id);
+
+    try {
+      setIsSaving(true);
+      const db = getDb();
+
+      if (isEditMode && editingCustomerId) {
+        await db.customers.update(editingCustomerId, {
           name: formData.name.trim(),
           email: formData.email.trim(),
           phone: formData.phone.trim(),
-          marketingOfficerId: profile.role === 'Marketing Officer' ? profile.id : (formData.marketingOfficerId || customer.marketingOfficerId || customer.registeredBy),
+          marketingOfficerId: officerId,
           notes: formData.notes.trim(),
-        };
+        });
+
+        await db.logs.write({
+          category: 'CUSTOMER',
+          severity: 'INFO',
+          message: `Customer updated: ${formData.name.trim()}`,
+          targetId: editingCustomerId,
+        });
+
+        await loadAll();
+        showNotification('success', 'Customer updated successfully.');
+        setIsModalOpen(false);
+        setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" });
+        setEditingCustomerId(null);
+        setIsEditMode(false);
+        return;
+      }
+
+      const created = await db.customers.create({
+        name: formData.name.trim(),
+        email: formData.email.trim(),
+        phone: formData.phone.trim(),
+        registeredBy: profile.id,
+        marketingOfficerId: officerId,
+        date: new Date().toISOString().split('T')[0],
+        notes: formData.notes.trim(),
+        status: 'active',
+        isArchived: false,
       });
-      storage.saveCustomers(updated);
-      setCustomers(updated);
-      storage.logger.log('CUSTOMER', 'INFO', `Customer updated: ${formData.name.trim()}`, { targetId: editingCustomerId });
-      showNotification('success', 'Customer updated successfully.');
+
+      await db.logs.write({
+        category: 'CUSTOMER',
+        severity: 'INFO',
+        message: `New customer registered: ${created.name}`,
+        targetId: created.id,
+      });
+
+      await loadAll();
       setIsModalOpen(false);
       setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" });
-      setEditingCustomerId(null);
-      setIsEditMode(false);
-      return;
+      showNotification('success', 'Customer created successfully.');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
     }
-
-    const newCustomer: Customer = {
-      id: "cust-" + Date.now(),
-      ...formData,
-      name: formData.name.trim(),
-      email: formData.email.trim(),
-      phone: formData.phone.trim(),
-      registeredBy: profile.id,
-      marketingOfficerId: profile.role === 'Marketing Officer' ? profile.id : formData.marketingOfficerId,
-      date: new Date().toISOString().split('T')[0],
-      notes: formData.notes.trim(),
-      status: 'active',
-      isArchived: false,
-    };
-    const updated = [...customers, newCustomer];
-    storage.saveCustomers(updated);
-    storage.logger.log('CUSTOMER', 'INFO', `New customer registered: ${newCustomer.name}`, { targetId: newCustomer.id });
-    setCustomers(updated);
-    setIsModalOpen(false);
-    setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" });
-    showNotification('success', 'Customer created successfully.');
   };
 
-  const handleDeleteCustomer = (customer: Customer) => {
+  /**
+   * A customer with orders is archived, never deleted. Their `customer_id` is
+   * what ties every past order to a real buyer; dropping the row would null
+   * those links and quietly orphan the sales history.
+   */
+  const handleDeleteCustomer = async (customer: Customer) => {
     const customerOrders = orders.filter(o => o.customerId === customer.id || o.customer === customer.name || o.phone === customer.phone);
+    const shouldArchive = customerOrders.length > 0;
 
-    if (customerOrders.length > 0) {
-      const shouldArchive = window.confirm('This customer has historical orders and cannot be permanently deleted. Archive this customer instead?');
-      if (!shouldArchive) return;
-      const updated: Customer[] = customers.map(item => item.id === customer.id ? { ...item, isArchived: true, status: 'archived' } as Customer : item);
-      storage.saveCustomers(updated);
-      setCustomers(updated);
-      storage.logger.log('CUSTOMER', 'WARNING', `Customer archived due to historical orders: ${customer.name}`, { targetId: customer.id });
-      showNotification('success', 'Customer archived. Historical orders were preserved.');
+    if (shouldArchive) {
+      if (!window.confirm('This customer has historical orders and cannot be permanently deleted. Archive this customer instead?')) return;
+    } else if (!window.confirm('Are you sure you want to delete this customer?')) {
       return;
     }
 
-    const shouldDelete = window.confirm('Are you sure you want to delete this customer?');
-    if (!shouldDelete) return;
-    const updated = customers.filter(item => item.id !== customer.id);
-    storage.saveCustomers(updated);
-    setCustomers(updated);
-    storage.logger.log('CUSTOMER', 'WARNING', `Customer deleted: ${customer.name}`, { targetId: customer.id });
-    showNotification('success', 'Customer deleted.');
+    try {
+      setIsSaving(true);
+      const db = getDb();
+
+      if (shouldArchive) {
+        await db.customers.archive(customer.id);
+        await db.logs.write({
+          category: 'CUSTOMER',
+          severity: 'WARNING',
+          message: `Customer archived due to historical orders: ${customer.name}`,
+          targetId: customer.id,
+        });
+      } else {
+        await db.logs.write({
+          category: 'CUSTOMER',
+          severity: 'WARNING',
+          message: `Customer deleted: ${customer.name}`,
+          targetId: customer.id,
+        });
+        await db.customers.remove(customer.id);
+      }
+
+      await loadAll();
+      showNotification(
+        'success',
+        shouldArchive ? 'Customer archived. Historical orders were preserved.' : 'Customer deleted.'
+      );
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  // Commission Calculations
-  const myCustomers = customers.filter(c => c.registeredBy === profile.id);
-  
-  const myOrders = orders.filter(o => 
-    o.marketingOfficerId === profile.id || 
-    myCustomers.some(c => c.name === o.customer || c.phone === o.phone)
-  );
+  // Earned / paid / pending come from the commissions ledger, where each row's
+  // rate was frozen when the order became eligible. Changing this officer's
+  // percentage today does not rewrite what they already earned.
+  const myCommissions = commissionRows.find(row => row.user_id === profile.id);
+  const earnedCommissionTotal = Number(myCommissions?.earned_commission ?? 0);
+  const paidCommission = Number(myCommissions?.paid_commission ?? 0);
+  const pendingPayout = Number(myCommissions?.pending_commission ?? 0);
 
-  const ELIGIBLE_STATUSES = ['confirmed', 'processing', 'delivered'];
-  const eligibleOrders = myOrders.filter(o => 
-    o.commissionPaid || ELIGIBLE_STATUSES.includes(o.status?.toLowerCase())
-  );
-  
-  const earnedCommissionTotal = eligibleOrders.reduce((sum, o) => sum + (o.total * profile.commissionPercentage / 100), 0);
-  
-  const paidCommission = profile.paidCommissionTotal || 0;
-  const pendingPayout = Math.max(0, earnedCommissionTotal - paidCommission);
-  
-  const inProgressCommission = myOrders.filter(o => 
-    !o.commissionPaid && o.status === 'pending'
-  ).reduce((sum, o) => sum + (o.total * profile.commissionPercentage / 100), 0);
+  // Still-pending orders have earned nothing yet, so there is no ledger row for
+  // them. This is a forecast at today's rate, deliberately computed here rather
+  // than stored as if it were a fact.
+  const myOrders = orders.filter(o => o.marketingOfficerId === profile.id);
+  const inProgressCommission = myOrders
+    .filter(o => !o.commissionPaid && o.status === 'pending')
+    .reduce((sum, o) => sum + (o.total * profile.commissionPercentage / 100), 0);
   const totalCommission = earnedCommissionTotal + inProgressCommission;
 
   const getCustomerFinancialSummaryData = (customer: Customer) => {
@@ -204,15 +337,26 @@ export default function CustomersPage() {
       order.phone === customer.phone
     );
 
-    const totalUnits = customerOrders.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0), 0);
-    const revenueGenerated = customerOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
-    const amountCollected = customerOrders.reduce((sum, order) => sum + Number(order.amountPaid ?? order.payments?.reduce((paymentSum, payment) => paymentSum + Number(payment.amount || 0), 0) ?? 0), 0);
-    const outstandingBalance = Math.max(0, revenueGenerated - amountCollected);
+    // Headline money from the customer_financials view; the order list itself is
+    // filtered here because the drill-down table needs the rows, not just totals.
+    const row = financials.find(entry => entry.id === customer.id);
+    const totalUnits = row
+      ? Number(row.total_units ?? 0)
+      : customerOrders.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0), 0);
+    const revenueGenerated = row
+      ? Number(row.revenue_generated ?? 0)
+      : customerOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const amountCollected = row
+      ? Number(row.cash_collected ?? 0)
+      : customerOrders.reduce((sum, order) => sum + Number(order.amountPaid ?? 0), 0);
+    const outstandingBalance = row
+      ? Number(row.outstanding ?? 0)
+      : Math.max(0, revenueGenerated - amountCollected);
     const paymentStatus = outstandingBalance <= 0 ? 'Paid' : amountCollected > 0 ? 'Partial' : 'Unpaid';
 
     return {
       customerOrders,
-      totalOrders: customerOrders.length,
+      totalOrders: row ? Number(row.total_orders ?? 0) : customerOrders.length,
       totalUnits,
       revenueGenerated,
       amountCollected,
@@ -221,35 +365,51 @@ export default function CustomersPage() {
     };
   };
 
-  const recordPayment = (order: Order) => {
-    const total = Number(order.total || 0);
-    const collected = Number(order.amountPaid ?? order.payments?.reduce((sum, payment) => sum + Number(payment.amount || 0), 0) ?? 0);
-    const outstanding = Math.max(0, total - collected);
+  const recordPayment = async (order: Order) => {
+    const outstanding = Math.max(0, Number(order.outstandingBalance ?? 0));
     const amountValue = Number(paymentForm.amount);
 
+    // Checked here for an instant answer; record_payment() checks it again and
+    // is the one that actually decides.
     if (!paymentForm.amount || Number.isNaN(amountValue) || amountValue <= 0 || amountValue > outstanding) {
       showNotification('error', 'Payment amount must be greater than zero and cannot exceed the current outstanding balance.');
       return;
     }
 
-    const nextOrder = storage.addPaymentToOrder(order, {
-      amount: amountValue,
-      paymentDate: paymentForm.paymentDate,
-      paymentMethod: paymentForm.paymentMethod,
-      reference: paymentForm.reference,
-      note: paymentForm.note,
-      recordedBy: profile?.name || 'System',
-    });
+    try {
+      setIsSaving(true);
+      const db = getDb();
 
-    const updatedOrders = orders.map(item => item.id === nextOrder.id ? nextOrder : item);
-    setOrders(updatedOrders);
-    setPaymentForm({ amount: '', paymentDate: new Date().toISOString().slice(0, 10), paymentMethod: 'Cash', reference: '', note: '' });
-    setPaymentModalOrderId(null);
-    showNotification('success', 'Payment recorded successfully.');
+      await db.orders.addPayment({
+        orderId: order.id,
+        amount: amountValue,
+        paymentDate: paymentForm.paymentDate,
+        paymentMethod: paymentForm.paymentMethod,
+        reference: paymentForm.reference,
+        notes: paymentForm.note,
+      });
+
+      await db.logs.write({
+        category: 'FINANCIAL',
+        severity: 'INFO',
+        message: `Payment of $${amountValue} recorded against order ${order.id}`,
+        targetId: order.id,
+        metadata: { amount: amountValue, method: paymentForm.paymentMethod, reference: paymentForm.reference },
+      });
+
+      await loadAll();
+      setPaymentForm({ amount: '', paymentDate: new Date().toISOString().slice(0, 10), paymentMethod: 'Cash', reference: '', note: '' });
+      setPaymentModalOrderId(null);
+      showNotification('success', 'Payment recorded successfully.');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const filteredCustomers = customers.filter(c => {
-    if (storage.canViewOwnCustomersOnly(profile)) {
+    if (perms.viewOwnCustomersOnly) {
       if (String(c.marketingOfficerId || c.registeredBy) !== String(profile.id)) return false;
     }
     
@@ -267,9 +427,11 @@ export default function CustomersPage() {
   const receivables = orders
     .map(order => {
       const customer = customers.find(c => c.id === order.customerId || c.name === order.customer || c.phone === order.phone) ?? null;
+      // amount_paid and outstanding_balance are maintained by the payment
+      // trigger, so there is nothing left to re-derive from the payment rows.
       const total = Number(order.total || 0);
-      const collected = Number(order.amountPaid ?? order.payments?.reduce((sum, payment) => sum + Number(payment.amount || 0), 0) ?? 0);
-      const outstanding = Math.max(0, total - collected);
+      const collected = Number(order.amountPaid ?? 0);
+      const outstanding = Number(order.outstandingBalance ?? Math.max(0, total - collected));
       const paymentStatus = getOrderPaymentStatus(order);
       return { customer, order, total, collected, outstanding, paymentStatus };
     })
@@ -293,11 +455,16 @@ export default function CustomersPage() {
             Track registrations and monitor purchase-based commissions.
           </p>
         </div>
-        {canAddCustomers && (
-          <Button onClick={openCreateModal} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
-            <UserPlus className="h-4 w-4 mr-1.5" /> Register New Customer
+        <div className="flex gap-2">
+          <Button onClick={handleRefresh} disabled={isSaving} variant="outline" size="sm" className="text-slate-500 border-slate-200 rounded-lg h-10 px-4 text-xs">
+            <RefreshCcw className={cn("h-4 w-4 mr-1.5", isSaving && "animate-spin")} /> Refresh
           </Button>
-        )}
+          {canAddCustomers && (
+            <Button onClick={openCreateModal} disabled={isSaving} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
+              <UserPlus className="h-4 w-4 mr-1.5" /> Register New Customer
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Commission Stats Dashboard (For Marketing Officers) */}
@@ -378,7 +545,7 @@ export default function CustomersPage() {
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {filteredCustomers.map((customer) => {
-                  const regBy = storage.getUsers().find(u => u.id === customer.registeredBy);
+                  const regBy = users.find(u => u.id === customer.registeredBy);
                   const customerOrders = orders.filter(o => o.customerId === customer.id || o.customer === customer.name || o.phone === customer.phone);
                   const totalSpend = customerOrders.reduce((sum, o) => sum + o.total, 0);
                   const lastOrder = [...customerOrders].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
@@ -435,10 +602,10 @@ export default function CustomersPage() {
                       </td>
                       <td className="px-6 py-3 text-right">
                         <div className="flex justify-end gap-2">
-                          <button type="button" onClick={() => openEditModal(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-600" title="Edit customer">
+                          <button type="button" disabled={isSaving} onClick={() => openEditModal(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50" title="Edit customer">
                             <Pencil className="h-3.5 w-3.5" />
                           </button>
-                          <button type="button" onClick={() => handleDeleteCustomer(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-red-50 hover:text-red-600" title={customerOrders.length > 0 ? 'Archive customer' : 'Delete customer'}>
+                          <button type="button" disabled={isSaving} onClick={() => handleDeleteCustomer(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-red-50 hover:text-red-600 disabled:opacity-50" title={customerOrders.length > 0 ? 'Archive customer' : 'Delete customer'}>
                             {customerOrders.length > 0 ? <Archive className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
                           </button>
                         </div>
@@ -735,7 +902,7 @@ export default function CustomersPage() {
 
               <div className="mt-6 flex gap-3">
                 <Button type="button" variant="outline" onClick={() => setPaymentModalOrderId(null)} className="flex-1 h-11 rounded-xl">Cancel</Button>
-                <Button type="button" onClick={() => recordPayment(order)} className="flex-1 h-11 rounded-xl bg-slate-900 text-white">Record Payment</Button>
+                <Button type="button" disabled={isSaving} onClick={() => recordPayment(order)} className="flex-1 h-11 rounded-xl bg-slate-900 text-white">{isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Record Payment</Button>
               </div>
             </div>
           </div>
@@ -794,7 +961,7 @@ export default function CustomersPage() {
                       className="w-full h-12 rounded-xl border border-slate-200 px-4 text-sm bg-white focus:ring-2 focus:ring-brand-blue/20 outline-none"
                     >
                       <option value="">No Marketing Officer</option>
-                      {storage.getUsers().filter(u => u.role === 'Marketing Officer').map(u => (
+                      {users.filter(u => u.role === 'Marketing Officer').map(u => (
                         <option key={u.id} value={u.id}>{u.name}</option>
                       ))}
                     </select>
@@ -803,7 +970,7 @@ export default function CustomersPage() {
               </div>
 
               <div className="pt-4 flex gap-3">
-                <Button type="submit" className="flex-1 bg-slate-900 text-white h-12 rounded-xl font-bold">
+                <Button type="submit" disabled={isSaving} className="flex-1 bg-slate-900 text-white h-12 rounded-xl font-bold">
                   {isEditMode ? 'Save Changes' : 'Confirm Registration'}
                 </Button>
                 <Button type="button" variant="outline" onClick={() => { setIsModalOpen(false); setIsEditMode(false); setEditingCustomerId(null); setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" }); }} className="flex-1 h-12 rounded-xl">

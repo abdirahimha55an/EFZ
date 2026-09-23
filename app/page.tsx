@@ -6,8 +6,9 @@ import { motion, useMotionValue, useSpring, useTransform, useReducedMotion } fro
 import { ArrowRight, CheckCircle2, Shield, Zap, TrendingUp, Users, Trophy, Truck, Headphones, MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { MOCK_PRODUCTS, MOCK_TESTIMONIALS, Product } from "@/lib/data";
-import { storage } from "@/lib/storage";
+import { Product } from "@/lib/types";
+import { getDb } from "@/lib/supabase/db";
+import { toPublicProduct, type Testimonial } from "@/lib/supabase/mappers";
 import { useEffect, useState } from "react";
 
 const fadeIn = {
@@ -132,10 +133,36 @@ function ArenaInteractiveImage() {
 export default function Home() {
   const [isMounted, setIsMounted] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
+  const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
 
   useEffect(() => {
-    setIsMounted(true);
-    setProducts(storage.getProducts());
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const db = getDb();
+        // Both tables are readable by anon, so a signed-out visitor gets the
+        // real catalog and the real quotes.
+        const [rows, quotes] = await Promise.all([
+          db.products.listPublic(),
+          db.testimonials.list(),
+        ]);
+        if (cancelled) return;
+        setProducts(rows.map(toPublicProduct));
+        setTestimonials(quotes);
+      } catch {
+        if (!cancelled) {
+          setProducts([]);
+          setTestimonials([]);
+        }
+      } finally {
+        if (!cancelled) setIsMounted(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const featuredProducts = products.slice(0, 3);
@@ -511,7 +538,7 @@ export default function Home() {
             variants={staggerContainer}
             className="grid grid-cols-1 md:grid-cols-3 gap-8"
           >
-            {MOCK_TESTIMONIALS.map((testimonial) => (
+            {testimonials.map((testimonial) => (
               <motion.div key={testimonial.id} variants={fadeIn}>
                 <Card className="bg-slate-50 border-2 border-slate-100 h-full hover:border-brand-green transition-colors duration-300">
                   <CardContent className="p-8 flex flex-col h-full">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { 
   ShoppingBag, 
@@ -16,98 +16,167 @@ import {
   BarChart3, 
   Star,
   Layers,
-  Sparkles
+  Sparkles,
+  Loader2
 } from "lucide-react";
-import { Product } from "@/lib/data";
-import { storage, AdminUser, Order, Customer } from "@/lib/storage";
+import { AdminUser, Customer, Order, Product } from "@/lib/types";
+import type { FinancialSummaryRow, InventoryStatusRow } from "@/lib/supabase/database.types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { getFinancialSummary } from "@/lib/financial";
 
 export default function AdminDashboard() {
-  const [isMounted, setIsMounted] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [profile, setProfile] = useState<AdminUser | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [inventory, setInventory] = useState<InventoryStatusRow[]>([]);
+  const [summaryRow, setSummaryRow] = useState<FinancialSummaryRow | null>(null);
+  const [pendingPayouts, setPendingPayouts] = useState(0);
+  const [activeIssues, setActiveIssues] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setIsMounted(true);
-    setProducts(storage.getProducts());
-    setOrders(storage.getOrders());
-    setCustomers(storage.getCustomers());
-    setUsers(storage.getUsers());
-    setProfile(storage.getProfile());
+  const loadAll = useCallback(async () => {
+    const db = getDb();
+
+    // Profile first: what this dashboard is even allowed to ask for depends on
+    // the permissions attached to it.
+    const nextProfile = await db.auth.getProfile();
+    setProfile(nextProfile);
+    if (!nextProfile) return;
+
+    const scoped = derivePermissions(nextProfile);
+
+    const [nextProducts, nextOrders, nextCustomers, nextInventory, nextCommissions] =
+      await Promise.all([
+        db.products.list(),
+        db.orders.list(),
+        db.customers.list(),
+        db.inventory.status(),
+        db.commissions.summary(),
+      ]);
+
+    setProducts(nextProducts);
+    setOrders(nextOrders);
+    setCustomers(nextCustomers);
+    setInventory(nextInventory);
+    setPendingPayouts(
+      nextCommissions.reduce((sum, row) => sum + Number(row.pending_commission ?? 0), 0)
+    );
+
+    // financial_summary aggregates every order the caller can select, which is
+    // the whole business. An officer scoped to their own customers is asking a
+    // different question, so their figures are summed from their own rows below.
+    if (scoped.viewOwnCustomersOnly) {
+      setSummaryRow(null);
+    } else {
+      setSummaryRow(await db.analytics.financialSummary());
+    }
+
+    // Diagnostics is permission-gated; asking without it is an RLS refusal.
+    if (scoped.viewDiagnostics) {
+      setActiveIssues((await db.issues.list()).length);
+    } else {
+      setActiveIssues(0);
+    }
   }, []);
 
-  if (!isMounted || !profile) return null;
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setIsLoading(true);
+        await loadAll();
+        if (!cancelled) setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAll]);
+
+  const perms = derivePermissions(profile);
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <p className="text-xs font-medium">Loading dashboard…</p>
+      </div>
+    );
+  }
+
+  if (loadError || !profile) {
+    return (
+      <Card className="border-none shadow-sm">
+        <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+          <AlertCircle className="h-8 w-8 text-red-500" />
+          <h2 className="font-heading text-lg font-bold text-slate-900">Could not load the dashboard</h2>
+          <p className="max-w-md text-xs text-slate-500">
+            {loadError ?? "Your account is not linked to a staff profile."}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   // Filter orders based on permissions
   const filteredOrders = orders.filter(o => {
-    if (storage.canViewOwnCustomersOnly(profile)) {
+    if (perms.viewOwnCustomersOnly) {
       return String(o.marketingOfficerId) === String(profile.id);
     }
     return true;
   });
 
-  // Shared financial truth for dashboard metrics
-  const financialSummary = getFinancialSummary(filteredOrders);
-  const totalRevenue = financialSummary.revenueGenerated;
-  const totalProfit = financialSummary.grossProfit;
-  const totalCollected = financialSummary.cashCollected;
-  const outstandingReceivables = financialSummary.outstandingReceivables;
-  const totalOrdersCount = financialSummary.totalOrders;
+  // Cancelled orders are excluded everywhere on this page - they were previously
+  // counted in revenue while being skipped by the top-seller lists below, so the
+  // headline and the breakdown disagreed.
+  const activeOrders = filteredOrders.filter(o => o.status !== 'cancelled');
+
+  const clientSummary = getFinancialSummary(activeOrders);
+  const totalRevenue = Number(summaryRow?.revenue_generated ?? clientSummary.revenueGenerated);
+  const totalProfit = Number(summaryRow?.gross_profit ?? clientSummary.grossProfit);
+  const totalCollected = Number(summaryRow?.cash_collected ?? clientSummary.cashCollected);
+  const outstandingReceivables = Number(summaryRow?.outstanding_receivables ?? clientSummary.outstandingReceivables);
+  const totalOrdersCount = Number(summaryRow?.total_orders ?? clientSummary.totalOrders);
 
   const totalOrdersLabel = `${totalOrdersCount} ${totalOrdersCount === 1 ? 'order' : 'orders'}`;
 
-  // 3. Pending Payouts (sum of pending commissions for all Marketing Officers)
-  const pendingPayouts = users.reduce((sum, u) => {
-    if (u.role !== 'Marketing Officer') return sum;
-    // Calculate pending payouts based on eligible unpaid orders
-    const myCustomers = customers.filter(c => String(c.marketingOfficerId || c.registeredBy) === String(u.id));
-    const officerOrders = orders.filter(o => 
-      String(o.marketingOfficerId) === String(u.id) || 
-      myCustomers.some(c => String(c.id) === String(o.customerId) || c.name === o.customer)
-    );
-    const ELIGIBLE_STATUSES = ['confirmed', 'processing', 'delivered'];
-    const eligibleOrders = officerOrders.filter(o => 
-      !o.commissionPaid && ELIGIBLE_STATUSES.includes(o.status?.toLowerCase())
-    );
-    const amount = eligibleOrders.reduce((total, o) => total + (o.total * u.commissionPercentage / 100), 0);
-    return sum + amount;
-  }, 0);
-
-  // 4. Inventory Value (cost price of all items in stock)
-  const inventoryValue = products.reduce((sum, p) => sum + ((p.stock || 0) * (p.costPrice || 0)), 0);
+  // 4. Inventory value, low stock and out of stock, all from inventory_status.
+  // One definition of "low", applied by the database against each product's own
+  // threshold - the cards and the alert table below can no longer disagree.
+  const inventoryValue = inventory.reduce((sum, row) => sum + Number(row.stock_value_at_cost ?? 0), 0);
+  const lowStockCount = inventory.filter(row => row.stock_state === 'low_stock').length;
+  const outOfStockCount = inventory.filter(row => row.stock_state === 'out_of_stock').length;
+  const stockAlerts = inventory.filter(row => row.stock_state !== 'healthy');
 
   // 5. Monthly Sales (total value of orders from the current month)
   const currentMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
-  const monthlySales = filteredOrders
+  const monthlySales = activeOrders
     .filter(o => o.date?.startsWith(currentMonth))
     .reduce((sum, o) => sum + o.total, 0);
 
-  // 6. Active System Issues
-  const activeIssues = storage.canViewDiagnostics(profile) ? storage.getSystemIssues().length : 0;
-
-  // 7. Low Stock Products count
-  const lowStockCount = products.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.lowStockThreshold || 50)).length;
-
-  // 8. Out of Stock count
-  const outOfStockCount = products.filter(p => (p.stock || 0) === 0).length;
-
   // 9. Total Customers
   const totalCustomers = customers.filter(c => {
-    if (storage.canViewOwnCustomersOnly(profile)) {
+    if (perms.viewOwnCustomersOnly) {
       return String(c.marketingOfficerId || c.registeredBy) === String(profile.id);
     }
     return true;
   }).length;
 
-  // Compute product sales mapping for top sellers
+  // Top sellers and top customers stay client-side: the product_sales view is
+  // global, and these lists have to honour the same scoping as the cards above.
   const productSalesMap: Record<string, { name: string; quantity: number; revenue: number }> = {};
-  filteredOrders.forEach(o => {
-    if (o.status === 'cancelled') return;
-    
+  activeOrders.forEach(o => {
+
     if (o.items && o.items.length > 0) {
       o.items.forEach(item => {
         if (!productSalesMap[item.productId]) {
@@ -145,8 +214,7 @@ export default function AdminDashboard() {
 
   // Compute customer spends
   const customerSpendMap: Record<string, { name: string; phone: string; spend: number; orderCount: number }> = {};
-  filteredOrders.forEach(o => {
-    if (o.status === 'cancelled') return;
+  activeOrders.forEach(o => {
     const key = o.customerId || o.customer;
     if (!customerSpendMap[key]) {
       customerSpendMap[key] = { 
@@ -377,21 +445,21 @@ export default function AdminDashboard() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {products.filter(p => (p.stock || 0) <= (p.lowStockThreshold || 50)).slice(0, 5).map((product) => (
+                  {stockAlerts.slice(0, 5).map((product) => (
                     <tr key={product.id} className="hover:bg-slate-50/30 transition-colors">
                       <td className="px-5 py-2.5 font-bold text-slate-900">{product.name}</td>
                       <td className="px-5 py-2.5 text-slate-500">{product.category}</td>
                       <td className="px-5 py-2.5 text-right">
                         <span className={cn(
                           "inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase",
-                          (product.stock || 0) === 0 ? "bg-red-50 text-red-600 animate-pulse" : "bg-amber-50 text-amber-600"
+                          product.stock_state === 'out_of_stock' ? "bg-red-50 text-red-600 animate-pulse" : "bg-amber-50 text-amber-600"
                         )}>
-                          {(product.stock || 0) === 0 ? "Out of Stock" : `Stock: ${product.stock}`}
+                          {product.stock_state === 'out_of_stock' ? "Out of Stock" : `Stock: ${product.stock}`}
                         </span>
                       </td>
                     </tr>
                   ))}
-                  {products.filter(p => (p.stock || 0) <= (p.lowStockThreshold || 50)).length === 0 && (
+                  {stockAlerts.length === 0 && (
                     <tr>
                       <td colSpan={3} className="px-6 py-8 text-center text-slate-400">All inventory levels are secure.</td>
                     </tr>

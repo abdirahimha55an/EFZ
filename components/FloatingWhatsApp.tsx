@@ -4,22 +4,14 @@ import { MessageCircle } from "lucide-react";
 import { getWhatsAppUrl, EFZ_WHATSAPP_NUMBER } from "@/lib/utils";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { storage } from "@/lib/storage";
-import { useState, useEffect } from "react";
+import { usePublicSettings } from "@/lib/settings";
 
 export function FloatingWhatsApp() {
-  const [isMounted, setIsMounted] = useState(false);
-  const [whatsappNumber, setWhatsappNumber] = useState(EFZ_WHATSAPP_NUMBER);
-  
-  useEffect(() => {
-    setIsMounted(true);
-    const settings = storage.getSettings();
-    // Clean up number (remove +, spaces, etc. for wa.me)
-    const cleanNumber = settings.whatsappNumber.replace(/\D/g, '');
-    setWhatsappNumber(cleanNumber || EFZ_WHATSAPP_NUMBER);
-  }, []);
+  const settings = usePublicSettings();
 
-  if (!isMounted) return null;
+  // wa.me wants digits only, and falls back to the built-in number until the
+  // settings row arrives (or if it has none configured).
+  const whatsappNumber = settings.whatsappNumber.replace(/\D/g, '') || EFZ_WHATSAPP_NUMBER;
 
   const defaultMessage = "Hello EFZ, I'm interested in your football/futsal products.";
   const url = getWhatsAppUrl(whatsappNumber, defaultMessage);

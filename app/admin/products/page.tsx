@@ -1,18 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Plus, Search, Edit, Trash2, X, AlertTriangle, CheckCircle, Package, Link as LinkIcon, RefreshCcw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Plus, Search, Edit, Trash2, X, AlertTriangle, CheckCircle, Package, Link as LinkIcon, RefreshCcw, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { Product } from "@/lib/data";
-import { storage, AdminProfile } from "@/lib/storage";
+import { AdminProfile, Product } from "@/lib/types";
+import { getDb, describeDbError } from "@/lib/supabase/db";
+import { derivePermissions } from "@/lib/permissions";
 import { isValidImageUrl, validateProduct } from "@/lib/validators";
 
 export default function ProductsPage() {
-  const [isMounted, setIsMounted] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
+  const [profile, setProfile] = useState<AdminProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -35,10 +39,44 @@ export default function ProductsPage() {
     surfaceType: "All Surfaces"
   });
 
-  // Load from centralized storage
+  // Re-reads the catalog from Supabase. Every mutation ends with this rather
+  // than patching local state, so the numbers on screen are always the numbers
+  // the database actually holds after its triggers have run.
+  const refresh = useCallback(async () => {
+    const db = getDb();
+    const [nextProducts, nextProfile] = await Promise.all([
+      db.products.list(),
+      db.auth.getProfile(),
+    ]);
+    setProducts(nextProducts);
+    setProfile(nextProfile);
+  }, []);
+
   useEffect(() => {
-    setIsMounted(true);
-    setProducts(storage.getProducts());
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setIsLoading(true);
+        const db = getDb();
+        const [nextProducts, nextProfile] = await Promise.all([
+          db.products.list(),
+          db.auth.getProfile(),
+        ]);
+        if (cancelled) return;
+        setProducts(nextProducts);
+        setProfile(nextProfile);
+        setLoadError(null);
+      } catch (error) {
+        if (!cancelled) setLoadError(describeDbError(error));
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Notifications timeout
@@ -49,29 +87,27 @@ export default function ProductsPage() {
     }
   }, [notification]);
 
-  if (!isMounted) return null;
-
-  const currentUser = storage.getProfile();
-  const canViewInventory = storage.canViewInventory(currentUser);
-  const canAddProducts = storage.canAddProducts(currentUser);
-  const canEditProducts = storage.canEditProducts(currentUser);
-  const canDeleteProducts = storage.canDeleteProducts(currentUser);
-  const canAdjustStock = storage.canAdjustStock(currentUser);
-
-  const saveProducts = (newProducts: Product[]) => {
-    setProducts(newProducts);
-    storage.saveProducts(newProducts);
-  };
-
-  const resetToDefault = () => {
-    if (confirm("Reset inventory to default mock data?")) {
-      localStorage.removeItem("efz_mock_products");
-      window.location.reload();
-    }
-  };
+  const perms = derivePermissions(profile);
+  const canViewInventory = perms.viewInventory;
+  const canAddProducts = perms.addProducts;
+  const canEditProducts = perms.editProducts;
+  const canDeleteProducts = perms.deleteProducts;
+  const canAdjustStock = perms.adjustStock;
 
   const showNotification = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
+  };
+
+  const handleRefresh = async () => {
+    try {
+      setIsSaving(true);
+      await refresh();
+      showNotification('success', 'Catalog refreshed');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const openAddModal = () => {
@@ -118,20 +154,41 @@ export default function ProductsPage() {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id: string) => {
+  // Retires the product instead of erasing the row. Past orders keep pointing
+  // at it, so the order history and its profit figures stay intact.
+  const handleDelete = async (id: string) => {
     if (!canDeleteProducts) {
       showNotification('error', 'Permission denied: You are not allowed to delete products.');
       return;
     }
-    if (confirm("Are you sure you want to delete this product? This action cannot be undone.")) {
-      const product = products.find(p => p.id === id);
-      saveProducts(products.filter(p => p.id !== id));
-      storage.logger.log('INVENTORY', 'WARNING', `Product deleted: ${product?.name || id}`, { targetId: id });
-      showNotification('success', 'Product deleted successfully');
+
+    const product = products.find(p => p.id === id);
+    const confirmed = confirm(
+      `Remove "${product?.name || id}" from the catalog?\n\n` +
+      `It will disappear from the product list and the public site, but stays on every past order.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setIsSaving(true);
+      const db = getDb();
+      await db.products.deactivate(id);
+      await db.logs.write({
+        category: 'INVENTORY',
+        severity: 'WARNING',
+        message: `Product removed from catalog: ${product?.name || id}`,
+        targetId: id,
+      });
+      await refresh();
+      showNotification('success', 'Product removed from the catalog');
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingProduct) {
       if (!canEditProducts) {
@@ -161,96 +218,101 @@ export default function ProductsPage() {
       return;
     }
 
+    const savedData = {
+      ...formData,
+      stock: Number(formData.stock),
+      costPrice: Number(formData.costPrice),
+      sellingPrice: Number(formData.sellingPrice),
+      price: Number(formData.sellingPrice), // Keep legacy price in sync
+      lowStockThreshold: Number(formData.lowStockThreshold)
+    };
+
     try {
-      const savedData = {
-        ...formData,
-        stock: Number(formData.stock),
-        costPrice: Number(formData.costPrice),
-        sellingPrice: Number(formData.sellingPrice),
-        price: Number(formData.sellingPrice), // Keep legacy price in sync
-        lowStockThreshold: Number(formData.lowStockThreshold)
-      };
+      setIsSaving(true);
+      const db = getDb();
 
       if (editingProduct) {
-        // Update
         const oldStock = editingProduct.stock;
         const newStock = savedData.stock;
         const stockDiff = newStock - oldStock;
 
-        const updatedProducts = products.map(p => 
-          p.id === editingProduct.id ? { ...p, ...savedData } : p
-        );
-        saveProducts(updatedProducts);
+        // products.update deliberately ignores stock. Stock only ever moves
+        // through adjust_stock(), which writes the ledger entry in the same
+        // transaction, so the movement history can never go out of step.
+        await db.products.update(editingProduct.id, savedData);
 
         if (stockDiff !== 0) {
-          storage.addStockMovement({
-            productId: editingProduct.id,
-            productName: savedData.name,
-            type: 'manual_adjustment',
-            quantityChange: stockDiff,
-            reason: `Product stock manually updated from ${oldStock} to ${newStock}`,
-            createdBy: storage.getProfile()?.id || 'system'
-          });
+          await db.inventory.adjust(
+            editingProduct.id,
+            stockDiff,
+            `Product stock manually updated from ${oldStock} to ${newStock}`
+          );
         }
 
-        storage.logger.log('INVENTORY', 'INFO', `Product updated: ${savedData.name}`, { 
+        await db.logs.write({
+          category: 'INVENTORY',
+          severity: 'INFO',
+          message: `Product updated: ${savedData.name}`,
           targetId: editingProduct.id,
-          metadata: { 
-            oldValue: oldStock, 
+          metadata: {
+            oldValue: oldStock,
             newValue: newStock,
             field: 'stock',
-            source: 'Product Catalog'
-          }
+            source: 'Product Catalog',
+          },
         });
 
-        if (validation.warning) {
-          showNotification('success', `Product updated. Warning: ${validation.warning}`);
-        } else {
-          showNotification('success', 'Product updated successfully');
-        }
+        showNotification(
+          'success',
+          validation.warning ? `Product updated. Warning: ${validation.warning}` : 'Product updated successfully'
+        );
       } else {
-        // Create
-        const newProd: Product = {
-          id: "prod-" + Date.now(),
+        // Created with zero stock, then stocked through the ledger, so a new
+        // product's opening quantity is a movement like any other.
+        const created = await db.products.create({
           ...savedData,
-          isWholesale: true
-        };
-        saveProducts([newProd, ...products]);
+          stock: 0,
+          isWholesale: true,
+        });
 
         if (savedData.stock > 0) {
-          storage.addStockMovement({
-            productId: newProd.id,
-            productName: newProd.name,
-            type: 'manual_adjustment',
-            quantityChange: savedData.stock,
-            reason: `Initial stock for new product`,
-            createdBy: storage.getProfile()?.id || 'system'
-          });
+          await db.inventory.adjust(
+            created.id,
+            savedData.stock,
+            'Initial stock for new product',
+            'import'
+          );
         }
 
-        storage.logger.log('INVENTORY', 'INFO', `New product created: ${savedData.name}`, { 
-          targetId: newProd.id,
-          metadata: { 
-            oldValue: 0, 
+        await db.logs.write({
+          category: 'INVENTORY',
+          severity: 'INFO',
+          message: `New product created: ${savedData.name}`,
+          targetId: created.id,
+          metadata: {
+            oldValue: 0,
             newValue: savedData.stock,
             field: 'stock',
-            source: 'Product Catalog'
-          }
+            source: 'Product Catalog',
+          },
         });
 
-        if (validation.warning) {
-          showNotification('success', `New product added. Warning: ${validation.warning}`);
-        } else {
-          showNotification('success', 'New product added successfully');
-        }
+        showNotification(
+          'success',
+          validation.warning ? `New product added. Warning: ${validation.warning}` : 'New product added successfully'
+        );
       }
+
+      await refresh();
       setIsModalOpen(false);
     } catch (error) {
-      showNotification('error', 'Failed to save product');
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const handleQuickStockUpdate = (id: string, amount: number) => {
+  const handleQuickStockUpdate = async (id: string, amount: number) => {
     if (!canAdjustStock) {
       showNotification('error', 'Permission denied: You are not allowed to adjust stock.');
       return;
@@ -258,6 +320,7 @@ export default function ProductsPage() {
     const product = products.find(p => p.id === id);
     if (!product) return;
 
+    // The database refuses this too; checking here just avoids a round trip.
     if (product.stock + amount < 0) {
       showNotification('error', 'Stock cannot be reduced below 0.');
       return;
@@ -265,35 +328,37 @@ export default function ProductsPage() {
 
     const oldStock = product.stock;
     const newStock = oldStock + amount;
-
-    const updatedProducts = products.map(p => {
-      if (p.id === id) {
-        return { ...p, stock: newStock };
-      }
-      return p;
-    });
-
     const action = amount > 0 ? 'increased' : 'decreased';
-    storage.addStockMovement({
-      productId: product.id,
-      productName: product.name,
-      type: 'manual_adjustment',
-      quantityChange: amount,
-      reason: `Quick stock adjustment: ${amount > 0 ? '+' : ''}${amount}`,
-      createdBy: storage.getProfile()?.id || 'system'
-    });
 
-    storage.logger.log('INVENTORY', 'INFO', `Stock ${action} for ${product.name}: ${oldStock} -> ${newStock}`, { 
-      targetId: id,
-      metadata: { 
-        oldValue: oldStock, 
-        newValue: newStock,
-        field: 'stock',
-        source: 'Quick Adjust'
-      }
-    });
+    try {
+      setIsSaving(true);
+      const db = getDb();
 
-    saveProducts(updatedProducts);
+      await db.inventory.adjust(
+        id,
+        amount,
+        `Quick stock adjustment: ${amount > 0 ? '+' : ''}${amount}`
+      );
+
+      await db.logs.write({
+        category: 'INVENTORY',
+        severity: 'INFO',
+        message: `Stock ${action} for ${product.name}: ${oldStock} -> ${newStock}`,
+        targetId: id,
+        metadata: {
+          oldValue: oldStock,
+          newValue: newStock,
+          field: 'stock',
+          source: 'Quick Adjust',
+        },
+      });
+
+      await refresh();
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const filteredProducts = products.filter(product => 
@@ -306,6 +371,32 @@ export default function ProductsPage() {
     if (product.stock <= product.lowStockThreshold) return { label: 'Low Stock', color: 'text-amber-600 bg-amber-100', icon: <AlertTriangle className="h-3 w-3" /> };
     return { label: 'In Stock', color: 'text-green-600 bg-green-100', icon: <CheckCircle className="h-3 w-3" /> };
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <p className="text-xs font-medium">Loading catalog…</p>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Card className="border-none shadow-sm">
+        <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <AlertTriangle className="h-8 w-8 text-red-500" />
+          <div>
+            <h2 className="font-heading text-lg font-bold text-slate-900">Could not load the catalog</h2>
+            <p className="mt-1 max-w-md text-xs text-slate-500">{loadError}</p>
+          </div>
+          <Button onClick={handleRefresh} variant="outline" size="sm" className="rounded-lg text-xs">
+            <RefreshCcw className="mr-1.5 h-3.5 w-3.5" /> Try again
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-8 relative">
@@ -328,11 +419,11 @@ export default function ProductsPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button onClick={resetToDefault} variant="outline" size="sm" className="text-slate-500 border-slate-200 rounded-lg h-10 px-4 text-xs">
-            <RefreshCcw className="h-3.5 w-3.5 mr-1.5" /> Reset Data
+          <Button onClick={handleRefresh} disabled={isSaving} variant="outline" size="sm" className="text-slate-500 border-slate-200 rounded-lg h-10 px-4 text-xs">
+            <RefreshCcw className={cn("h-3.5 w-3.5 mr-1.5", isSaving && "animate-spin")} /> Refresh
           </Button>
           {canAddProducts && (
-            <Button onClick={openAddModal} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
+            <Button onClick={openAddModal} disabled={isSaving} className="bg-slate-900 text-white rounded-lg h-10 px-4 text-xs shadow-lg shadow-slate-200">
               <Plus className="h-4 w-4 mr-1" /> Add New Product
             </Button>
           )}
@@ -427,24 +518,24 @@ export default function ProductsPage() {
                         <td className="px-6 py-3">
                           <div className="flex items-center gap-2">
                             <div className="flex items-center bg-white border border-slate-200 rounded overflow-hidden shadow-sm h-7">
-                              <button 
+                              <button
                                 onClick={() => canAdjustStock ? handleQuickStockUpdate(product.id, -1) : undefined}
                                 className={cn(
                                   "px-2 text-slate-400 transition-colors border-r border-slate-200 font-bold",
-                                  canAdjustStock ? "hover:bg-slate-50 hover:text-slate-900" : "cursor-not-allowed opacity-50"
+                                  canAdjustStock && !isSaving ? "hover:bg-slate-50 hover:text-slate-900" : "cursor-not-allowed opacity-50"
                                 )}
-                                disabled={!canAdjustStock}
+                                disabled={!canAdjustStock || isSaving}
                               >-</button>
                               <div className="w-8 text-center font-bold text-[10px] text-slate-900">
                                 {canViewInventory ? product.stock : '—'}
                               </div>
-                              <button 
+                              <button
                                 onClick={() => canAdjustStock ? handleQuickStockUpdate(product.id, 1) : undefined}
                                 className={cn(
                                   "px-2 text-slate-400 transition-colors border-l border-slate-200 font-bold",
-                                  canAdjustStock ? "hover:bg-slate-50 hover:text-slate-900" : "cursor-not-allowed opacity-50"
+                                  canAdjustStock && !isSaving ? "hover:bg-slate-50 hover:text-slate-900" : "cursor-not-allowed opacity-50"
                                 )}
-                                disabled={!canAdjustStock}
+                                disabled={!canAdjustStock || isSaving}
                               >+</button>
                             </div>
                             <div className="flex flex-col leading-none">
@@ -461,7 +552,7 @@ export default function ProductsPage() {
                               </Button>
                             )}
                             {canDeleteProducts && (
-                              <Button onClick={() => handleDelete(product.id)} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
+                              <Button onClick={() => handleDelete(product.id)} disabled={isSaving} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             )}
@@ -518,7 +609,7 @@ export default function ProductsPage() {
                       <select 
                         className="flex h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-brand-green outline-none transition-all"
                         value={formData.category}
-                        onChange={e => setFormData({...formData, category: e.target.value as any})}
+                        onChange={e => setFormData({...formData, category: e.target.value as Product["category"]})}
                       >
                         <option value="Football">Football</option>
                         <option value="Futsal">Futsal</option>
@@ -669,18 +760,21 @@ export default function ProductsPage() {
               </div>
 
               <div className="flex gap-3 pt-4 border-t">
-                <Button 
-                  type="button" 
-                  variant="ghost" 
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={isSaving}
                   className="flex-1 text-slate-500 font-bold"
                   onClick={() => setIsModalOpen(false)}
                 >
                   Cancel
                 </Button>
-                <Button 
-                  type="submit" 
+                <Button
+                  type="submit"
+                  disabled={isSaving}
                   className="flex-1 bg-brand-blue hover:bg-brand-blue/90 text-white font-bold py-6 shadow-lg shadow-blue-200"
                 >
+                  {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {editingProduct ? 'Save Changes' : 'Create Product'}
                 </Button>
               </div>
