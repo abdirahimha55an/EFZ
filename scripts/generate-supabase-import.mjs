@@ -90,7 +90,7 @@ const VALID_LOG_CATEGORIES = new Set([
 ]);
 const VALID_NOTIFICATION_TYPES = new Set(["stock", "order", "system"]);
 
-/** Matches migrateStatus() in lib/services/order.service.ts. */
+/** Matches migrateStatus() from the removed legacy lib/services/order.service.ts. */
 const normalizeOrderStatus = (status) => {
   const value = String(status || "pending").toLowerCase();
   if (VALID_ORDER_STATUSES.has(value)) return value;

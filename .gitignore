@@ -43,4 +43,6 @@ next-env.d.ts
 
 # real customer data - never commit
 /Backup/
+/Dev/
 /supabase/06_data_import.sql
+**/06_data_import.sql

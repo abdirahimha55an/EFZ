@@ -635,11 +635,19 @@ export function createDb(client: EfzSupabaseClient) {
   // Public order requests
   // -------------------------------------------------------------------------
   const orderRequests = {
-    /** Called from the public order form. Works for signed-out visitors. */
+    /**
+     * Called from the public order form. Works for signed-out visitors.
+     *
+     * No `.select()` after the insert: anon may write a request but never read
+     * one back, and RETURNING would be checked against the (absent) anon
+     * select policy and fail. The id is generated here instead.
+     */
     async submit(input: OrderRequestInput): Promise<string> {
-      const { data, error } = await client
+      const id = globalThis.crypto?.randomUUID?.();
+      const { error } = await client
         .from("order_requests")
         .insert({
+          ...(id ? { id } : {}),
           customer_name: input.customerName,
           phone: input.phone,
           organization: input.organization ?? "",
@@ -648,12 +656,10 @@ export function createDb(client: EfzSupabaseClient) {
           quantity: Math.max(1, Math.round(input.quantity)),
           delivery_location: input.deliveryLocation ?? "",
           notes: input.notes ?? "",
-        })
-        .select()
-        .single();
+        });
 
       if (error) throw new EfzDbError("orderRequests.submit", error);
-      return data.id;
+      return id ?? "";
     },
 
     async list(status?: OrderRequestRow["status"]): Promise<OrderRequestRow[]> {
