@@ -16,6 +16,7 @@ import type {
   AdminSettings,
   AdminUser,
   Customer,
+  CustomerOwnershipChange,
   Notification,
   Order,
   OrderStatus,
@@ -54,6 +55,7 @@ import {
   fromSettings,
   toAdminUser,
   toCustomer,
+  toCustomerOwnershipChange,
   toNotification,
   toOrder,
   toProduct,
@@ -87,23 +89,44 @@ export class EfzDbError extends Error {
   }
 }
 
+/** The database's own sentence, without the "orders.create: " context prefix. */
+const dbSentence = (error: EfzDbError) => error.message.replace(/^[^:]+:\s*/, "");
+
 /**
  * Turns anything thrown by this layer into a sentence worth showing a user.
  *
- * `42501` is Postgres for "insufficient privilege" - what both an RLS refusal
- * and a `require_permission()` failure surface as. `P0001` is a plain
- * `raise exception`, and those messages are already written for humans
+ * `42501` is Postgres for "insufficient privilege". Two kinds arrive with it:
+ *   * the generic ones Postgres writes itself ("new row violates row-level
+ *     security policy", "permission denied for table ...") - replaced here
+ *     with a plain sentence, since they mean nothing to staff;
+ *   * the business rules raised by 08/10 ("Only a Super Admin can ...",
+ *     "Order X has payments or paid commission ...") - written for people, so
+ *     they are shown as they are.
+ * `P0001` is a plain `raise exception`, also already written for humans
  * ("Insufficient stock for EFZ - Nexus: 3 in stock, 5 requested").
+ *
+ * `hideCost`: create_order() quotes the product's cost when it refuses a
+ * below-cost price. For someone who may not see cost, that figure is replaced.
  */
-export function describeDbError(error: unknown): string {
+export function describeDbError(error: unknown, options: { hideCost?: boolean } = {}): string {
   if (error instanceof EfzDbError) {
+    let sentence = dbSentence(error);
+
+    if (options.hideCost && /below its cost/i.test(sentence)) {
+      return "That price is below the product's cost. Only a Super Admin can approve a below-cost sale.";
+    }
+
     if (error.code === "42501") {
-      return "Permission denied: your account is not allowed to do that.";
+      if (/row-level security|permission denied for/i.test(sentence)) {
+        return "Permission denied: your account is not allowed to do that.";
+      }
+      sentence = sentence.replace(/^Permission denied: (\S+) is required$/, "Permission denied: this needs the $1 permission.");
+      return sentence;
     }
     if (error.code === "23505") return "That record already exists.";
     if (error.code === "23503") return "That record is still referenced by something else.";
-    if (error.code === "P0001") return error.message.replace(/^[^:]+:\s*/, "");
-    return error.message;
+    if (error.code === "23514") return `That value is not allowed: ${sentence}`;
+    return sentence;
   }
   if (error instanceof Error) return error.message;
   return "Something went wrong.";
@@ -128,24 +151,44 @@ const newId = (prefix: string): string =>
   `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`}`;
 
 // ---------------------------------------------------------------------------
+// Column lists
+// ---------------------------------------------------------------------------
+// Explicit, so a query never asks for more than the screen needs. The cost
+// columns of products / orders / order_items are not selectable at all since
+// 10_rpc_hardening.sql; those reads go through staff_products and the views.
+
+// Single literals (no concatenation) so supabase-js can type the rows.
+const PROFILE_COLUMNS = "id, auth_user_id, name, email, phone, avatar, role, status, commission_percentage, earned_commission_total, pending_commission_total, paid_commission_total, created_at, updated_at";
+
+const CUSTOMER_COLUMNS = "id, name, email, phone, registered_by, marketing_officer_id, registered_on, notes, status, created_at, updated_at";
+
+const STAFF_PRODUCT_COLUMNS = "id, name, description, category, size, durability, surface_type, is_wholesale, cost_price, selling_price, stock, low_stock_threshold, image_url, is_active, price, created_at, updated_at";
+
+// ---------------------------------------------------------------------------
 // Public inputs
 // ---------------------------------------------------------------------------
 
+/**
+ * What create_order() accepts from the app. The database decides everything
+ * else: status (always pending), the Marketing Officer (the customer's
+ * owner), the list price and cost snapshot, totals and payment status.
+ */
 export type CreateOrderInput = {
-  id?: string;
-  customerId?: string;
+  customerId: string;
   customerName?: string;
   phone?: string;
-  marketingOfficerId?: string;
   orderType?: "regular" | "trial";
+  /** Omit for today (Mogadishu). A past date is accepted from a Super Admin only. */
   orderDate?: string;
   deliveryNotes?: string;
-  status?: OrderStatus;
+  /** Required by the database when a Super Admin approves a line below cost. */
+  belowCostReason?: string;
   items: Array<{
     productId: string;
+    /** Whole number, at least 1. */
     quantity: number;
+    /** Negotiated price; omit for the product's selling price. */
     actualUnitPrice?: number;
-    standardUnitPrice?: number;
     designName?: string;
   }>;
 };
@@ -154,8 +197,20 @@ export type RecordPaymentInput = {
   orderId: string;
   amount: number;
   paymentMethod?: string;
+  /**
+   * Omit for today (Mogadishu). A past date is accepted from a Super Admin
+   * only; a future date from nobody.
+   */
   paymentDate?: string;
   reference?: string;
+  notes?: string;
+};
+
+/** Staff-editable customer fields. Ownership is set by the database and transfer_customer_owner(). */
+export type CustomerInput = {
+  name: string;
+  phone: string;
+  email?: string;
   notes?: string;
 };
 
@@ -208,7 +263,7 @@ export function createDb(client: EfzSupabaseClient) {
 
       const { data, error } = await client
         .from("profiles")
-        .select("*, user_permissions(permission_code)")
+        .select(`${PROFILE_COLUMNS}, user_permissions(permission_code)`)
         .eq("auth_user_id", authUser.id)
         .maybeSingle();
 
@@ -251,7 +306,7 @@ export function createDb(client: EfzSupabaseClient) {
     async list(): Promise<AdminUser[]> {
       const { data, error } = await client
         .from("profiles")
-        .select("*, user_permissions(permission_code)")
+        .select(`${PROFILE_COLUMNS}, user_permissions(permission_code)`)
         .order("name");
 
       if (error) throw new EfzDbError("users.list", error);
@@ -267,7 +322,7 @@ export function createDb(client: EfzSupabaseClient) {
     async get(id: string): Promise<AdminUser | null> {
       const { data, error } = await client
         .from("profiles")
-        .select("*, user_permissions(permission_code)")
+        .select(`${PROFILE_COLUMNS}, user_permissions(permission_code)`)
         .eq("id", id)
         .maybeSingle();
 
@@ -291,7 +346,7 @@ export function createDb(client: EfzSupabaseClient) {
 
       const created = unwrap(
         "users.create",
-        await client.from("profiles").insert(row).select().single()
+        await client.from("profiles").insert(row).select(PROFILE_COLUMNS).single()
       );
 
       if (user.permissions?.length) {
@@ -305,7 +360,7 @@ export function createDb(client: EfzSupabaseClient) {
       const row = fromAdminUser(patch);
 
       if (Object.keys(row).length > 0) {
-        unwrap("users.update", await client.from("profiles").update(row).eq("id", id).select().single());
+        unwrap("users.update", await client.from("profiles").update(row).eq("id", id).select("id").single());
       }
 
       if (patch.permissions) {
@@ -352,49 +407,79 @@ export function createDb(client: EfzSupabaseClient) {
   const customers = {
     /** RLS already narrows this to what the caller may see. */
     async list(options: { includeArchived?: boolean } = {}): Promise<Customer[]> {
-      let query = client.from("customers").select("*").order("registered_on", { ascending: false });
+      let query = client.from("customers").select(CUSTOMER_COLUMNS).order("registered_on", { ascending: false });
       if (!options.includeArchived) query = query.eq("status", "active");
 
       return unwrapList("customers.list", await query).map(toCustomer);
     },
 
     async get(id: string): Promise<Customer | null> {
-      const { data, error } = await client.from("customers").select("*").eq("id", id).maybeSingle();
+      const { data, error } = await client.from("customers").select(CUSTOMER_COLUMNS).eq("id", id).maybeSingle();
       if (error) throw new EfzDbError("customers.get", error);
       return data ? toCustomer(data) : null;
     },
 
-    async create(customer: Omit<Customer, "id"> & { id?: string }): Promise<Customer> {
-      const id = customer.id ?? newId("cust");
-      const row = {
-        ...fromCustomer({ ...customer, id }),
-        id,
-        name: customer.name,
-        registered_on: customer.date || new Date().toISOString().slice(0, 10),
-      };
+    /**
+     * Registers a customer. Ownership is not sent: the database makes a
+     * Marketing Officer the owner of their own registration and leaves
+     * everyone else's unassigned; it also stamps registered_by and the
+     * (Mogadishu) registration date.
+     */
+    async create(customer: CustomerInput): Promise<Customer> {
+      const id = newId("cust");
+      const row = { ...fromCustomer(customer), id, name: customer.name };
 
       return toCustomer(
-        unwrap("customers.create", await client.from("customers").insert(row).select().single())
+        unwrap("customers.create", await client.from("customers").insert(row).select(CUSTOMER_COLUMNS).single())
       );
     },
 
-    async update(id: string, patch: Partial<Customer>): Promise<Customer> {
+    /** Contact fields and status only. The owner moves with transferOwner(). */
+    async update(id: string, patch: Partial<CustomerInput & { status: "active" | "archived" }>): Promise<Customer> {
       return toCustomer(
         unwrap(
           "customers.update",
-          await client.from("customers").update(fromCustomer(patch)).eq("id", id).select().single()
+          await client.from("customers").update(fromCustomer(patch)).eq("id", id).select(CUSTOMER_COLUMNS).single()
         )
       );
     },
 
     /** Archiving is preferred over deleting: it keeps the order history intact. */
     async archive(id: string): Promise<Customer> {
-      return customers.update(id, { status: "archived", isArchived: true });
+      return customers.update(id, { status: "archived" });
     },
 
+    /** Refused by the database for a customer with orders - archive those. */
     async remove(id: string): Promise<void> {
       const { error } = await client.from("customers").delete().eq("id", id);
       if (error) throw new EfzDbError("customers.remove", error);
+    },
+
+    /**
+     * Assigns an unassigned customer to a Marketing Officer, or moves one to
+     * another. Super Admin only, reason required, recorded in
+     * customer_ownership_changes. Undelivered orders follow the customer;
+     * delivered orders keep the officer who earned them.
+     */
+    async transferOwner(customerId: string, newOfficerId: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("transfer_customer_owner", {
+        p_customer_id: customerId,
+        p_new_officer_id: newOfficerId,
+        p_reason: reason,
+      });
+      if (error) throw new EfzDbError("customers.transferOwner", error);
+    },
+
+    /** The audited assignment / transfer history of one customer, newest first. */
+    async ownershipHistory(customerId: string): Promise<CustomerOwnershipChange[]> {
+      return unwrapList(
+        "customers.ownershipHistory",
+        await client
+          .from("customer_ownership_changes")
+          .select("id, customer_id, customer_name, old_officer_id, old_officer_name, new_officer_id, new_officer_name, reason, orders_moved, changed_by, changed_by_name, changed_at")
+          .eq("customer_id", customerId)
+          .order("changed_at", { ascending: false })
+      ).map(toCustomerOwnershipChange);
     },
 
     /** Revenue, cash collected and outstanding balance per customer. */
@@ -409,40 +494,56 @@ export function createDb(client: EfzSupabaseClient) {
   // -------------------------------------------------------------------------
   // Products
   // -------------------------------------------------------------------------
+  // Reads go through staff_products: the same rows, with cost_price null for
+  // anyone who may not see cost. products.cost_price itself is not
+  // selectable, so writes never ask for the row back - they re-read it here.
   const products = {
     async list(options: { includeInactive?: boolean } = {}): Promise<Product[]> {
-      let query = client.from("products").select("*").order("name");
+      let query = client.from("staff_products").select(STAFF_PRODUCT_COLUMNS).order("name");
       if (!options.includeInactive) query = query.eq("is_active", true);
 
       return unwrapList("products.list", await query).map(toProduct);
     },
 
     async get(id: string): Promise<Product | null> {
-      const { data, error } = await client.from("products").select("*").eq("id", id).maybeSingle();
+      const { data, error } = await client.from("staff_products").select(STAFF_PRODUCT_COLUMNS).eq("id", id).maybeSingle();
       if (error) throw new EfzDbError("products.get", error);
       return data ? toProduct(data) : null;
     },
 
-    async create(product: Omit<Product, "id"> & { id?: string }): Promise<Product> {
-      const id = product.id ?? newId("prod");
-      const row = { ...fromProduct({ ...product, id }), id, name: product.name };
+    /**
+     * Creates the product with stock 0 (stock arrives through inventory.adjust).
+     * Selling price and cost are only sent when the caller may price - a
+     * Super Admin or Manager; anyone else creates it unpriced for a manager.
+     */
+    async create(product: Omit<Product, "id" | "costPrice" | "price"> & { costPrice?: number | null }): Promise<Product> {
+      const id = newId("prod");
+      const row = { ...fromProduct({ ...product, stock: 0 }), id, name: product.name };
 
-      return toProduct(
-        unwrap("products.create", await client.from("products").insert(row).select().single())
-      );
+      const { error } = await client.from("products").insert(row);
+      if (error) throw new EfzDbError("products.create", error);
+
+      const created = await products.get(id);
+      if (!created) throw new Error("products.create: the product was created but could not be read back");
+      return created;
     },
 
     /**
      * Updates product fields. Stock is deliberately not writable here - use
      * inventory.adjust() so every change lands in the movement ledger.
+     * Leave sellingPrice / costPrice out of the patch unless the caller may
+     * price; the database refuses a price change from anyone else.
      */
     async update(id: string, patch: Partial<Product>): Promise<Product> {
       const row = fromProduct(patch);
       delete row.stock;
 
-      return toProduct(
-        unwrap("products.update", await client.from("products").update(row).eq("id", id).select().single())
-      );
+      const { error } = await client.from("products").update(row).eq("id", id);
+      if (error) throw new EfzDbError("products.update", error);
+
+      const updated = await products.get(id);
+      if (!updated) throw new Error(`products.update: product ${id} could not be read back`);
+      return updated;
     },
 
     /** Soft delete. Keeps the product on historical orders. */
@@ -564,7 +665,8 @@ export function createDb(client: EfzSupabaseClient) {
 
     /**
      * Creates the order, its items and the stock deductions atomically.
-     * Throws if any product is short on stock - nothing is written in that case.
+     * Throws if any product is short on stock, or any rule in create_order()
+     * refuses it - nothing is written in that case.
      */
     async create(input: CreateOrderInput): Promise<Order> {
       const { data, error } = await client.rpc("create_order", {
@@ -578,8 +680,11 @@ export function createDb(client: EfzSupabaseClient) {
     },
 
     /**
-     * Moves an order through the fulfilment pipeline. Illegal transitions are
-     * refused unless the caller is a Super Admin. Cancelling restores stock.
+     * Moves an order through the fulfilment pipeline (update_order_status()).
+     * Overrides - leaving delivered, reactivating a cancelled order - and
+     * cancelling an order with payments or paid commission need a Super Admin
+     * and a reason. Cancelling restores stock; first delivery stamps
+     * delivered_at.
      */
     async setStatus(id: string, status: OrderStatus, reason = ""): Promise<void> {
       const { error } = await client.rpc("update_order_status", {
@@ -590,17 +695,14 @@ export function createDb(client: EfzSupabaseClient) {
       if (error) throw new EfzDbError("orders.setStatus", error);
     },
 
-    /** Editable metadata only. Financial columns are trigger-maintained. */
-    async update(
-      id: string,
-      patch: { deliveryNotes?: string; customerId?: string; marketingOfficerId?: string; phone?: string }
-    ): Promise<void> {
+    /**
+     * Delivery notes and the contact phone - the only order fields staff edit
+     * directly. Totals, status, dates, customer and officer belong to the
+     * database and the RPCs.
+     */
+    async update(id: string, patch: { deliveryNotes?: string; phone?: string }): Promise<void> {
       const row: OrderUpdate = {};
       if (patch.deliveryNotes !== undefined) row.delivery_notes = patch.deliveryNotes;
-      if (patch.customerId !== undefined) row.customer_id = patch.customerId || null;
-      if (patch.marketingOfficerId !== undefined) {
-        row.marketing_officer_id = patch.marketingOfficerId || null;
-      }
       if (patch.phone !== undefined) row.phone = patch.phone;
       if (Object.keys(row).length === 0) return;
 
@@ -608,9 +710,17 @@ export function createDb(client: EfzSupabaseClient) {
       if (error) throw new EfzDbError("orders.update", error);
     },
 
+    /**
+     * Super Admin only, and only a cancelled order (so its stock is back) with
+     * no payments and no paid commission. Anything else is cancelled instead.
+     * Asks for the deleted id back so a refusal cannot pass as success.
+     */
     async remove(id: string): Promise<void> {
-      const { error } = await client.from("orders").delete().eq("id", id);
+      const { data, error } = await client.from("orders").delete().eq("id", id).select("id");
       if (error) throw new EfzDbError("orders.remove", error);
+      if (!data || data.length === 0) {
+        throw new Error(`Order ${id} was not deleted: only a Super Admin can delete, and only a cancelled order.`);
+      }
     },
 
     /** Records a payment. Overpayment is refused by the database. */
@@ -619,7 +729,8 @@ export function createDb(client: EfzSupabaseClient) {
         p_order_id: input.orderId,
         p_amount: input.amount,
         p_method: input.paymentMethod ?? "Cash",
-        p_date: input.paymentDate ?? new Date().toISOString().slice(0, 10),
+        // Omitted: the database uses today in Mogadishu.
+        ...(input.paymentDate ? { p_date: input.paymentDate } : {}),
         p_reference: input.reference ?? "",
         p_notes: input.notes ?? "",
       });
@@ -701,6 +812,23 @@ export function createDb(client: EfzSupabaseClient) {
       return unwrapList("commissions.list", await query);
     },
 
+    /**
+     * The rows pay_commissions() will accept for this officer: unpaid
+     * (pending / approved), above $0, on a delivered order. The database
+     * checks every one of these again, under lock, and pays all or nothing.
+     */
+    async payable(userId: string) {
+      const rows = await commissions.list({ userId });
+      return rows.filter((row) => {
+        const order = (row as typeof row & { orders: { status: OrderStatus } | null }).orders;
+        return (
+          (row.status === "pending" || row.status === "approved") &&
+          Number(row.amount) > 0 &&
+          order?.status === "delivered"
+        );
+      });
+    },
+
     /** The payout board: earned, paid and pending per officer. */
     async summary(): Promise<OfficerCommissionSummaryRow[]> {
       return unwrapList(
@@ -768,7 +896,7 @@ export function createDb(client: EfzSupabaseClient) {
         tables.map(async (table) => {
           const { count, error } = await client
             .from(table)
-            .select("*", { count: "exact", head: true });
+            .select("id", { count: "exact", head: true });
           if (error) throw new EfzDbError(`analytics.dataCounts(${table})`, error);
           return [table, count ?? 0] as const;
         })
@@ -810,7 +938,7 @@ export function createDb(client: EfzSupabaseClient) {
     async count(): Promise<number> {
       const { count, error } = await client
         .from("system_logs")
-        .select("*", { count: "exact", head: true });
+        .select("id", { count: "exact", head: true });
       if (error) throw new EfzDbError("logs.count", error);
       return count ?? 0;
     },
@@ -1048,13 +1176,29 @@ export function createDb(client: EfzSupabaseClient) {
     async create(label: string) {
       const [profileRows, customerRows, productRows, orderRows, movementRows, settingsRow] =
         await Promise.all([
-          client.from("profiles").select("*"),
-          client.from("customers").select("*"),
-          client.from("products").select("*"),
+          client.from("profiles").select(PROFILE_COLUMNS),
+          client.from("customers").select(CUSTOMER_COLUMNS),
+          // products.cost_price is not selectable; the view carries it for a
+          // user who may see cost (manage_system holders normally can).
+          client.from("staff_products").select(STAFF_PRODUCT_COLUMNS),
           client.from("order_details").select("*"),
           client.from("stock_movements").select("*"),
           client.from("settings").select("*").eq("id", true).single(),
         ]);
+
+      // A table that failed to read must fail the backup, not become an
+      // empty array in a file that looks complete.
+      const failed = (
+        [
+          ["profiles", profileRows.error],
+          ["customers", customerRows.error],
+          ["products", productRows.error],
+          ["orders", orderRows.error],
+          ["stock_movements", movementRows.error],
+          ["settings", settingsRow.error],
+        ] as const
+      ).find(([, err]) => err);
+      if (failed) throw new EfzDbError(`backups.create(${failed[0]})`, failed[1]!);
 
       const payload = {
         profiles: profileRows.data ?? [],

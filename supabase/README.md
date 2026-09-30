@@ -17,14 +17,18 @@ The PostgreSQL schema, security policies and data import for Elite Football Zone
 | `05_seed.sql` | Permission catalog, settings row, testimonials, role presets |
 | `06_data_import.sql` | Your real records. Generated — see below |
 | `07_diagnostics.sql` | Integrity scanner, automatic repairs, operational metrics |
+| `08_security_hardening.sql` | Role hierarchy, column guards on profiles/orders/products, owner-rights `public_products`, audit identity, order-request validation, confirmed-email linking |
+| `09_fix_run_diagnostics.sql` | Fixes `run_diagnostics()`, which failed on every run with "malformed array literal" |
+| `checks/validate_financials.sql` | **Not a migration.** Read-only report: approved historical baseline, order/payment/commission integrity, current totals |
 
 ## Setup
 
 ### 1. Create the project
 
-Create a Supabase project, then open **SQL Editor** and run `01` through `05`
-and then `07` in order (`06` is your data - see below). Each file is
-idempotent, so a re-run is safe.
+Create a Supabase project, then open **SQL Editor** and run `01` through `05`,
+then `07`, `08` and `09` in order (`06` is your data - see below). Each file is
+idempotent, so a re-run is safe. Later files redefine objects from earlier
+ones, so if you ever re-run a file, re-run every file after it too.
 
 ### 2. Import your data
 
@@ -56,8 +60,26 @@ From the 2026-09-09 backup that is:
 | `abdi@efz.so` | Marketing Officer | `u-db5f39ee-…` |
 | `hassan@efz.so` | Marketing Officer | `u-c4649f3f-…` |
 
-A signup with an email that matches no profile gets a new **inactive** profile,
-so an unknown account can do nothing until an admin activates it.
+A profile is linked only once the Auth account's email is confirmed, or when
+the account was created by an admin (dashboard "Add user" with auto-confirm,
+or an invite). An unconfirmed sign-up claims nothing. A confirmed sign-up with
+an email that matches no profile gets a new **inactive** profile, so an
+unknown account can do nothing until an admin activates it.
+
+#### Production Auth settings
+
+The app has no public sign-up, password-reset or magic-link flow: its only
+Auth call is `signInWithPassword` on `/admin/login`. Every staff account is
+provisioned by an administrator (profile in **Admin → Users**, then **Add
+user** or **Invite** in the Supabase dashboard). So in production:
+
+- **Authentication → Sign In / Providers → "Allow new users to sign up": off.**
+  Dashboard "Add user" and invites keep working with it off.
+- **"Confirm email": on.**
+- Email is the only provider that needs to be enabled.
+
+The database no longer depends on this for safety - an unwanted sign-up gets
+an inactive profile and no data - but there is no reason to accept them.
 
 ### 4. Configure the app
 
@@ -110,6 +132,33 @@ per user through `user_permissions`. Every RLS policy calls
 
 `grant_role_preset(user_id, role)` applies a sensible default set for a role.
 
+### Super Admin is the top of a hierarchy
+
+Enforced in the database by `08_security_hardening.sql`, not by the UI:
+
+- Only a Super Admin can grant the Super Admin role, or edit, deactivate,
+  delete or change the permissions of a Super Admin.
+- The last active Super Admin cannot be demoted, deactivated or deleted.
+- `manage_users`, `manage_system` and `change_settings` are reserved: only a
+  Super Admin can grant or revoke them. So only a Super Admin creates user
+  managers, and only a Super Admin can change or delete one.
+- A user manager who is not a Super Admin can grant or revoke only
+  permissions they hold themselves, never on their own account, and cannot
+  change their own role, status or commission rate.
+- Re-saving a user without changing their permissions is always allowed.
+- Direct writes to `user_permissions` are Super Admin only; everyone else goes
+  through `set_user_permissions()`, which applies these rules.
+
+### Validating the numbers
+
+`checks/validate_financials.sql` is a single read-only `SELECT`. It confirms
+that the seven parent orders approved in the 2026-09-01 historical migration
+still total 7 orders, 11 units, $119.00 revenue, $73.70 cost, $45.30 gross
+profit and 38.07% margin, with the same per-product and per-customer splits.
+It then recomputes every order from its lines and payments, checks the
+commission ledger, and prints the current totals. Any `FAIL` row needs
+attention; `WARN` rows need a look.
+
 ### Diagnostics scans for what constraints cannot catch
 
 `run_diagnostics()` rewrites `public.system_issues` from nine checks. It does
@@ -139,7 +188,11 @@ rows their permissions allow. A Marketing Officer with
 request they craft.
 
 Views are declared `security_invoker = true`, so they respect the caller's
-policies rather than the view owner's.
+policies rather than the view owner's. The one exception is
+`public_products`: `08` makes it an owner-rights view so anon can read the
+catalogue without any access to `products` (and so to `cost_price`). Every
+privilege on it except `SELECT` is revoked. Supabase's security advisor will
+list it as a "security definer view"; that is deliberate.
 
 ## Using it from the app
 
@@ -217,11 +270,14 @@ read only what anon is allowed:
 
 ### Dead code left behind
 
-`lib/storage.ts`, `lib/data.ts`, `lib/storage/`, `lib/services/` and
-`lib/diagnostics/` — about 2,000 lines — are no longer imported by anything in
-`app/` or `components/`. The only remaining reference is
-`scripts/validate-approved-historical-orders.ts`, a one-off from the 2026-09-01
-parent-order migration. They still carry most of the repo's lint errors.
+`lib/storage.ts`, `lib/services/{backup,customer,order,product}.service.ts`,
+`lib/diagnostics/diagnostics.service.ts` and
+`scripts/validate-approved-historical-orders.ts` were removed: they imported a
+2026-09-01 backup JSON that no longer exists, which broke `next build`. They
+remain in git history.
+
+Still unused but harmless: `lib/data.ts`, `lib/storage/`, the rest of
+`lib/services/`, `lib/diagnostics/logger.ts` and `backend/`.
 
 `lib/financial.ts` and `lib/validators/` are **still in use** and should stay.
 

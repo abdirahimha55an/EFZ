@@ -1,5 +1,12 @@
 /**
- * Hand-written mirror of the schema in supabase/01_schema.sql.
+ * Hand-written mirror of the schema in supabase/01_schema.sql, as amended by
+ * 08_security_hardening.sql and 10_rpc_hardening.sql.
+ *
+ * Since 10, the authenticated role cannot SELECT products.cost_price,
+ * orders.cost / gross_profit or order_items.historical_unit_cost / line_cost /
+ * line_profit. Those tables' Row types still list them because INSERT/UPDATE
+ * use them, but reads go through the views, whose cost columns are null for a
+ * user without view_inventory / view_reports.
  *
  * Once the project is linked you can regenerate this file instead of editing it:
  *   npx supabase gen types typescript --project-id <ref> > lib/supabase/database.types.ts
@@ -11,6 +18,7 @@ export type DbUserRole =
   | "Super Admin"
   | "Manager"
   | "Marketing Officer"
+  | "Customer Service"
   | "Inventory Staff"
   | "Delivery Staff";
 
@@ -139,6 +147,7 @@ export type OrderRow = {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  delivered_at: string | null;
 };
 
 export type OrderItemRow = {
@@ -301,11 +310,12 @@ export type OrderDetailItem = {
   standardUnitPrice: number;
   actualUnitPrice: number;
   price: number;
-  historicalUnitCost: number;
-  costPrice: number;
+  // null when the caller may not see cost (see can_view_cost() in 10).
+  historicalUnitCost: number | null;
+  costPrice: number | null;
   lineRevenue: number;
-  lineCost: number;
-  lineProfit: number;
+  lineCost: number | null;
+  lineProfit: number | null;
 };
 
 export type OrderDetailPayment = {
@@ -322,8 +332,10 @@ export type OrderDetailPayment = {
 
 export type OrderDetailsRow = Omit<
   OrderRow,
-  "created_by" | "legacy_order_ids"
+  "created_by" | "legacy_order_ids" | "cost" | "gross_profit"
 > & {
+  cost: number | null;
+  gross_profit: number | null;
   marketing_officer_name: string | null;
   legacy_order_ids: string[];
   items: OrderDetailItem[];
@@ -352,11 +364,11 @@ export type InventoryStatusRow = {
   category: DbProductCategory;
   stock: number;
   low_stock_threshold: number;
-  cost_price: number;
+  cost_price: number | null;
   selling_price: number;
-  unit_margin: number;
-  margin_percentage: number;
-  stock_value_at_cost: number;
+  unit_margin: number | null;
+  margin_percentage: number | null;
+  stock_value_at_cost: number | null;
   stock_state: "out_of_stock" | "low_stock" | "healthy";
   units_sold: number;
   is_active: boolean;
@@ -396,20 +408,20 @@ export type OfficerCommissionSummaryRow = {
 export type FinancialSummaryRow = {
   total_orders: number;
   revenue_generated: number;
-  total_cost: number;
-  gross_profit: number;
+  total_cost: number | null;
+  gross_profit: number | null;
   cash_collected: number;
   outstanding_receivables: number;
   total_units: number;
-  gross_margin: number;
+  gross_margin: number | null;
 };
 
 export type DailySalesRow = {
   order_date: string;
   order_count: number;
   revenue: number;
-  cost: number;
-  gross_profit: number;
+  cost: number | null;
+  gross_profit: number | null;
   collected: number;
   units_sold: number;
 };
@@ -443,9 +455,44 @@ export type ProductSalesRow = {
   category: DbProductCategory;
   units_sold: number;
   revenue: number;
-  cost: number;
-  profit: number;
+  cost: number | null;
+  profit: number | null;
   order_count: number;
+};
+
+/** staff_products: every products column, cost_price null unless the caller may see cost. */
+export type StaffProductRow = Omit<ProductRow, "cost_price"> & { cost_price: number | null };
+
+export type CustomerOwnershipChangeRow = {
+  id: string;
+  customer_id: string;
+  customer_name: string;
+  old_officer_id: string | null;
+  old_officer_name: string;
+  new_officer_id: string | null;
+  new_officer_name: string;
+  reason: string;
+  orders_moved: string[];
+  changed_by: string | null;
+  changed_by_name: string;
+  changed_at: string;
+};
+
+export type BelowCostOverrideRow = {
+  id: string;
+  order_id: string;
+  order_item_id: string | null;
+  product_id: string | null;
+  product_name: string;
+  quantity: number;
+  selling_price: number;
+  unit_cost: number;
+  line_margin: number;
+  margin_percentage: number | null;
+  reason: string;
+  approved_by: string | null;
+  approved_by_name: string;
+  created_at: string;
 };
 
 /**
@@ -467,7 +514,8 @@ type Derived =
   | "line_profit"
   | "earned_commission_total"
   | "pending_commission_total"
-  | "paid_commission_total";
+  | "paid_commission_total"
+  | "delivered_at";
 
 type Writable<Row> = Omit<Row, Extract<keyof Row, Derived>>;
 
@@ -525,9 +573,13 @@ export type Database = {
       settings: Table<SettingsRow, Insertable<SettingsRow, never>>;
       backups: Table<BackupRow, Insertable<BackupRow, never>>;
       testimonials: Table<TestimonialRow, Insertable<TestimonialRow, "id" | "name" | "content">>;
+      // Read-only to clients: written only by the RPCs in 10.
+      customer_ownership_changes: Table<CustomerOwnershipChangeRow, Record<string, never>, Record<string, never>>;
+      below_cost_overrides: Table<BelowCostOverrideRow, Record<string, never>, Record<string, never>>;
     };
     Views: {
       public_products: View<PublicProductRow>;
+      staff_products: View<StaffProductRow>;
       order_details: View<OrderDetailsRow>;
       inventory_status: View<InventoryStatusRow>;
       customer_financials: View<CustomerFinancialsRow>;
@@ -575,6 +627,11 @@ export type Database = {
       set_user_permissions: { Args: { p_user_id: string; p_codes: string[] }; Returns: undefined };
       grant_role_preset: { Args: { p_user_id: string; p_role: DbUserRole }; Returns: undefined };
       convert_order_request: { Args: { p_request_id: string; p_customer_id: string }; Returns: string };
+      transfer_customer_owner: {
+        Args: { p_customer_id: string; p_new_officer_id: string; p_reason: string };
+        Returns: Json;
+      };
+      efz_today: { Args: Record<string, never>; Returns: string };
       run_diagnostics: { Args: Record<string, never>; Returns: number };
       repair_issue: { Args: { p_issue_id: string }; Returns: Json };
       operational_metrics: { Args: Record<string, never>; Returns: Json };

@@ -24,17 +24,21 @@ import {
   Archive,
   ShieldAlert,
   Loader2,
-  RefreshCcw
+  RefreshCcw,
+  ArrowRightLeft
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AdminUser, Customer, Order } from "@/lib/types";
+import { AdminUser, Customer, CustomerOwnershipChange, Order } from "@/lib/types";
 import type { CustomerFinancialsRow, OfficerCommissionSummaryRow } from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { getOrderPaymentStatus } from "@/lib/financial";
+import { efzToday } from "@/lib/dates";
+
+const emptyCustomerForm = { name: "", email: "", phone: "", notes: "" };
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -57,20 +61,20 @@ export default function CustomersPage() {
   const [paymentModalOrderId, setPaymentModalOrderId] = useState<string | null>(null);
   const [paymentForm, setPaymentForm] = useState({
     amount: "",
-    paymentDate: new Date().toISOString().slice(0, 10),
+    paymentDate: efzToday(),
     paymentMethod: "Cash",
     reference: "",
     note: "",
   });
   const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
-  
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    marketingOfficerId: "",
-    notes: ""
-  });
+
+  // Contact fields only. Ownership is not part of this form (see handleRegister).
+  const [formData, setFormData] = useState(emptyCustomerForm);
+
+  // Super Admin: assign / transfer the Marketing Officer.
+  const [transferCustomerId, setTransferCustomerId] = useState<string | null>(null);
+  const [transferForm, setTransferForm] = useState({ officerId: "", reason: "" });
+  const [ownershipHistory, setOwnershipHistory] = useState<CustomerOwnershipChange[]>([]);
 
   const loadAll = useCallback(async () => {
     const db = getDb();
@@ -175,7 +179,7 @@ export default function CustomersPage() {
   const openCreateModal = () => {
     setIsEditMode(false);
     setEditingCustomerId(null);
-    setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" });
+    setFormData(emptyCustomerForm);
     setIsModalOpen(true);
   };
 
@@ -186,7 +190,6 @@ export default function CustomersPage() {
       name: customer.name,
       email: customer.email || "",
       phone: customer.phone || "",
-      marketingOfficerId: customer.marketingOfficerId || customer.registeredBy || "",
       notes: customer.notes || ""
     });
     setIsModalOpen(true);
@@ -199,12 +202,10 @@ export default function CustomersPage() {
       return;
     }
 
-    // A Marketing Officer always owns the customers they touch; nobody else's
-    // name can be put on the record from this form.
-    const officerId = profile.role === 'Marketing Officer'
-      ? profile.id
-      : (formData.marketingOfficerId || profile.id);
-
+    // Ownership is never sent from this form. The database makes a Marketing
+    // Officer the owner of their own registration and leaves everyone else's
+    // customer unassigned; a Super Admin assigns the officer with the audited
+    // transfer below.
     try {
       setIsSaving(true);
       const db = getDb();
@@ -214,7 +215,6 @@ export default function CustomersPage() {
           name: formData.name.trim(),
           email: formData.email.trim(),
           phone: formData.phone.trim(),
-          marketingOfficerId: officerId,
           notes: formData.notes.trim(),
         });
 
@@ -228,7 +228,7 @@ export default function CustomersPage() {
         await loadAll();
         showNotification('success', 'Customer updated successfully.');
         setIsModalOpen(false);
-        setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" });
+        setFormData(emptyCustomerForm);
         setEditingCustomerId(null);
         setIsEditMode(false);
         return;
@@ -238,12 +238,7 @@ export default function CustomersPage() {
         name: formData.name.trim(),
         email: formData.email.trim(),
         phone: formData.phone.trim(),
-        registeredBy: profile.id,
-        marketingOfficerId: officerId,
-        date: new Date().toISOString().split('T')[0],
         notes: formData.notes.trim(),
-        status: 'active',
-        isArchived: false,
       });
 
       await db.logs.write({
@@ -255,8 +250,60 @@ export default function CustomersPage() {
 
       await loadAll();
       setIsModalOpen(false);
-      setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" });
-      showNotification('success', 'Customer created successfully.');
+      setFormData(emptyCustomerForm);
+      showNotification(
+        'success',
+        created.marketingOfficerId
+          ? 'Customer registered to you as the Marketing Officer.'
+          : 'Customer registered as unassigned. A Super Admin assigns the Marketing Officer.'
+      );
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openTransferModal = async (customer: Customer) => {
+    setTransferCustomerId(customer.id);
+    setTransferForm({ officerId: "", reason: "" });
+    setOwnershipHistory([]);
+    try {
+      setOwnershipHistory(await getDb().customers.ownershipHistory(customer.id));
+    } catch (error) {
+      showNotification('error', describeDbError(error));
+    }
+  };
+
+  /**
+   * Assign or move the customer's Marketing Officer through
+   * transfer_customer_owner(): Super Admin only, reason required, recorded.
+   * Commission already earned stays with the officer who earned it.
+   */
+  const handleTransfer = async () => {
+    const customer = customers.find(c => c.id === transferCustomerId);
+    if (!customer) return;
+
+    if (!perms.transferCustomers) {
+      showNotification('error', 'Only a Super Admin can assign or transfer a customer.');
+      return;
+    }
+    if (!transferForm.officerId) {
+      showNotification('error', 'Choose the Marketing Officer.');
+      return;
+    }
+    if (!transferForm.reason.trim()) {
+      showNotification('error', 'A reason is required.');
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      await getDb().customers.transferOwner(customer.id, transferForm.officerId, transferForm.reason.trim());
+      await loadAll();
+      setTransferCustomerId(null);
+      const officer = users.find(u => u.id === transferForm.officerId)?.name ?? 'the new officer';
+      showNotification('success', `${customer.name} is now owned by ${officer}.`);
     } catch (error) {
       showNotification('error', describeDbError(error));
     } finally {
@@ -380,10 +427,21 @@ export default function CustomersPage() {
       setIsSaving(true);
       const db = getDb();
 
+      // Only a Super Admin may date a payment before today; everyone else's is
+      // dated today (Mogadishu) by the database.
+      const today = efzToday();
+      if (perms.backdate && paymentForm.paymentDate > today) {
+        showNotification('error', 'A payment cannot be dated in the future.');
+        return;
+      }
+      const paymentDate = perms.backdate && paymentForm.paymentDate && paymentForm.paymentDate !== today
+        ? paymentForm.paymentDate
+        : undefined;
+
       await db.orders.addPayment({
         orderId: order.id,
         amount: amountValue,
-        paymentDate: paymentForm.paymentDate,
+        paymentDate,
         paymentMethod: paymentForm.paymentMethod,
         reference: paymentForm.reference,
         notes: paymentForm.note,
@@ -398,7 +456,7 @@ export default function CustomersPage() {
       });
 
       await loadAll();
-      setPaymentForm({ amount: '', paymentDate: new Date().toISOString().slice(0, 10), paymentMethod: 'Cash', reference: '', note: '' });
+      setPaymentForm({ amount: '', paymentDate: efzToday(), paymentMethod: 'Cash', reference: '', note: '' });
       setPaymentModalOrderId(null);
       showNotification('success', 'Payment recorded successfully.');
     } catch (error) {
@@ -424,7 +482,9 @@ export default function CustomersPage() {
   const selectedCustomer = selectedCustomerId ? customers.find(c => c.id === selectedCustomerId) ?? null : null;
   const selectedCustomerSummary = selectedCustomer ? getCustomerFinancialSummaryData(selectedCustomer) : null;
 
+  // Cancelled orders are not receivables, and record_payment() refuses them.
   const receivables = orders
+    .filter(order => order.status !== 'cancelled')
     .map(order => {
       const customer = customers.find(c => c.id === order.customerId || c.name === order.customer || c.phone === order.phone) ?? null;
       // amount_paid and outstanding_balance are maintained by the payment
@@ -537,7 +597,7 @@ export default function CustomersPage() {
                 <tr>
                   <th className="px-6 py-3">Customer Identity</th>
                   <th className="px-6 py-3">Contact Details</th>
-                  <th className="px-6 py-3">Managed By</th>
+                  <th className="px-6 py-3">Marketing Officer</th>
                   <th className="px-6 py-3 text-center">Orders</th>
                   <th className="px-6 py-3 text-right">Total Invested</th>
                   <th className="px-6 py-3 text-right">Last Purchase</th>
@@ -545,6 +605,9 @@ export default function CustomersPage() {
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {filteredCustomers.map((customer) => {
+                  // The owner is the acquiring Marketing Officer; registered_by is
+                  // only who typed the record in.
+                  const owner = customer.marketingOfficerId ? users.find(u => u.id === customer.marketingOfficerId) : undefined;
                   const regBy = users.find(u => u.id === customer.registeredBy);
                   const customerOrders = orders.filter(o => o.customerId === customer.id || o.customer === customer.name || o.phone === customer.phone);
                   const totalSpend = customerOrders.reduce((sum, o) => sum + o.total, 0);
@@ -579,13 +642,19 @@ export default function CustomersPage() {
                         <div className="flex items-center gap-2">
                           <div className={cn(
                             "h-5 w-5 rounded bg-slate-100 flex items-center justify-center text-[9px] font-bold",
-                            regBy?.id === profile.id ? "bg-brand-blue/10 text-brand-blue" : "text-slate-400"
+                            owner?.id === profile.id ? "bg-brand-blue/10 text-brand-blue" : "text-slate-400"
                           )}>
-                            {regBy?.name.charAt(0)}
+                            {owner ? owner.name.charAt(0) : "?"}
                           </div>
                           <div>
-                            <span className="text-[10px] font-bold text-slate-600">{regBy?.name || "System"}</span>
-                            <p className="text-[8px] text-slate-400 flex items-center gap-1 mt-0.5">Reg: {customer.date}</p>
+                            {customer.marketingOfficerId ? (
+                              <span className="text-[10px] font-bold text-slate-600">{owner?.name ?? "Unknown officer"}</span>
+                            ) : (
+                              <span className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-700">Unassigned</span>
+                            )}
+                            <p className="text-[8px] text-slate-400 flex items-center gap-1 mt-0.5">
+                              Reg: {customer.date}{regBy ? ` by ${regBy.name}` : ""}
+                            </p>
                           </div>
                         </div>
                       </td>
@@ -602,12 +671,25 @@ export default function CustomersPage() {
                       </td>
                       <td className="px-6 py-3 text-right">
                         <div className="flex justify-end gap-2">
-                          <button type="button" disabled={isSaving} onClick={() => openEditModal(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50" title="Edit customer">
-                            <Pencil className="h-3.5 w-3.5" />
+                          <button type="button" onClick={() => setSelectedCustomerId(customer.id)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-50" title="Orders and payments">
+                            <Eye className="h-3.5 w-3.5" />
                           </button>
-                          <button type="button" disabled={isSaving} onClick={() => handleDeleteCustomer(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-red-50 hover:text-red-600 disabled:opacity-50" title={customerOrders.length > 0 ? 'Archive customer' : 'Delete customer'}>
-                            {customerOrders.length > 0 ? <Archive className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
-                          </button>
+                          {perms.editCustomers && (
+                            <button type="button" disabled={isSaving} onClick={() => openEditModal(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50" title="Edit contact details">
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          {perms.transferCustomers && (
+                            <button type="button" disabled={isSaving} onClick={() => openTransferModal(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50" title={customer.marketingOfficerId ? 'Transfer to another Marketing Officer' : 'Assign a Marketing Officer'}>
+                              <ArrowRightLeft className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          {/* A customer with orders is archived (edit_customers); one without can be deleted (delete_customers). */}
+                          {(customerOrders.length > 0 ? perms.editCustomers : perms.deleteCustomers) && (
+                            <button type="button" disabled={isSaving} onClick={() => handleDeleteCustomer(customer)} className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-red-50 hover:text-red-600 disabled:opacity-50" title={customerOrders.length > 0 ? 'Archive customer' : 'Delete customer'}>
+                              {customerOrders.length > 0 ? <Archive className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -729,10 +811,23 @@ export default function CustomersPage() {
                           <span>Outstanding</span>
                           <span className="font-bold text-slate-900">${outstanding.toFixed(2)}</span>
                         </div>
+                        {/* null when the database withholds cost from this user */}
+                        {order.grossProfit !== null && (
+                          <div className="flex justify-between text-[10px] text-slate-500">
+                            <span>Gross Profit</span>
+                            <span className="font-bold text-brand-green">${order.grossProfit.toFixed(2)}</span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-[10px] text-slate-500">
-                          <span>Gross Profit</span>
-                          <span className="font-bold text-brand-green">${Number(order.grossProfit || 0).toFixed(2)}</span>
+                          <span>Marketing Officer</span>
+                          <span className="font-bold text-slate-900">{order.marketingOfficerName ?? 'Unassigned'}</span>
                         </div>
+                        {order.deliveredAt && (
+                          <div className="flex justify-between text-[10px] text-slate-500">
+                            <span>Delivered</span>
+                            <span className="font-bold text-slate-900">{new Date(order.deliveredAt).toLocaleString()}</span>
+                          </div>
+                        )}
                         <div className="pt-2">
                           <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Payments</p>
                           <div className="space-y-2 text-[10px]">
@@ -826,9 +921,12 @@ export default function CustomersPage() {
                       )}>{paymentStatus}</span>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button type="button" onClick={() => setPaymentModalOrderId(order.id)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[9px] font-bold uppercase tracking-wide text-slate-700 hover:bg-blue-50 hover:text-blue-700">
-                        Record Payment
-                      </button>
+                      {/* record_payment(): create_orders or edit_orders, and something left to pay. */}
+                      {(perms.createOrders || perms.editOrders) && outstanding > 0 && (
+                        <button type="button" onClick={() => setPaymentModalOrderId(order.id)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[9px] font-bold uppercase tracking-wide text-slate-700 hover:bg-blue-50 hover:text-blue-700">
+                          Record Payment
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -878,7 +976,18 @@ export default function CustomersPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Payment Date</label>
-                    <Input value={paymentForm.paymentDate} onChange={e => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })} type="date" className="h-11 rounded-xl" />
+                    {perms.backdate ? (
+                      <>
+                        <Input value={paymentForm.paymentDate} max={efzToday()} onChange={e => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })} type="date" className="h-11 rounded-xl" />
+                        {paymentForm.paymentDate < efzToday() && (
+                          <p className="mt-1 text-[10px] font-bold text-amber-600">Backdated payment - recorded in the audit log.</p>
+                        )}
+                      </>
+                    ) : (
+                      <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600" title="Only a Super Admin can record an earlier payment date">
+                        Today ({efzToday()})
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Payment Method</label>
@@ -914,6 +1023,86 @@ export default function CustomersPage() {
           <span className={notification.type === 'error' ? 'text-red-600' : 'text-green-600'}>{notification.message}</span>
         </div>
       )}
+
+      {/* Ownership transfer (Super Admin) */}
+      {transferCustomerId && perms.transferCustomers && (() => {
+        const customer = customers.find(c => c.id === transferCustomerId);
+        if (!customer) return null;
+        const current = customer.marketingOfficerId ? users.find(u => u.id === customer.marketingOfficerId) : undefined;
+        const candidates = users.filter(u =>
+          u.role === 'Marketing Officer' && u.status === 'active' && u.id !== customer.marketingOfficerId
+        );
+
+        return (
+          <div className="fixed inset-0 z-[120] bg-slate-900/60 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    {current ? 'Transfer customer' : 'Assign Marketing Officer'}
+                  </p>
+                  <h3 className="text-xl font-bold text-slate-900">{customer.name}</h3>
+                </div>
+                <button type="button" onClick={() => setTransferCustomerId(null)} className="rounded-full border border-slate-200 p-2 text-slate-500">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                Current Marketing Officer:{" "}
+                <strong className="text-slate-900">{current?.name ?? 'Unassigned'}</strong>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">New Marketing Officer</label>
+                <select
+                  value={transferForm.officerId}
+                  onChange={e => setTransferForm({ ...transferForm, officerId: e.target.value })}
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                >
+                  <option value="">Choose an active Marketing Officer</option>
+                  {candidates.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Reason (required, recorded)</label>
+                <textarea
+                  value={transferForm.reason}
+                  onChange={e => setTransferForm({ ...transferForm, reason: e.target.value })}
+                  className="w-full min-h-[72px] rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none"
+                  placeholder="e.g., Officer left the account"
+                />
+              </div>
+
+              <p className="text-[11px] text-slate-500">
+                Orders not yet delivered move to the new officer. Delivered orders and commission already earned stay with
+                the officer who earned them.
+              </p>
+
+              {ownershipHistory.length > 0 && (
+                <div className="max-h-32 overflow-y-auto rounded-xl border border-slate-100 p-3 text-[10px] text-slate-600 space-y-1">
+                  <p className="font-bold uppercase tracking-widest text-slate-400">History</p>
+                  {ownershipHistory.map(change => (
+                    <p key={change.id}>
+                      {new Date(change.changedAt).toLocaleDateString()}: {change.oldOfficerName || 'Unassigned'} → {change.newOfficerName}
+                      {' '}by {change.changedByName || 'system'} — {change.reason}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <Button type="button" variant="outline" onClick={() => setTransferCustomerId(null)} className="flex-1 h-11 rounded-xl">Cancel</Button>
+                <Button type="button" disabled={isSaving} onClick={handleTransfer} className="flex-1 h-11 rounded-xl bg-slate-900 text-white">
+                  {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {current ? 'Transfer' : 'Assign'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Registration Modal */}
       {isModalOpen && (
@@ -952,20 +1141,12 @@ export default function CustomersPage() {
                   <label className="text-xs font-bold text-slate-700 ml-1">Customer Notes</label>
                   <textarea value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} className="w-full min-h-[96px] rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-brand-blue/20 transition-all" placeholder="Optional notes or details" />
                 </div>
-                {profile.role === 'Super Admin' && (
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-700 ml-1">Assign Marketing Officer</label>
-                    <select 
-                      value={formData.marketingOfficerId} 
-                      onChange={e => setFormData({...formData, marketingOfficerId: e.target.value})}
-                      className="w-full h-12 rounded-xl border border-slate-200 px-4 text-sm bg-white focus:ring-2 focus:ring-brand-blue/20 outline-none"
-                    >
-                      <option value="">No Marketing Officer</option>
-                      {users.filter(u => u.role === 'Marketing Officer').map(u => (
-                        <option key={u.id} value={u.id}>{u.name}</option>
-                      ))}
-                    </select>
-                  </div>
+                {!isEditMode && (
+                  <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600">
+                    {perms.isMarketingOfficer
+                      ? 'You will be recorded as this customer’s Marketing Officer (acquisition owner).'
+                      : 'The customer is registered unassigned. A Super Admin assigns the Marketing Officer who acquired them.'}
+                  </p>
                 )}
               </div>
 
@@ -973,7 +1154,7 @@ export default function CustomersPage() {
                 <Button type="submit" disabled={isSaving} className="flex-1 bg-slate-900 text-white h-12 rounded-xl font-bold">
                   {isEditMode ? 'Save Changes' : 'Confirm Registration'}
                 </Button>
-                <Button type="button" variant="outline" onClick={() => { setIsModalOpen(false); setIsEditMode(false); setEditingCustomerId(null); setFormData({ name: "", email: "", phone: "", marketingOfficerId: "", notes: "" }); }} className="flex-1 h-12 rounded-xl">
+                <Button type="button" variant="outline" onClick={() => { setIsModalOpen(false); setIsEditMode(false); setEditingCustomerId(null); setFormData(emptyCustomerForm); }} className="flex-1 h-12 rounded-xl">
                   Discard
                 </Button>
               </div>

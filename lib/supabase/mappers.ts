@@ -10,6 +10,7 @@ import type {
   AdminSettings,
   AdminUser,
   Customer,
+  CustomerOwnershipChange,
   Notification,
   Order,
   OrderItem,
@@ -22,12 +23,13 @@ import type {
 } from "@/lib/types";
 
 import type {
+  CustomerOwnershipChangeRow,
   CustomerRow,
   CustomerUpdate,
   NotificationRow,
   OrderDetailsRow,
-  ProductRow,
   ProductUpdate,
+  StaffProductRow,
   ProfileRow,
   ProfileUpdate,
   PublicProductRow,
@@ -43,6 +45,14 @@ const num = (value: unknown, fallback = 0): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+/**
+ * Cost and margin columns come back null when the database withholds them
+ * from this user. Keep that null: turning it into 0 would render a fake $0
+ * cost and a fake 100% margin.
+ */
+const numOrNull = (value: unknown): number | null =>
+  value === null || value === undefined ? null : num(value);
 
 // ---------------------------------------------------------------------------
 // Users
@@ -101,29 +111,47 @@ export function toCustomer(row: CustomerRow): Customer {
   };
 }
 
-export function fromCustomer(customer: Partial<Customer>): CustomerUpdate {
+/**
+ * The fields staff may write on a customer. Ownership is deliberately absent:
+ * the database sets marketing_officer_id (a Marketing Officer's own
+ * registration) and registered_by, and only transfer_customer_owner() moves
+ * the owner afterwards. Sending either column would be refused.
+ */
+export type CustomerWritable = Pick<Customer, "name" | "phone" | "email" | "notes" | "status">;
+
+export function fromCustomer(customer: Partial<CustomerWritable>): CustomerUpdate {
   const row: CustomerUpdate = {};
-  if (customer.id !== undefined) row.id = customer.id;
   if (customer.name !== undefined) row.name = customer.name;
   if (customer.email !== undefined) row.email = customer.email ?? "";
   if (customer.phone !== undefined) row.phone = customer.phone;
-  if (customer.registeredBy !== undefined) row.registered_by = customer.registeredBy || null;
-  if (customer.marketingOfficerId !== undefined) {
-    row.marketing_officer_id = customer.marketingOfficerId || null;
-  }
-  if (customer.date !== undefined) row.registered_on = customer.date;
   if (customer.notes !== undefined) row.notes = customer.notes ?? "";
-  if (customer.status !== undefined || customer.isArchived !== undefined) {
-    row.status = customer.status === "archived" || customer.isArchived ? "archived" : "active";
-  }
+  if (customer.status !== undefined) row.status = customer.status === "archived" ? "archived" : "active";
   return row;
+}
+
+export function toCustomerOwnershipChange(row: CustomerOwnershipChangeRow): CustomerOwnershipChange {
+  return {
+    id: row.id,
+    customerId: row.customer_id,
+    customerName: row.customer_name,
+    oldOfficerId: row.old_officer_id,
+    oldOfficerName: row.old_officer_name,
+    newOfficerId: row.new_officer_id,
+    newOfficerName: row.new_officer_name,
+    reason: row.reason,
+    ordersMoved: row.orders_moved ?? [],
+    changedBy: row.changed_by,
+    changedByName: row.changed_by_name,
+    changedAt: row.changed_at,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Products
 // ---------------------------------------------------------------------------
 
-export function toProduct(row: ProductRow): Product {
+/** Reads the staff_products view (cost_price already masked by the database). */
+export function toProduct(row: StaffProductRow): Product {
   const selling = num(row.selling_price);
   return {
     id: row.id,
@@ -134,15 +162,21 @@ export function toProduct(row: ProductRow): Product {
     surfaceType: row.surface_type,
     isWholesale: row.is_wholesale,
     price: selling,
-    costPrice: num(row.cost_price),
+    costPrice: numOrNull(row.cost_price),
     sellingPrice: selling,
     stock: num(row.stock),
     lowStockThreshold: num(row.low_stock_threshold),
     imageUrl: row.image_url,
     category: row.category,
+    isActive: row.is_active,
   };
 }
 
+/**
+ * Only the fields present in the patch are written. Callers leave
+ * costPrice / sellingPrice out unless the user is allowed to price (Super
+ * Admin or Manager) - the database refuses the change otherwise.
+ */
 export function fromProduct(product: Partial<Product>): ProductUpdate {
   const row: ProductUpdate = {};
   if (product.id !== undefined) row.id = product.id;
@@ -153,9 +187,11 @@ export function fromProduct(product: Partial<Product>): ProductUpdate {
   if (product.durability !== undefined) row.durability = product.durability ?? "";
   if (product.surfaceType !== undefined) row.surface_type = product.surfaceType ?? "";
   if (product.isWholesale !== undefined) row.is_wholesale = Boolean(product.isWholesale);
-  if (product.costPrice !== undefined) row.cost_price = Math.max(0, num(product.costPrice));
-  if (product.sellingPrice !== undefined || product.price !== undefined) {
-    row.selling_price = Math.max(0, num(product.sellingPrice ?? product.price));
+  if (product.costPrice !== undefined && product.costPrice !== null) {
+    row.cost_price = Math.max(0, num(product.costPrice));
+  }
+  if (product.sellingPrice !== undefined) {
+    row.selling_price = Math.max(0, num(product.sellingPrice));
   }
   if (product.stock !== undefined) row.stock = Math.max(0, Math.round(num(product.stock)));
   if (product.lowStockThreshold !== undefined) {
@@ -180,11 +216,11 @@ export function toOrder(row: OrderDetailsRow): Order {
     standardUnitPrice: num(item.standardUnitPrice),
     actualUnitPrice: num(item.actualUnitPrice),
     price: num(item.price),
-    historicalUnitCost: num(item.historicalUnitCost),
-    costPrice: num(item.costPrice),
+    historicalUnitCost: numOrNull(item.historicalUnitCost),
+    costPrice: numOrNull(item.costPrice),
     lineRevenue: num(item.lineRevenue),
-    lineCost: num(item.lineCost),
-    lineProfit: num(item.lineProfit),
+    lineCost: numOrNull(item.lineCost),
+    lineProfit: numOrNull(item.lineProfit),
   }));
 
   const payments: PaymentRecord[] = (row.payments ?? []).map((payment) => ({
@@ -218,8 +254,10 @@ export function toOrder(row: OrderDetailsRow): Order {
     orderType: row.order_type,
     date: row.order_date,
     deliveryNotes: row.delivery_notes,
-    cost: num(row.cost),
-    grossProfit: num(row.gross_profit),
+    cost: numOrNull(row.cost),
+    grossProfit: numOrNull(row.gross_profit),
+    deliveredAt: row.delivered_at ?? null,
+    marketingOfficerName: row.marketing_officer_name ?? null,
     amountPaid: num(row.amount_paid),
     outstandingBalance: num(row.outstanding_balance),
     commissionPaid: row.commission_paid,
@@ -332,7 +370,8 @@ export function fromSettings(settings: Partial<AdminSettings>): SettingsUpdate {
 /**
  * Maps the anon-safe product feed onto the same Product shape the public pages
  * already render. cost_price and the exact stock number are absent from the
- * view, so they land as zero here - the public site never displays either.
+ * view: cost is null, and stock is 1/0 for in/out of stock - the public site
+ * never displays either.
  */
 export function toPublicProduct(row: PublicProductRow): Product {
   const selling = num(row.selling_price);
@@ -345,7 +384,7 @@ export function toPublicProduct(row: PublicProductRow): Product {
     surfaceType: row.surface_type,
     isWholesale: row.is_wholesale,
     price: selling,
-    costPrice: 0,
+    costPrice: null,
     sellingPrice: selling,
     stock: row.in_stock ? 1 : 0,
     lowStockThreshold: 0,

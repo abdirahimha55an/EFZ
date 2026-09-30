@@ -23,6 +23,7 @@ import { AdminUser, Customer, Order, Product } from "@/lib/types";
 import type { FinancialSummaryRow, InventoryStatusRow } from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
+import { efzToday } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import { getFinancialSummary } from "@/lib/financial";
 
@@ -143,7 +144,10 @@ export default function AdminDashboard() {
 
   const clientSummary = getFinancialSummary(activeOrders);
   const totalRevenue = Number(summaryRow?.revenue_generated ?? clientSummary.revenueGenerated);
-  const totalProfit = Number(summaryRow?.gross_profit ?? clientSummary.grossProfit);
+  // Cost and profit are withheld by the database from users without
+  // view_inventory / view_reports; their cards are left out rather than shown
+  // as revenue-minus-nothing.
+  const totalProfit = perms.viewCost ? Number(summaryRow?.gross_profit ?? clientSummary.grossProfit) : null;
   const totalCollected = Number(summaryRow?.cash_collected ?? clientSummary.cashCollected);
   const outstandingReceivables = Number(summaryRow?.outstanding_receivables ?? clientSummary.outstandingReceivables);
   const totalOrdersCount = Number(summaryRow?.total_orders ?? clientSummary.totalOrders);
@@ -153,13 +157,15 @@ export default function AdminDashboard() {
   // 4. Inventory value, low stock and out of stock, all from inventory_status.
   // One definition of "low", applied by the database against each product's own
   // threshold - the cards and the alert table below can no longer disagree.
-  const inventoryValue = inventory.reduce((sum, row) => sum + Number(row.stock_value_at_cost ?? 0), 0);
+  const inventoryValue = perms.viewCost
+    ? inventory.reduce((sum, row) => sum + Number(row.stock_value_at_cost ?? 0), 0)
+    : null;
   const lowStockCount = inventory.filter(row => row.stock_state === 'low_stock').length;
   const outOfStockCount = inventory.filter(row => row.stock_state === 'out_of_stock').length;
   const stockAlerts = inventory.filter(row => row.stock_state !== 'healthy');
 
   // 5. Monthly Sales (total value of orders from the current month)
-  const currentMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+  const currentMonth = efzToday().slice(0, 7); // "YYYY-MM", Mogadishu
   const monthlySales = activeOrders
     .filter(o => o.date?.startsWith(currentMonth))
     .reduce((sum, o) => sum + o.total, 0);
@@ -252,10 +258,10 @@ export default function AdminDashboard() {
     { title: "Revenue Generated", value: `$${totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: DollarSign, color: "text-emerald-600", bg: "bg-emerald-50" },
     { title: "Cash Collected", value: `$${totalCollected.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: CheckCircle2, color: "text-blue-600", bg: "bg-blue-50" },
     { title: "Outstanding Receivables", value: `$${outstandingReceivables.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: Clock, color: "text-orange-600", bg: "bg-orange-50" },
-    { title: "Gross Profit", value: `$${totalProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: TrendingUp, color: "text-indigo-600", bg: "bg-indigo-50" },
+    ...(totalProfit !== null ? [{ title: "Gross Profit", value: `${totalProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, icon: TrendingUp, color: "text-indigo-600", bg: "bg-indigo-50" }] : []),
     { title: "Total Orders", value: `${totalOrdersCount}`, icon: ShoppingBag, color: "text-slate-600", bg: "bg-slate-50" },
     { title: "Pending Payouts", value: `$${pendingPayouts.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Clock, color: "text-orange-600", bg: "bg-orange-50" },
-    { title: "Inventory Value", value: `$${inventoryValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Layers, color: "text-indigo-600", bg: "bg-indigo-50" },
+    ...(inventoryValue !== null ? [{ title: "Inventory Value", value: `${inventoryValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: Layers, color: "text-indigo-600", bg: "bg-indigo-50" }] : []),
     { title: "Monthly Sales Volume", value: `$${monthlySales.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, icon: BarChart3, color: "text-purple-600", bg: "bg-purple-50" },
     { title: "Active System Issues", value: activeIssues, icon: Activity, color: activeIssues > 0 ? "text-red-600 animate-pulse" : "text-slate-500", bg: activeIssues > 0 ? "bg-red-50" : "bg-slate-50" },
     { title: "Low Stock Products", value: lowStockCount, icon: AlertCircle, color: lowStockCount > 0 ? "text-amber-600" : "text-slate-500", bg: lowStockCount > 0 ? "bg-amber-50" : "bg-slate-50" },

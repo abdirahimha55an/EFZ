@@ -30,13 +30,13 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AdminUser, UserRole, Permission } from "@/lib/types";
+import { AdminUser, UserRole, Permission, USER_ROLES } from "@/lib/types";
 import type { OfficerCommissionSummaryRow } from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { validateUser } from "@/lib/validators";
 
-const ROLES: UserRole[] = ['Super Admin', 'Manager', 'Marketing Officer', 'Inventory Staff', 'Delivery Staff'];
+const ROLES: readonly UserRole[] = USER_ROLES;
 
 const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = [
   { id: 'view_dashboard', label: 'View Dashboard', category: 'General' },
@@ -75,7 +75,8 @@ const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = 
 
 /**
  * Starting point when a role is picked in the form. Kept in step with
- * grant_role_preset() in supabase/05_seed.sql - if you change one, change both.
+ * grant_role_preset() (supabase/05_seed.sql, redefined in
+ * 10_rpc_hardening.sql) - if you change one, change both.
  *
  * These are only a suggestion: what actually gets granted is whatever the
  * checkboxes hold when the form is saved, written by set_user_permissions().
@@ -100,6 +101,14 @@ const DEFAULT_PERMISSIONS: Record<UserRole, Permission[]> = {
     'view_products',
     'add_customers', 'edit_customers', 'view_own_customers_only',
     'view_commissions',
+  ],
+  // Runs the customer relationship and the orders; no commission, cost,
+  // pricing, stock, delete or report permission.
+  'Customer Service': [
+    'view_dashboard',
+    'view_orders', 'create_orders', 'edit_orders',
+    'view_products',
+    'view_customers', 'view_all_customers', 'add_customers', 'edit_customers',
   ],
   'Inventory Staff': [
     'view_dashboard',
@@ -131,7 +140,6 @@ export default function UsersPage() {
     name: "",
     email: "",
     phone: "",
-    password: "password123",
     role: "Marketing Officer",
     status: 'active',
     commissionPercentage: 5,
@@ -327,21 +335,26 @@ export default function UsersPage() {
       showNotification('error', 'Permission denied: You are not allowed to mark commissions paid.');
       return;
     }
+    // A second click while the first payout is still in flight must not send
+    // a second request (the database would refuse it, but it should never try).
+    // isSaving also disables every Payout button until this one finishes.
+    if (isSaving) return;
 
     try {
       setIsSaving(true);
       const db = getDb();
 
-      // The ledger decides what is owed, not a recalculation from orders.
-      const pending = await db.commissions.list({ userId: user.id, status: 'pending' });
+      // Only rows pay_commissions() accepts: unpaid, above $0, on a delivered
+      // order. Commission on orders not yet delivered is not payable.
+      const pending = await db.commissions.payable(user.id);
       const payoutAmount = pending.reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
 
-      if (payoutAmount < 0.01) {
-        showNotification('error', 'No new eligible commissions to pay out.');
+      if (pending.length === 0 || payoutAmount < 0.01) {
+        showNotification('error', 'Nothing payable: commission is paid only on delivered orders.');
         return;
       }
 
-      if (!confirm(`Process commission payout of $${payoutAmount.toFixed(2)} for ${user.name}?\n\n${pending.length} commission(s) will be marked paid and their orders locked.`)) {
+      if (!confirm(`Process commission payout of $${payoutAmount.toFixed(2)} for ${user.name}?\n\n${pending.length} commission(s) on delivered orders will be marked paid and those orders locked.`)) {
         return;
       }
 
@@ -687,7 +700,8 @@ export default function UsersPage() {
                             value={formData.role}
                             onChange={e => handleRoleChange(e.target.value as UserRole)}
                           >
-                            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                            {/* Only a Super Admin may grant the Super Admin role (08). */}
+                            {ROLES.filter(r => r !== 'Super Admin' || perms.isSuperAdmin || formData.role === 'Super Admin').map(r => <option key={r} value={r}>{r}</option>)}
                           </select>
                         </div>
                         <div className="space-y-1">

@@ -21,7 +21,7 @@ export const validateProduct = (product: Partial<Product>): { ok: boolean; error
     if (product.stock < 0) return { ok: false, error: "Stock cannot be negative." };
   }
   
-  if (product.costPrice !== undefined) {
+  if (product.costPrice !== undefined && product.costPrice !== null) { // null: cost withheld from this user
     if (isNaN(product.costPrice)) return { ok: false, error: "Cost price must be a valid number." };
     if (product.costPrice < 0) return { ok: false, error: "Cost price cannot be negative." };
   }
@@ -37,7 +37,7 @@ export const validateProduct = (product: Partial<Product>): { ok: boolean; error
   }
 
   let warning: string | undefined = undefined;
-  if (product.costPrice !== undefined && product.sellingPrice !== undefined && product.sellingPrice < product.costPrice) {
+  if (product.costPrice !== undefined && product.costPrice !== null && product.sellingPrice !== undefined && product.sellingPrice < product.costPrice) {
     warning = "Selling price is lower than cost price.";
   }
 

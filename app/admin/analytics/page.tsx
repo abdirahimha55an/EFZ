@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils";
 import { AdminProfile, Customer, Order, Product } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
+import { efzToday } from "@/lib/dates";
 import {
   FinancialSummary,
   getFinancialSummary,
@@ -961,7 +962,7 @@ export default function AnalyticsPage() {
   // Filter States
   const [range, setRange] = useState<RangeKey>("all");
   const [customStart, setCustomStart] = useState("2026-01-01");
-  const [customEnd, setCustomEnd] = useState(new Date().toISOString().slice(0, 10));
+  const [customEnd, setCustomEnd] = useState(efzToday());
   const [productFilter, setProductFilter] = useState<string>("all");
   const [customerFilter, setCustomerFilter] = useState<string>("all");
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
@@ -990,7 +991,7 @@ export default function AnalyticsPage() {
   const [paymentModalOrder, setPaymentModalOrder] = useState<Order | null>(null);
   const [paymentForm, setPaymentForm] = useState({
     amount: "",
-    paymentDate: new Date().toISOString().slice(0, 10),
+    paymentDate: efzToday(),
     paymentMethod: "Cash",
     reference: "",
     note: "",
@@ -1355,7 +1356,11 @@ export default function AnalyticsPage() {
       await db.orders.addPayment({
         orderId: paymentModalOrder.id,
         amount: amountValue,
-        paymentDate: paymentForm.paymentDate,
+        // Only a Super Admin may backdate; everyone else is dated today
+        // (Mogadishu) by the database.
+        paymentDate: derivePermissions(profile).backdate && paymentForm.paymentDate !== efzToday()
+          ? paymentForm.paymentDate
+          : undefined,
         paymentMethod: paymentForm.paymentMethod,
         reference: paymentForm.reference,
         notes: paymentForm.note,
@@ -1372,7 +1377,7 @@ export default function AnalyticsPage() {
       await loadAll();
       setPaymentForm({
         amount: "",
-        paymentDate: new Date().toISOString().slice(0, 10),
+        paymentDate: efzToday(),
         paymentMethod: "Cash",
         reference: "",
         note: "",
@@ -1390,7 +1395,7 @@ export default function AnalyticsPage() {
     } finally {
       setIsRecordingPayment(false);
     }
-  }, [paymentModalOrder, paymentForm, loadAll]);
+  }, [paymentModalOrder, paymentForm, loadAll, profile]);
 
   // Export report to CSV
   const handleExportReport = useCallback(() => {
@@ -2860,7 +2865,7 @@ export default function AnalyticsPage() {
                             setPaymentModalOrder(row.order);
                             setPaymentForm({
                               amount: row.outstanding.toFixed(2),
-                              paymentDate: new Date().toISOString().slice(0, 10),
+                              paymentDate: efzToday(),
                               paymentMethod: "Cash",
                               reference: `REC-${row.orderId}`,
                               note: "",
@@ -2957,12 +2962,19 @@ export default function AnalyticsPage() {
                     <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
                       Payment Date
                     </label>
-                    <Input
-                      value={paymentForm.paymentDate}
-                      onChange={e => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })}
-                      type="date"
-                      className="h-11 rounded-xl text-xs"
-                    />
+                    {derivePermissions(profile).backdate ? (
+                      <Input
+                        value={paymentForm.paymentDate}
+                        max={efzToday()}
+                        onChange={e => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })}
+                        type="date"
+                        className="h-11 rounded-xl text-xs"
+                      />
+                    ) : (
+                      <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs text-slate-600" title="Only a Super Admin can record an earlier payment date">
+                        Today ({efzToday()})
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">

@@ -41,10 +41,33 @@ export function derivePermissions(profile: AdminProfile | null | undefined) {
   const can = (permission: Permission) => hasPermission(profile, permission);
 
   const viewAllCustomers = can("view_all_customers");
+  const active = profile?.status === "active";
+  const isSuperAdmin = active && profile?.role === "Super Admin";
+  const isManager = active && profile?.role === "Manager";
 
   return {
     isSignedIn: Boolean(profile),
-    isSuperAdmin: profile?.role === "Super Admin",
+    isSuperAdmin,
+    isMarketingOfficer: active && profile?.role === "Marketing Officer",
+    isCustomerService: active && profile?.role === "Customer Service",
+
+    // --- Rules the database enforces since 10_rpc_hardening.sql -----------
+    // Mirrors of the SQL, so the UI only offers what will be accepted.
+
+    /** can_view_cost(): cost, margin and profit are delivered at all. */
+    viewCost: can("view_inventory") || can("view_reports"),
+    /** can_manage_pricing(): selling price and cost (plus edit_products for the UPDATE policy). */
+    managePricing: (isSuperAdmin || isManager) && can("edit_products"),
+    /** transfer_customer_owner(): assign or move a customer's Marketing Officer. */
+    transferCustomers: isSuperAdmin,
+    /** create_order / record_payment dated before today, overrides, custom ids. */
+    backdate: isSuperAdmin,
+    /** Leaving delivered, reactivating a cancelled order, cancelling a paid one. */
+    overrideOrders: isSuperAdmin,
+    /** orders_delete: Super Admin, and only cancelled orders without payments. */
+    deleteCancelledOrders: isSuperAdmin,
+    /** Below-cost lines need a Super Admin and a reason. */
+    approveBelowCost: isSuperAdmin,
 
     viewDashboard: can("view_dashboard"),
 

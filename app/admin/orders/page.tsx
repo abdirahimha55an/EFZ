@@ -1,14 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Search, Eye, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Plus, User, Package, AlertCircle, X, Loader2, Truck, RefreshCcw } from "lucide-react";
+import { Search, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Plus, User, Package, AlertCircle, X, Loader2, Truck, RefreshCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AdminUser, Customer, Order, Product, ORDER_STATUS_TRANSITIONS, OrderStatus } from "@/lib/types";
+import { AdminUser, Customer, Order, Product, ORDER_STATUS_TRANSITIONS, ORDER_STATUSES, OrderStatus } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
+import { efzToday } from "@/lib/dates";
+
+/** Payments or paid commission: cancelling needs a Super Admin and a reason. */
+const isFinanciallyLocked = (order: Order) =>
+  Number(order.amountPaid ?? 0) > 0 || (order.payments?.length ?? 0) > 0 || order.commissionPaid === true;
 
 /** One editable row in the create-order form. Not persisted as-is. */
 type OrderLineDraft = {
@@ -34,6 +39,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [staff, setStaff] = useState<AdminUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -44,30 +50,44 @@ export default function OrdersPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
 
-  const [formData, setFormData] = useState({
+  // No status and no officer here: create_order() always starts an order as
+  // pending and takes the Marketing Officer from the customer.
+  const blankForm = () => ({
     customerId: "",
     orderType: "regular" as "regular" | "trial",
     amountPaid: 0,
-    status: "pending",
-    notes: ""
+    notes: "",
+    /** Super Admin only; today (Mogadishu) for everyone else. */
+    orderDate: efzToday(),
+    /** Super Admin only, when a line is priced below cost. */
+    belowCostReason: "",
   });
+  const [formData, setFormData] = useState(blankForm);
   const [orderItems, setOrderItems] = useState<OrderLineDraft[]>([blankOrderLine("first")]);
 
   // The whole page in one read. Orders arrive from the order_details view with
   // their items and payments already nested, so there is no N+1 fan-out here.
-  const refresh = useCallback(async () => {
+  // Products come from staff_products: cost is null unless this user may see it.
+  const loadPage = useCallback(async () => {
     const db = getDb();
-    const [nextOrders, nextCustomers, nextProducts, nextProfile] = await Promise.all([
+    const [nextOrders, nextCustomers, nextProducts, nextStaff, nextProfile] = await Promise.all([
       db.orders.list(),
       db.customers.list(),
       db.products.list(),
+      db.users.list(),
       db.auth.getProfile(),
     ]);
-    setOrders(nextOrders);
-    setCustomers(nextCustomers);
-    setProducts(nextProducts);
-    setCurrentUser(nextProfile);
+    return { nextOrders, nextCustomers, nextProducts, nextStaff, nextProfile };
   }, []);
+
+  const refresh = useCallback(async () => {
+    const next = await loadPage();
+    setOrders(next.nextOrders);
+    setCustomers(next.nextCustomers);
+    setProducts(next.nextProducts);
+    setStaff(next.nextStaff);
+    setCurrentUser(next.nextProfile);
+  }, [loadPage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,18 +95,13 @@ export default function OrdersPage() {
     (async () => {
       try {
         setIsLoading(true);
-        const db = getDb();
-        const [nextOrders, nextCustomers, nextProducts, nextProfile] = await Promise.all([
-          db.orders.list(),
-          db.customers.list(),
-          db.products.list(),
-          db.auth.getProfile(),
-        ]);
+        const next = await loadPage();
         if (cancelled) return;
-        setOrders(nextOrders);
-        setCustomers(nextCustomers);
-        setProducts(nextProducts);
-        setCurrentUser(nextProfile);
+        setOrders(next.nextOrders);
+        setCustomers(next.nextCustomers);
+        setProducts(next.nextProducts);
+        setStaff(next.nextStaff);
+        setCurrentUser(next.nextProfile);
         setLoadError(null);
       } catch (error) {
         if (!cancelled) setLoadError(describeDbError(error));
@@ -98,7 +113,7 @@ export default function OrdersPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadPage]);
 
   useEffect(() => {
     if (notification) {
@@ -125,147 +140,86 @@ export default function OrdersPage() {
     }
   };
 
-  /**
-   * The prompts and confirmations below are the operator's safety net. The
-   * actual rules live in update_order_status(): it validates the transition,
-   * demands Super Admin for anything illegal, and moves the stock. If this
-   * function's checks and the database ever disagree, the database wins.
-   */
+  // Everything below mirrors update_order_status() / create_order() in
+  // supabase/10_rpc_hardening.sql so the page only offers what the database
+  // will accept. The database is still the one that decides.
+  const hideCost = !perms.viewCost;
+  const describe = (error: unknown) => describeDbError(error, { hideCost });
+
+  /** Statuses this user may move an order to, including overrides for a Super Admin. */
+  const statusOptionsFor = (order: Order): OrderStatus[] => {
+    if (!perms.editOrders) return [order.status];
+    const normal = ORDER_STATUS_TRANSITIONS[order.status] ?? [];
+    const allowed = ORDER_STATUSES.filter(status => {
+      if (status === order.status) return true;
+      if (perms.overrideOrders) return true;
+      if (!normal.includes(status)) return false;
+      // Cancelling an order with payments or paid commission is Super Admin only.
+      return !(status === 'cancelled' && isFinanciallyLocked(order));
+    });
+    return allowed;
+  };
+
   const handleStatusChange = async (id: string, newStatus: string) => {
     const order = orders.find(o => o.id === id);
     if (!order) return;
 
     if (!perms.editOrders) {
-      showNotification('error', 'Permission denied: You are not allowed to update order status.');
+      showNotification('error', 'Permission denied: you are not allowed to update order status.');
       return;
     }
 
-    const oldStatus = order.status as OrderStatus;
+    const oldStatus = order.status;
     const targetStatus = newStatus as OrderStatus;
-
     if (oldStatus === targetStatus) return;
 
-    const hasOverridePermission = perms.overrideOrderStatus;
+    const isNormal = (ORDER_STATUS_TRANSITIONS[oldStatus] ?? []).includes(targetStatus);
+    const cancellingLocked = targetStatus === 'cancelled' && isFinanciallyLocked(order);
 
-    // Same table the database enforces, so the UI never offers a move the
-    // server will reject without warning.
-    const isNormalTransition = (ORDER_STATUS_TRANSITIONS[oldStatus] || []).includes(targetStatus);
-
-    let requiresOverride = !isNormalTransition;
-    let warningMsg = "";
-
-    // 1. Cancelled Order Protection
-    if (oldStatus === 'cancelled') {
-      requiresOverride = true;
-      warningMsg = "Cancelled orders are locked. Override required.";
+    if ((!isNormal || cancellingLocked) && !perms.overrideOrders) {
+      showNotification(
+        'error',
+        cancellingLocked
+          ? `Order #${id} has payments or paid commission. Only a Super Admin can cancel it.`
+          : `${oldStatus} → ${targetStatus} is not a normal step. Only a Super Admin can override it.`
+      );
+      return;
     }
 
-    // 2. Delivered Order Protection
-    if (oldStatus === 'delivered') {
-      requiresOverride = true;
-      warningMsg = "Delivered orders are finalized.";
-    }
-
-    // 3. Paid Order Protection
-    if (order.paymentStatus === 'paid') {
-      requiresOverride = true;
-      warningMsg = "Paid orders require admin override to change.";
-    }
-
-    // 3b. Commission Paid Protection
-    const isCommissionPaid = order.commissionPaid === true;
-    if (isCommissionPaid) {
-      requiresOverride = true;
-      warningMsg = "Commission has already been paid out. Only Super Admin override can change this.";
-    }
-
-    // Enforce Permission Check
-    if (requiresOverride) {
-      if (!hasOverridePermission) {
-        showNotification('error', `Forbidden: ${warningMsg || "Override permission required."}`);
+    // The database requires a reason for every override and for cancelling a
+    // paid / commission-locked order. A normal cancellation gets one too, so
+    // the audit line says why.
+    const reasonRequired = !isNormal || cancellingLocked;
+    let reason = "";
+    if (reasonRequired || targetStatus === 'cancelled') {
+      const title = reasonRequired
+        ? `Super Admin ${isNormal ? 'cancellation' : 'override'}: order #${id}, ${oldStatus} → ${targetStatus}.\n` +
+          `${cancellingLocked ? 'This order has payments or paid commission. ' : ''}A reason is required and will be recorded:`
+        : `Cancel order #${id}? Its stock returns to the shelf.\nReason:`;
+      const input = prompt(title, reasonRequired ? "" : "Customer request");
+      if (input === null) return;
+      reason = input.trim();
+      if (reasonRequired && !reason) {
+        showNotification('error', 'A reason is required for this change.');
         return;
       }
     }
 
-    // 5. Determine if reason is required
-    const needsReason = 
-      targetStatus === 'cancelled' ||
-      oldStatus === 'cancelled' ||
-      oldStatus === 'delivered' ||
-      order.paymentStatus === 'paid' ||
-      isCommissionPaid;
-
-    let reason = "";
-    if (needsReason) {
-      const promptTitle = isCommissionPaid 
-        ? `CRITICAL OVERRIDE: Changing commission-locked order #${id}.\nEnter explanation:`
-        : `Risky status change from "${oldStatus}" to "${targetStatus}".\nPlease enter a reason/comment:`;
-
-      const defaultReason = targetStatus === 'cancelled' ? 'Customer request' : 'Administrative adjustment';
-      const userInput = prompt(promptTitle, defaultReason);
-      
-      if (userInput === null) {
-        // User clicked cancel on prompt
-        return; 
-      }
-      
-      reason = userInput.trim() || defaultReason;
-    }
-
-    // Confirmation for risky overrides
-    if (requiresOverride) {
-      const confirmMsg = `Are you sure you want to perform this override?\n\n` +
-        `Order: #${id}\n` +
-        `Transition: ${oldStatus} → ${targetStatus}\n` +
-        `Reason: "${reason || 'N/A'}"\n\n` +
-        `This action will be audited.`;
-      
-      if (!confirm(confirmMsg)) return;
-    }
-
-    // Stock is not touched here. update_order_status() restores it on cancel,
-    // takes it back on reactivation, and refuses the reactivation outright if
-    // the units are no longer on the shelf - all in one transaction, so the
-    // half-moved-stock state the old client-side version could produce is gone.
     try {
       setIsSaving(true);
-      const db = getDb();
-
-      await db.orders.setStatus(id, targetStatus, reason);
-
-      const severity = requiresOverride ? 'WARNING' : 'INFO';
-      const auditMessage = requiresOverride
-        ? `OVERRIDE: Order #${id} status changed from ${oldStatus} to ${targetStatus}. Reason: ${reason}`
-        : `Order #${id} status changed from ${oldStatus} to ${targetStatus}`;
-
-      await db.logs.write({
-        category: 'FINANCIAL',
-        severity,
-        message: auditMessage,
-        targetId: id,
-        metadata: {
-          oldValue: oldStatus,
-          newValue: targetStatus,
-          isOverride: requiresOverride,
-          reason: reason || undefined,
-          changedBy: currentUser?.name || 'system',
-          userId: currentUser?.id,
-          source: 'Order Tracking',
-        },
-      });
-
+      // update_order_status() moves the stock, stamps delivered_at on first
+      // delivery and writes the audit line itself, all in one transaction.
+      await getDb().orders.setStatus(id, targetStatus, reason);
       await refresh();
       showNotification('success', `Order #${id} updated: ${oldStatus} → ${targetStatus}`);
     } catch (error) {
-      showNotification('error', describeDbError(error));
+      showNotification('error', describe(error));
     } finally {
       setIsSaving(false);
     }
   };
 
   const canCreateOrders = perms.createOrders;
-  const canViewInventory = perms.viewInventory;
-  const canDeleteOrders = perms.deleteOrders;
 
   const addOrderItem = () => {
     setOrderItems(prev => [...prev, blankOrderLine()]);
@@ -279,41 +233,46 @@ export default function OrdersPage() {
     setOrderItems(prev => prev.length > 1 ? prev.filter(item => item.id !== id) : prev);
   };
 
+  // Cost is known only to users the database shows it to; for everyone else
+  // costPrice is null and the preview shows revenue only.
   const itemCalculations = orderItems.map(item => {
     const product = products.find(p => p.id === item.productId);
     const actualUnitPrice = Number(item.actualUnitPrice || 0);
-    const quantity = Math.max(1, Number(item.quantity || 1));
-    const standardUnitPrice = Number(product?.sellingPrice ?? product?.price ?? 0);
-    const costPrice = Number(product?.costPrice ?? 0);
+    const quantity = Number(item.quantity || 0);
+    const costPrice = product?.costPrice ?? null;
     const lineRevenue = actualUnitPrice * quantity;
-    const lineCost = costPrice * quantity;
-    const lineProfit = lineRevenue - lineCost;
-    return { product, quantity, actualUnitPrice, standardUnitPrice, costPrice, lineRevenue, lineCost, lineProfit };
+    const lineCost = costPrice === null ? null : costPrice * quantity;
+    const belowCost = costPrice !== null && Boolean(product) && actualUnitPrice < costPrice;
+    return { product, quantity, actualUnitPrice, costPrice, lineRevenue, lineCost, belowCost };
   });
 
   const subtotal = itemCalculations.reduce((sum, item) => sum + item.lineRevenue, 0);
-  const totalCost = itemCalculations.reduce((sum, item) => sum + item.lineCost, 0);
-  const grossProfit = subtotal - totalCost;
+  const totalCost = itemCalculations.every(item => !item.product || item.lineCost !== null)
+    ? itemCalculations.reduce((sum, item) => sum + (item.lineCost ?? 0), 0)
+    : null;
+  const grossProfit = totalCost === null ? null : subtotal - totalCost;
+  const hasBelowCostLine = itemCalculations.some(item => item.belowCost);
   const totalOutstanding = Math.max(0, subtotal - formData.amountPaid);
   const computedPaymentStatus = formData.amountPaid <= 0 ? 'unpaid' : formData.amountPaid >= subtotal ? 'paid' : 'partial';
+  const today = efzToday();
+
+  const officerName = (officerId?: string | null) =>
+    officerId ? staff.find(u => u.id === officerId)?.name ?? 'Unknown officer' : null;
 
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canCreateOrders) {
-      showNotification('error', 'Permission denied: You are not allowed to create new orders.');
+      showNotification('error', 'Permission denied: you are not allowed to create orders.');
       return;
     }
 
     const customer = customers.find(c => c.id === formData.customerId);
     if (!customer) {
-      showNotification('error', 'Please select a customer.');
+      showNotification('error', 'Every order needs a customer. Please select one.');
       return;
     }
 
-    const validItems = orderItems
-      .map(item => ({ ...item, quantity: Math.max(1, Number(item.quantity || 1)), actualUnitPrice: Number(item.actualUnitPrice || 0) }))
-      .filter(item => item.productId && item.quantity > 0);
-
+    const validItems = orderItems.filter(item => item.productId);
     if (!validItems.length) {
       showNotification('error', 'Please add at least one product to the order.');
       return;
@@ -325,14 +284,36 @@ export default function OrdersPage() {
         showNotification('error', 'One or more selected items are invalid.');
         return;
       }
+      if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+        showNotification('error', `Quantity for ${product.name} must be a whole number of at least 1.`);
+        return;
+      }
       if (!Number.isFinite(item.actualUnitPrice) || item.actualUnitPrice < 0) {
-        showNotification('error', 'Each item must have a valid selling price greater than or equal to 0.');
+        showNotification('error', `Price for ${product.name} must be 0 or more.`);
         return;
       }
       if (product.stock < item.quantity) {
-        showNotification('error', `Insufficient stock for ${product.name}! Only ${product.stock} units available.`);
+        showNotification('error', `Insufficient stock for ${product.name}: only ${product.stock} available.`);
         return;
       }
+      if (product.costPrice !== null && item.actualUnitPrice < product.costPrice && !perms.approveBelowCost) {
+        showNotification('error', `Price for ${product.name} is below its cost. Only a Super Admin can approve a below-cost sale.`);
+        return;
+      }
+    }
+
+    if (hasBelowCostLine && perms.approveBelowCost && !formData.belowCostReason.trim()) {
+      showNotification('error', 'A below-cost sale needs an approval reason.');
+      return;
+    }
+
+    let orderDate: string | undefined;
+    if (perms.backdate && formData.orderDate && formData.orderDate !== today) {
+      if (formData.orderDate > today) {
+        showNotification('error', 'An order cannot be dated in the future.');
+        return;
+      }
+      orderDate = formData.orderDate;
     }
 
     const paymentAmount = Math.max(0, Number(formData.amountPaid || 0));
@@ -341,18 +322,17 @@ export default function OrdersPage() {
       setIsSaving(true);
       const db = getDb();
 
-      // One transaction: the order, its lines with their frozen cost snapshots,
-      // the stock deductions and the movement ledger. If any line is short on
-      // stock the whole thing is rejected and nothing is written.
+      // One transaction: the order (always pending, officer taken from the
+      // customer), its lines with the list price and frozen cost snapshot, the
+      // stock deductions and the movement ledger. Any refusal writes nothing.
       const created = await db.orders.create({
         customerId: customer.id,
         customerName: customer.name,
         phone: customer.phone,
-        marketingOfficerId: customer.marketingOfficerId || customer.registeredBy,
         orderType: formData.orderType,
-        status: formData.status as OrderStatus,
-        orderDate: new Date().toISOString().split('T')[0],
+        orderDate,
         deliveryNotes: formData.notes,
+        belowCostReason: hasBelowCostLine ? formData.belowCostReason.trim() : undefined,
         items: validItems.map(item => ({
           productId: item.productId,
           quantity: item.quantity,
@@ -360,14 +340,14 @@ export default function OrdersPage() {
         })),
       });
 
-      // A separate call, because the payment is its own audited event. If it
-      // fails the order still stands - just unpaid - and the message says so.
+      // A separate call, because the payment is its own audited event. It is
+      // dated today (Mogadishu) by the database. If it fails the order still
+      // stands - just unpaid - and the message says so.
       if (paymentAmount > 0) {
         try {
           await db.orders.addPayment({
             orderId: created.id,
             amount: paymentAmount,
-            paymentDate: new Date().toISOString().split('T')[0],
             notes: 'Initial payment',
           });
         } catch (paymentError) {
@@ -375,20 +355,19 @@ export default function OrdersPage() {
           setIsModalOpen(false);
           showNotification(
             'error',
-            `Order ${created.id} was created, but the initial payment failed: ${describeDbError(paymentError)}. Record it from the order list.`
+            `Order ${created.id} was created, but the initial payment failed: ${describe(paymentError)}. Record it from the Customer Database.`
           );
           return;
         }
       }
 
       await db.logs.write({
-        category: 'FINANCIAL',
+        category: 'ORDER',
         severity: 'INFO',
         message: `New order created: ${created.id} for ${customer.name} ($${created.total})`,
         targetId: created.id,
         metadata: {
           total: created.total,
-          grossProfit: created.grossProfit,
           items: created.items.length,
           orderType: formData.orderType,
           source: 'Order Tracking',
@@ -398,61 +377,47 @@ export default function OrdersPage() {
       await refresh();
       setIsModalOpen(false);
       setOrderItems([blankOrderLine("first")]);
-      setFormData({ customerId: "", orderType: "regular", amountPaid: 0, status: "pending", notes: "" });
-      showNotification('success', `Order ${created.id} created successfully for ${customer.name}`);
+      setFormData(blankForm());
+      showNotification('success', `Order ${created.id} created for ${customer.name}`);
     } catch (error) {
-      showNotification('error', describeDbError(error));
+      showNotification('error', describe(error));
     } finally {
       setIsSaving(false);
     }
   };
 
+  /** orders_delete: Super Admin, cancelled, no payments, no paid commission. */
+  const canDelete = (order: Order) =>
+    perms.deleteCancelledOrders && order.status === 'cancelled' && !isFinanciallyLocked(order);
+
   const handleDelete = async (id: string) => {
     const order = orders.find(o => o.id === id);
     if (!order) return;
 
-    if (!canDeleteOrders) {
-      showNotification('error', 'Permission denied: You are not allowed to delete orders.');
+    if (!canDelete(order)) {
+      showNotification('error', 'Only a Super Admin can delete an order, and only a cancelled order with no payments. Cancel it instead.');
       return;
     }
 
-    if (order.commissionPaid && currentUser?.role !== 'Super Admin') {
-      showNotification('error', 'Only Super Admin can delete commission-locked orders.');
-      return;
-    }
-
-    const needsRestock = order.status !== 'cancelled';
-    const confirmed = confirm(
-      needsRestock
-        ? `Delete order ${id}?\n\nIt will be cancelled first so its ${order.items.length} line(s) go back into stock, then removed along with its items and payments. This cannot be undone.`
-        : `Delete order ${id}? Its items and payments go with it. This cannot be undone.`
-    );
-    if (!confirmed) return;
+    if (!confirm(`Delete cancelled order ${id}? Its stock was already returned when it was cancelled. This cannot be undone.`)) return;
 
     try {
       setIsSaving(true);
       const db = getDb();
 
-      // Cancel before deleting so the stock returns through the ledger rather
-      // than vanishing with the row. Deleting outright would leave the units
-      // permanently deducted with nothing left to explain why.
-      if (needsRestock) {
-        await db.orders.setStatus(id, 'cancelled', `Cancelled ahead of deletion of order ${id}`);
-      }
-
       await db.logs.write({
-        category: 'FINANCIAL',
+        category: 'ORDER',
         severity: 'WARNING',
         message: `Order deleted: ${id}`,
         targetId: id,
-        metadata: { restocked: needsRestock, total: order.total },
+        metadata: { total: order.total, status: order.status },
       });
 
       await db.orders.remove(id);
       await refresh();
-      showNotification('success', 'Order deleted');
+      showNotification('success', `Order ${id} deleted`);
     } catch (error) {
-      showNotification('error', describeDbError(error));
+      showNotification('error', describe(error));
     } finally {
       setIsSaving(false);
     }
@@ -614,11 +579,21 @@ export default function OrdersPage() {
                           )}
                         </div>
                         <p className="text-[9px] text-slate-400 mt-0.5">{order.date}</p>
+                        {order.deliveredAt && (
+                          <p className="text-[9px] text-green-600 mt-0.5 font-bold" title={new Date(order.deliveredAt).toLocaleString()}>
+                            Delivered {new Date(order.deliveredAt).toLocaleDateString()}
+                          </p>
+                        )}
                       </td>
                       <td className="px-6 py-3">
                         <p className="font-bold text-slate-900 group-hover:text-brand-blue transition-colors truncate">{order.customer}</p>
                         <p className="text-slate-500 text-[10px] mt-0.5 flex items-center gap-1 font-medium">
                           <span className="h-1 w-1 rounded-full bg-slate-300" /> {order.phone}
+                        </p>
+                        <p className="text-[9px] mt-0.5 font-medium text-slate-400">
+                          Officer: {order.marketingOfficerName
+                            ? <span className="font-bold text-slate-600">{order.marketingOfficerName}</span>
+                            : <span className="italic">unassigned</span>}
                         </p>
                       </td>
                       <td className="px-6 py-3">
@@ -632,8 +607,9 @@ export default function OrdersPage() {
                       <td className="px-6 py-3">
                         <div className="flex flex-col">
                           <span className="text-brand-green font-bold text-xs">${order.total.toFixed(0)}</span>
-                          {canViewInventory ? (
-                            <span className="text-[9px] font-bold text-blue-500 uppercase mt-0.5">Profit: ${(order.grossProfit || (order.total - (order.cost || 0))).toFixed(0)}</span>
+                          {/* grossProfit is null when the database withholds cost from this user. */}
+                          {order.grossProfit !== null ? (
+                            <span className="text-[9px] font-bold text-blue-500 uppercase mt-0.5">Profit: ${order.grossProfit.toFixed(0)}</span>
                           ) : (
                             <span className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">Profit hidden</span>
                           )}
@@ -641,8 +617,8 @@ export default function OrdersPage() {
                       </td>
                       <td className="px-6 py-3">
                         <div className="relative inline-block w-full max-w-[140px]">
-                          {canChangeStatus ? (
-                        <select 
+                          {canChangeStatus && statusOptionsFor(order).length > 1 ? (
+                        <select
                           className={cn(
                             "w-full h-7 rounded px-2 pl-7 text-[9px] font-bold uppercase tracking-wider appearance-none border border-transparent transition-all cursor-pointer",
                             config.color
@@ -651,11 +627,15 @@ export default function OrdersPage() {
                           disabled={isSaving}
                           onChange={(e) => handleStatusChange(order.id, e.target.value)}
                         >
-                          <option value="pending">Pending</option>
-                          <option value="confirmed">Confirmed</option>
-                          <option value="processing">Processing</option>
-                          <option value="delivered">Delivered</option>
-                          <option value="cancelled">Cancelled</option>
+                          {statusOptionsFor(order).map(status => {
+                            const isOverride = status !== order.status
+                              && !(ORDER_STATUS_TRANSITIONS[order.status] ?? []).includes(status);
+                            return (
+                              <option key={status} value={status}>
+                                {getStatusConfig(status).label}{isOverride ? ' (override)' : ''}
+                              </option>
+                            );
+                          })}
                         </select>
                       ) : (
                         <div className={cn(
@@ -673,10 +653,7 @@ export default function OrdersPage() {
                       </td>
                       <td className="px-6 py-3 text-right">
                         <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-brand-blue hover:bg-blue-50 rounded-md">
-                            <Eye className="h-3.5 w-3.5" />
-                          </Button>
-                          {perms.deleteOrders && (
+                          {canDelete(order) && (
                             <Button onClick={() => handleDelete(order.id)} disabled={isSaving} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
@@ -746,7 +723,36 @@ export default function OrdersPage() {
                         .map(c => <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>)
                       }
                     </select>
+                    {(() => {
+                      const selected = customers.find(c => c.id === formData.customerId);
+                      if (!selected) return null;
+                      const owner = officerName(selected.marketingOfficerId);
+                      return (
+                        <p className="ml-1 text-[10px] text-slate-500">
+                          Commission owner (from the customer):{" "}
+                          {owner
+                            ? <span className="font-bold text-slate-700">{owner}</span>
+                            : <span className="italic">unassigned - no officer earns on this order</span>}
+                        </p>
+                      );
+                    })()}
                   </div>
+
+                  {perms.backdate && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-700 ml-1">Order Date (Super Admin)</label>
+                      <Input
+                        type="date"
+                        max={today}
+                        value={formData.orderDate}
+                        onChange={e => setFormData({ ...formData, orderDate: e.target.value })}
+                        className="h-9 rounded-lg bg-slate-50 border-slate-200 text-xs"
+                      />
+                      {formData.orderDate && formData.orderDate < today && (
+                        <p className="ml-1 text-[10px] font-bold text-amber-600">Backdated order - it will be recorded in the audit log.</p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-700 ml-1">Order Type</label>
@@ -779,7 +785,8 @@ export default function OrdersPage() {
 
                     {orderItems.map((item, index) => {
                       const product = products.find(p => p.id === item.productId);
-                      const lineTotal = (Number(item.actualUnitPrice || 0) * Number(item.quantity || 1));
+                      const lineTotal = (Number(item.actualUnitPrice || 0) * Number(item.quantity || 0));
+                      const belowCost = itemCalculations[index]?.belowCost ?? false;
 
                       return (
                         <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
@@ -803,8 +810,9 @@ export default function OrdersPage() {
                             <Input
                               type="number"
                               min="1"
+                              step="1"
                               value={item.quantity}
-                              onChange={e => updateOrderItem(item.id, { quantity: Math.max(1, Number(e.target.value || 1)) })}
+                              onChange={e => updateOrderItem(item.id, { quantity: Math.max(1, Math.floor(Number(e.target.value || 1))) })}
                               className="h-9 rounded-lg bg-white border-slate-200 text-xs"
                               placeholder="Qty"
                             />
@@ -821,9 +829,18 @@ export default function OrdersPage() {
                           </div>
 
                           <div className="flex items-center justify-between text-[10px] text-slate-500">
-                            <span>{product ? product.name : 'No product selected'}</span>
+                            <span>
+                              {product ? `${product.name} · list $${product.sellingPrice.toFixed(2)}` : 'No product selected'}
+                            </span>
                             <span className="font-bold text-slate-900">Total: ${lineTotal.toFixed(2)}</span>
                           </div>
+                          {belowCost && (
+                            <p className="text-[10px] font-bold text-red-600">
+                              {perms.approveBelowCost
+                                ? 'Below cost - needs your approval reason below.'
+                                : 'Below cost - only a Super Admin can approve this price.'}
+                            </p>
+                          )}
                         </div>
                       );
                     })}
@@ -838,16 +855,36 @@ export default function OrdersPage() {
                         <span className="text-slate-400">Subtotal</span>
                         <span className="font-bold text-white">${subtotal.toFixed(2)}</span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Cost</span>
-                        <span className="font-bold text-white">${totalCost.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between border-t border-white/10 pt-2">
-                        <span className="text-slate-400 font-bold uppercase">Gross Profit</span>
-                        <span className="font-bold text-brand-blue">${grossProfit.toFixed(2)}</span>
-                      </div>
+                      {totalCost !== null && grossProfit !== null && (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Cost</span>
+                            <span className="font-bold text-white">${totalCost.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between border-t border-white/10 pt-2">
+                            <span className="text-slate-400 font-bold uppercase">Gross Profit</span>
+                            <span className="font-bold text-brand-blue">${grossProfit.toFixed(2)}</span>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
+
+                  {hasBelowCostLine && perms.approveBelowCost && (
+                    <div className="space-y-1 rounded-xl border border-red-200 bg-red-50 p-3">
+                      <label className="text-[10px] font-bold text-red-700 ml-1">Below-cost approval reason (required)</label>
+                      <textarea
+                        required
+                        className="w-full h-16 rounded-lg border border-red-200 bg-white p-2 text-xs outline-none"
+                        placeholder="e.g., Damaged stock clearance"
+                        value={formData.belowCostReason}
+                        onChange={e => setFormData({ ...formData, belowCostReason: e.target.value })}
+                      />
+                      <p className="text-[10px] text-red-600">
+                        Recorded with your name, the price, the cost and the margin for each below-cost line.
+                      </p>
+                    </div>
+                  )}
 
                   <div className="space-y-3">
                     <div className="space-y-1">

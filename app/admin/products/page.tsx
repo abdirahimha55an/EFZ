@@ -23,8 +23,9 @@ export default function ProductsPage() {
   const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
   const [imagePreviewError, setImagePreviewError] = useState(false);
 
-  // Form state
-  const [formData, setFormData] = useState<Omit<Product, 'id' | 'isWholesale'>>({
+  // Form state. costPrice is a plain number here; for a user who may not see
+  // cost it stays 0 and is never sent (see handleSubmit).
+  const [formData, setFormData] = useState<Omit<Product, 'id' | 'isWholesale' | 'costPrice' | 'isActive'> & { costPrice: number }>({
     name: "",
     category: "Football",
     price: 0,
@@ -89,6 +90,11 @@ export default function ProductsPage() {
 
   const perms = derivePermissions(profile);
   const canViewInventory = perms.viewInventory;
+  // Rules enforced by the database since 10_rpc_hardening.sql:
+  //   price / cost - Super Admin or Manager only;
+  //   cost and margin - delivered only to view_inventory / view_reports holders.
+  const canManagePricing = perms.managePricing;
+  const canViewCost = perms.viewCost;
   const canAddProducts = perms.addProducts;
   const canEditProducts = perms.editProducts;
   const canDeleteProducts = perms.deleteProducts;
@@ -141,7 +147,7 @@ export default function ProductsPage() {
       name: product.name,
       category: product.category,
       price: product.sellingPrice || product.price || 0,
-      costPrice: product.costPrice || 0,
+      costPrice: product.costPrice ?? 0,
       sellingPrice: product.sellingPrice || product.price || 0,
       stock: product.stock,
       lowStockThreshold: product.lowStockThreshold || 50,
@@ -218,14 +224,24 @@ export default function ProductsPage() {
       return;
     }
 
-    const savedData = {
-      ...formData,
-      stock: Number(formData.stock),
-      costPrice: Number(formData.costPrice),
-      sellingPrice: Number(formData.sellingPrice),
-      price: Number(formData.sellingPrice), // Keep legacy price in sync
-      lowStockThreshold: Number(formData.lowStockThreshold)
+    // Catalogue fields everyone with edit_products may write.
+    const catalogFields = {
+      name: formData.name,
+      category: formData.category,
+      size: formData.size,
+      imageUrl: formData.imageUrl,
+      description: formData.description,
+      durability: formData.durability,
+      surfaceType: formData.surfaceType,
+      lowStockThreshold: Number(formData.lowStockThreshold),
     };
+    // Selling price and cost only go to the database from a Super Admin or
+    // Manager; anyone else's product keeps (or starts at) the current price.
+    const pricingFields = canManagePricing
+      ? { sellingPrice: Number(formData.sellingPrice), costPrice: Number(formData.costPrice) }
+      : {};
+    // Stock moves only through adjust_stock(), and only for adjust_stock holders.
+    const requestedStock = canAdjustStock ? Number(formData.stock) : (editingProduct?.stock ?? 0);
 
     try {
       setIsSaving(true);
@@ -233,8 +249,9 @@ export default function ProductsPage() {
 
       if (editingProduct) {
         const oldStock = editingProduct.stock;
-        const newStock = savedData.stock;
+        const newStock = requestedStock;
         const stockDiff = newStock - oldStock;
+        const savedData = { ...catalogFields, ...pricingFields };
 
         // products.update deliberately ignores stock. Stock only ever moves
         // through adjust_stock(), which writes the ledger entry in the same
@@ -268,17 +285,20 @@ export default function ProductsPage() {
         );
       } else {
         // Created with zero stock, then stocked through the ledger, so a new
-        // product's opening quantity is a movement like any other.
+        // product's opening quantity is a movement like any other. Without
+        // pricing rights it is created unpriced for a manager to price.
         const created = await db.products.create({
-          ...savedData,
+          ...catalogFields,
+          sellingPrice: 0,
+          ...pricingFields,
           stock: 0,
           isWholesale: true,
         });
 
-        if (savedData.stock > 0) {
+        if (requestedStock > 0) {
           await db.inventory.adjust(
             created.id,
-            savedData.stock,
+            requestedStock,
             'Initial stock for new product',
             'import'
           );
@@ -287,11 +307,11 @@ export default function ProductsPage() {
         await db.logs.write({
           category: 'INVENTORY',
           severity: 'INFO',
-          message: `New product created: ${savedData.name}`,
+          message: `New product created: ${catalogFields.name}`,
           targetId: created.id,
           metadata: {
             oldValue: 0,
-            newValue: savedData.stock,
+            newValue: requestedStock,
             field: 'stock',
             source: 'Product Catalog',
           },
@@ -299,7 +319,9 @@ export default function ProductsPage() {
 
         showNotification(
           'success',
-          validation.warning ? `New product added. Warning: ${validation.warning}` : 'New product added successfully'
+          !canManagePricing
+            ? 'New product added unpriced. A Super Admin or Manager must set its price and cost.'
+            : validation.warning ? `New product added. Warning: ${validation.warning}` : 'New product added successfully'
         );
       }
 
@@ -490,7 +512,7 @@ export default function ProductsPage() {
                           <div className="space-y-1">
                             <div className="flex items-center gap-1.5">
                               <span className="text-[10px] text-slate-400 font-bold uppercase w-8">Cost</span>
-                              <span className="text-xs font-bold text-slate-600">${canViewInventory ? (product.costPrice || 0).toFixed(0) : '--'}</span>
+                              <span className="text-xs font-bold text-slate-600">{product.costPrice !== null ? `$${product.costPrice.toFixed(0)}` : '--'}</span>
                               <span className="text-[9px] text-slate-300 mx-1">→</span>
                               <span className="text-xs font-bold text-slate-900">${(product.sellingPrice || product.price || 0).toFixed(0)}</span>
                               <span className="text-[10px] text-slate-400 font-bold uppercase">Sell</span>
@@ -498,13 +520,14 @@ export default function ProductsPage() {
                             <div className="flex items-center gap-3">
                               <div className="flex items-center gap-1 font-bold text-[10px]">
                                 <Plus className="h-2 w-2" />
-                                <span className={canViewInventory ? 'text-green-600' : 'text-slate-400'}>
-                                  {canViewInventory ? `Profit: ${((product.sellingPrice || product.price || 0) - (product.costPrice || 0)).toFixed(0)}/u` : 'Profit hidden'}
+                                {/* costPrice is null when the database withholds cost from this user */}
+                                <span className={product.costPrice !== null ? 'text-green-600' : 'text-slate-400'}>
+                                  {product.costPrice !== null ? `Profit: ${(product.sellingPrice - product.costPrice).toFixed(0)}/u` : 'Profit hidden'}
                                 </span>
                               </div>
                               <div className="flex items-center gap-1 font-bold text-[10px]">
-                                <span className={canViewInventory ? 'text-brand-blue' : 'text-slate-400'}>
-                                  {canViewInventory ? `Total: ${(((product.sellingPrice || product.price || 0) - (product.costPrice || 0)) * product.stock).toFixed(0)}` : 'Total hidden'}
+                                <span className={product.costPrice !== null ? 'text-brand-blue' : 'text-slate-400'}>
+                                  {product.costPrice !== null ? `Total: ${((product.sellingPrice - product.costPrice) * product.stock).toFixed(0)}` : 'Total hidden'}
                                 </span>
                               </div>
                             </div>
@@ -627,31 +650,44 @@ export default function ProductsPage() {
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Cost Price ($)</label>
-                      <Input 
-                        required 
-                        type="number" 
-                        step="0.01" 
-                        value={formData.costPrice} 
-                        onChange={e => setFormData({...formData, costPrice: parseFloat(e.target.value) || 0})}
-                        className="h-10 bg-slate-50 border-slate-200"
-                      />
-                    </div>
+                    {canViewCost && (
+                      <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Cost Price ($)</label>
+                        <Input
+                          required
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          disabled={!canManagePricing}
+                          value={formData.costPrice}
+                          onChange={e => setFormData({...formData, costPrice: parseFloat(e.target.value) || 0})}
+                          className="h-10 bg-slate-50 border-slate-200"
+                        />
+                      </div>
+                    )}
                     <div>
                       <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Selling Price ($)</label>
-                      <Input 
-                        required 
-                        type="number" 
-                        step="0.01" 
-                        value={formData.sellingPrice} 
+                      <Input
+                        required
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        disabled={!canManagePricing}
+                        value={formData.sellingPrice}
                         onChange={e => setFormData({...formData, sellingPrice: parseFloat(e.target.value) || 0, price: parseFloat(e.target.value) || 0})}
                         className="h-10 border-brand-blue/30 focus:border-brand-blue"
                       />
                     </div>
                   </div>
+                  {!canManagePricing && (
+                    <p className="text-[11px] text-slate-500">
+                      Only a Super Admin or Manager sets selling price and cost.
+                      {!editingProduct && ' This product will be created unpriced for them to price.'}
+                    </p>
+                  )}
 
-                  {/* Automatic Profit Preview */}
+                  {/* Automatic Profit Preview - only for users the database shows cost to */}
+                  {canViewCost && (
                   <div className="bg-slate-900 rounded-xl p-4 text-white shadow-xl">
                     <div className="flex justify-between items-center mb-3 border-b border-white/10 pb-2">
                       <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Profit Projection</span>
@@ -684,6 +720,7 @@ export default function ProductsPage() {
                       </div>
                     </div>
                   </div>
+                  )}
                   <div>
                     <label className="block text-sm font-bold text-slate-700 mb-1">Description</label>
                     <textarea 
@@ -737,10 +774,14 @@ export default function ProductsPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
                       <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Current Stock</label>
-                      <Input 
-                        required 
-                        type="number" 
-                        value={formData.stock} 
+                      <Input
+                        required
+                        type="number"
+                        min="0"
+                        step="1"
+                        disabled={!canAdjustStock}
+                        title={canAdjustStock ? undefined : 'Stock changes need the adjust_stock permission'}
+                        value={formData.stock}
                         onChange={e => setFormData({...formData, stock: parseInt(e.target.value) || 0})}
                         className="bg-white"
                       />

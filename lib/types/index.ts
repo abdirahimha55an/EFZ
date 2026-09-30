@@ -11,7 +11,11 @@ export const OFFICIAL_PERMISSIONS = [
 
 export type Permission = typeof OFFICIAL_PERMISSIONS[number];
 
-export type UserRole = 'Super Admin' | 'Manager' | 'Marketing Officer' | 'Inventory Staff' | 'Delivery Staff';
+export const USER_ROLES = [
+  'Super Admin', 'Manager', 'Marketing Officer', 'Customer Service', 'Inventory Staff', 'Delivery Staff',
+] as const;
+
+export type UserRole = typeof USER_ROLES[number];
 
 export type AdminUser = {
   id: string;
@@ -36,26 +40,53 @@ export type Customer = {
   name: string;
   email?: string;
   phone: string;
-  registeredBy: string; // User ID who registered them
-  marketingOfficerId?: string; // Explicit link to Marketing Officer
+  /** Staff member who typed the record in. Set by the database, never by the app. */
+  registeredBy: string;
+  /**
+   * The acquiring Marketing Officer - the commission owner. Undefined means the
+   * customer is unassigned. Changes only through transfer_customer_owner().
+   */
+  marketingOfficerId?: string;
   date: string;
   notes?: string;
   isArchived?: boolean;
   status?: 'active' | 'archived';
 };
 
+/** One row of customer_ownership_changes: an audited officer assignment or transfer. */
+export type CustomerOwnershipChange = {
+  id: string;
+  customerId: string;
+  customerName: string;
+  oldOfficerId: string | null;
+  oldOfficerName: string;
+  newOfficerId: string | null;
+  newOfficerName: string;
+  reason: string;
+  ordersMoved: string[];
+  changedBy: string | null;
+  changedByName: string;
+  changedAt: string;
+};
+
 export type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'delivered' | 'cancelled';
 export type OrderType = 'regular' | 'trial';
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded' | 'credit';
 
-// Valid fulfillment status transitions
+/**
+ * The normal fulfilment pipeline, identical to update_order_status() in
+ * supabase/10_rpc_hardening.sql. Anything not listed - leaving delivered,
+ * reactivating a cancelled order - is a Super Admin override with a reason.
+ */
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending: ['confirmed', 'cancelled'],
   confirmed: ['processing', 'cancelled'],
   processing: ['delivered', 'cancelled'],
-  delivered: [], // Terminal — Super Admin can override
-  cancelled: ['pending'], // Reactivate — requires stock check + Super Admin
+  delivered: [],
+  cancelled: [],
 };
+
+export const ORDER_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'processing', 'delivered', 'cancelled'];
 
 export type OrderItem = {
   id?: string;
@@ -65,12 +96,14 @@ export type OrderItem = {
   quantity: number;
   standardUnitPrice: number;
   actualUnitPrice: number; // Actual negotiated unit selling price
-  historicalUnitCost?: number; // Historical unit cost snapshot
-  costPrice?: number;
+  // Cost fields are null when the database withholds cost from this user
+  // (no view_inventory / view_reports). Never treat null as zero.
+  historicalUnitCost?: number | null; // Historical unit cost snapshot
+  costPrice?: number | null;
   price?: number; // Back-compat alias for actual negotiated unit price
   lineRevenue?: number;
-  lineCost?: number;
-  lineProfit?: number;
+  lineCost?: number | null;
+  lineProfit?: number | null;
 };
 
 export type PaymentRecord = {
@@ -98,8 +131,14 @@ export type Order = {
   paymentStatus: PaymentStatus;
   date: string;
   deliveryNotes?: string;
-  cost: number;
-  grossProfit: number;
+  /** Null when the database withholds cost from this user. */
+  cost: number | null;
+  /** Null when the database withholds cost from this user. */
+  grossProfit: number | null;
+  /** Set by update_order_status() on first delivery; null for undelivered and pre-2026-09-29 orders. */
+  deliveredAt: string | null;
+  /** Follows the customer's owner; display only. */
+  marketingOfficerName: string | null;
   commissionPaid?: boolean;
   product?: string;
   qty?: number;
@@ -136,12 +175,14 @@ export type Product = {
   surfaceType: string;
   isWholesale: boolean;
   price: number; // Legacy alias for sellingPrice
-  costPrice: number;
+  /** Null when the database withholds cost from this user. */
+  costPrice: number | null;
   sellingPrice: number;
   stock: number;
   lowStockThreshold: number;
   imageUrl: string;
   category: "Football" | "Futsal" | "Accessories";
+  isActive?: boolean;
 };
 
 export type LogSeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
