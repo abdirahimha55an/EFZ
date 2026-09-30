@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import type { Database } from "@/lib/supabase/database.types";
+import { getSupabasePublicEnv } from "@/lib/supabase/env";
 
 /**
  * Next.js 16 renamed the `middleware` file convention to `proxy`.
@@ -16,14 +17,13 @@ import type { Database } from "@/lib/supabase/database.types";
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const { url, key } = getSupabasePublicEnv();
 
   // Without configuration there is no session to refresh; let the request pass
   // so the app can render its own "Supabase not configured" message.
-  if (!url || !anonKey) return response;
+  if (!url || !key) return response;
 
-  const supabase = createServerClient<Database>(url, anonKey, {
+  const supabase = createServerClient<Database>(url, key, {
     cookies: {
       getAll() {
         return request.cookies.getAll();

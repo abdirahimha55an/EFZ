@@ -3,6 +3,7 @@
 import { createBrowserClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "./database.types";
+import { getSupabasePublicEnv, MISSING_SUPABASE_ENV } from "./env";
 
 export type EfzSupabaseClient = SupabaseClient<Database>;
 
@@ -20,16 +21,14 @@ let browserClient: EfzSupabaseClient | null = null;
 export function getSupabaseBrowserClient(): EfzSupabaseClient {
   if (browserClient) return browserClient;
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const { url, key } = getSupabasePublicEnv();
 
-  if (!url || !anonKey) {
+  if (!url || !key) {
     throw new Error(
-      "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY. " +
-        "Copy .env.example to .env.local and fill in your project values."
+      MISSING_SUPABASE_ENV + " Copy .env.example to .env.local and fill in your project values."
     );
   }
 
-  browserClient = createBrowserClient<Database>(url, anonKey);
+  browserClient = createBrowserClient<Database>(url, key);
   return browserClient;
 }
