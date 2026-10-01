@@ -9,6 +9,31 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { efzToday, formatEfzDateTime } from "@/lib/dates";
+
+/**
+ * Who wrote an audit line (system_logs.origin, set by the database since
+ * migration 11). Only "database" lines are written by the database in the
+ * same transaction as the action; a browser line's actor and time are stamped
+ * by the database but its text is the browser's.
+ */
+const ORIGIN_BADGE: Record<'database' | 'client' | 'unknown', { label: string; title: string; style: string }> = {
+  database: {
+    label: 'Database',
+    title: 'Recorded by the database in the same transaction as the action.',
+    style: 'bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-900/10 dark:text-emerald-400 dark:border-emerald-900/20',
+  },
+  client: {
+    label: 'Browser',
+    title: "Sent by a signed-in user's browser. Who and when are stamped by the database; the text is not verified.",
+    style: 'bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-900/10 dark:text-amber-400 dark:border-amber-900/20',
+  },
+  unknown: {
+    label: 'Unverified',
+    title: 'Written before the database recorded where audit lines come from.',
+    style: 'bg-slate-50 text-slate-500 border-slate-100 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700',
+  },
+};
 
 /**
  * How many log lines to pull. The audit trail is append-only and grows without
@@ -160,7 +185,8 @@ export default function AuditTrailPage() {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(logs, null, 2));
     const downloadAnchorNode = document.createElement('a');
     downloadAnchorNode.setAttribute("href", dataStr);
-    downloadAnchorNode.setAttribute("download", `audit_log_${new Date().toISOString().split('T')[0]}.json`);
+    // Timestamps in the file stay ISO-8601 UTC (unambiguous); the name uses the Mogadishu date.
+    downloadAnchorNode.setAttribute("download", `audit_log_${efzToday()}.json`);
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
@@ -290,9 +316,7 @@ export default function AuditTrailPage() {
                       <div className="flex items-center gap-2">
                         <Clock className="h-3.5 w-3.5 text-slate-400" />
                         <span className="font-mono text-slate-600 dark:text-slate-400">
-                          {new Date(log.timestamp).toLocaleString(undefined, { 
-                            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' 
-                          })}
+                          {formatEfzDateTime(log.timestamp)}
                         </span>
                       </div>
                     </td>
@@ -309,11 +333,21 @@ export default function AuditTrailPage() {
                     </td>
                     <td className="px-6 py-4 min-w-[300px]">
                       <p className="font-bold text-slate-900 dark:text-slate-100">{log.message}</p>
-                      {(log.username || log.userId) && (
-                        <p className="text-[10px] font-bold text-slate-500 mt-1 uppercase tracking-widest flex items-center gap-1">
-                          <User className="h-3 w-3" /> By {log.username || log.userId}
-                        </p>
-                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        {(() => {
+                          const badge = ORIGIN_BADGE[log.origin ?? 'unknown'];
+                          return (
+                            <span title={badge.title} className={cn("inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest", badge.style)}>
+                              {badge.label}
+                            </span>
+                          );
+                        })()}
+                        {(log.username || log.userId) && (
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+                            <User className="h-3 w-3" /> By {log.username || log.userId}
+                          </p>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {log.targetId ? (

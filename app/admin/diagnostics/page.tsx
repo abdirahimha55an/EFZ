@@ -14,6 +14,7 @@ import type { OperationalMetrics } from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
+import { formatEfzTime } from "@/lib/dates";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
@@ -353,7 +354,7 @@ export default function DiagnosticsPage() {
                     <div key={item.id} className="p-4 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
                       <div className="flex justify-between items-start mb-1">
                         <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">{item.category}</span>
-                        <span className="text-[9px] font-mono font-bold text-slate-500">{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span className="text-[9px] font-mono font-bold text-slate-500">{formatEfzTime(item.timestamp)}</span>
                       </div>
                       <p className="text-[11px] font-bold text-slate-700 dark:text-slate-300 leading-tight line-clamp-1">{item.message}</p>
                     </div>

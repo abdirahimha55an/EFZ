@@ -58,7 +58,10 @@ const numOrNull = (value: unknown): number | null =>
 // Users
 // ---------------------------------------------------------------------------
 
-export function toAdminUser(row: ProfileRow, permissions: string[] = []): AdminUser {
+/** The profile columns the API returns; the commission totals are not among them (migration 11). */
+type ProfileApiRow = Omit<ProfileRow, "earned_commission_total" | "pending_commission_total" | "paid_commission_total">;
+
+export function toAdminUser(row: ProfileApiRow, permissions: string[] = []): AdminUser {
   return {
     id: row.id,
     name: row.name,
@@ -68,9 +71,11 @@ export function toAdminUser(row: ProfileRow, permissions: string[] = []): AdminU
     role: row.role,
     status: row.status,
     commissionPercentage: num(row.commission_percentage),
-    earnedCommissionTotal: num(row.earned_commission_total),
-    pendingCommissionTotal: num(row.pending_commission_total),
-    paidCommissionTotal: num(row.paid_commission_total),
+    // Not readable from profiles; per-officer totals come from
+    // commissions.summary(), which the database scopes to the caller.
+    earnedCommissionTotal: 0,
+    pendingCommissionTotal: 0,
+    paidCommissionTotal: 0,
     permissions: permissions as Permission[],
   };
 }
@@ -296,6 +301,7 @@ export function toSystemLog(row: SystemLogRow): SystemLog {
     username: row.username || undefined,
     targetId: row.target_id ?? undefined,
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
+    origin: row.origin === "database" || row.origin === "client" ? row.origin : null,
   };
 }
 

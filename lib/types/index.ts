@@ -198,6 +198,8 @@ export type SystemLog = {
   username?: string;
   targetId?: string;
   metadata?: Record<string, any>;
+  /** Who wrote the line: the database, a browser, or unknown (null: written before migration 11). */
+  origin?: 'database' | 'client' | null;
 };
 
 export type SystemIssue = {

@@ -232,6 +232,12 @@ export type SystemLogRow = {
   username: string;
   target_id: string | null;
   metadata: Json;
+  /**
+   * Set by the database since 11_order_scope_and_audit.sql: 'database' (written
+   * by a function or trigger) or 'client' (inserted by a signed-in browser).
+   * NULL for older lines; absent before 11 is applied. Clients cannot set it.
+   */
+  origin?: "database" | "client" | null;
 };
 
 export type SystemIssueRow = {

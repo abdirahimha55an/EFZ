@@ -105,14 +105,16 @@ const dbSentence = (error: EfzDbError) => error.message.replace(/^[^:]+:\s*/, ""
  * `P0001` is a plain `raise exception`, also already written for humans
  * ("Insufficient stock for EFZ - Nexus: 3 in stock, 5 requested").
  *
- * `hideCost`: create_order() quotes the product's cost when it refuses a
- * below-cost price. For someone who may not see cost, that figure is replaced.
+ * `hideCost`: before migration 11, create_order() quoted the product's cost
+ * when it refused a below-cost price; since 11 it says "below the product's
+ * cost" to anyone who may not see cost. Either way, someone who may not see
+ * cost gets one fixed sentence (no figures).
  */
 export function describeDbError(error: unknown, options: { hideCost?: boolean } = {}): string {
   if (error instanceof EfzDbError) {
     let sentence = dbSentence(error);
 
-    if (options.hideCost && /below its cost/i.test(sentence)) {
+    if (options.hideCost && /below (its|the product's) cost/i.test(sentence)) {
       return "That price is below the product's cost. Only a Super Admin can approve a below-cost sale.";
     }
 
@@ -158,7 +160,9 @@ const newId = (prefix: string): string =>
 // 10_rpc_hardening.sql; those reads go through staff_products and the views.
 
 // Single literals (no concatenation) so supabase-js can type the rows.
-const PROFILE_COLUMNS = "id, auth_user_id, name, email, phone, avatar, role, status, commission_percentage, earned_commission_total, pending_commission_total, paid_commission_total, created_at, updated_at";
+// profiles.*_commission_total are not selectable since 11_order_scope_and_audit.sql;
+// commission totals come from commissions.summary() (officer_commission_summary).
+const PROFILE_COLUMNS = "id, auth_user_id, name, email, phone, avatar, role, status, commission_percentage, created_at, updated_at";
 
 const CUSTOMER_COLUMNS = "id, name, email, phone, registered_by, marketing_officer_id, registered_on, notes, status, created_at, updated_at";
 
