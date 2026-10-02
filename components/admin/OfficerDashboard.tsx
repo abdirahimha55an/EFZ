@@ -30,6 +30,7 @@ import {
   summarize,
 } from "@/lib/commission";
 import { efzToday } from "@/lib/dates";
+import { activeCustomers, collectedByMe, collectedFromMyCustomers } from "@/lib/officerMetrics";
 import { cn } from "@/lib/utils";
 import { getDb } from "@/lib/supabase/db";
 import type { PermissionFlags } from "@/lib/permissions";
@@ -76,7 +77,6 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
   // Commission cards show "—" until the officer's own rows and the policy have loaded,
   // never a momentary $0.00.
   const [commissionLoaded, setCommissionLoaded] = useState(false);
-  const [mountedAt] = useState(() => Date.now());
 
   useEffect(() => {
     let cancelled = false;
@@ -103,7 +103,8 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
   }, [profile.id, perms.viewCommissions, orders]);
 
   const footballIds = useMemo(() => footballIdsOf(products), [products]);
-  const month = efzToday().slice(0, 7);
+  const today = efzToday(); // Mogadishu calendar date
+  const month = today.slice(0, 7);
 
   // --- commission-owned orders (performance) ---
   const myOrders = orders.filter((o) => o.marketingOfficerId === profile.id && o.status !== "cancelled");
@@ -113,8 +114,8 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
   // --- current customers ---
   const myCustomers = customers.filter((c) => c.marketingOfficerId === profile.id && c.status !== "archived" && !c.isArchived);
   const newCustomers = myCustomers.filter((c) => (c.date ?? "").startsWith(month));
-  const cutoff = new Date(mountedAt - 90 * 86_400_000).toISOString().slice(0, 10);
-  const activeCustomers = myCustomers.filter((c) => orders.some((o) => o.customerId === c.id && o.status !== "cancelled" && o.date >= cutoff));
+  // Active = an order placed within the last 90 days (lib/officerMetrics.ts).
+  const active = activeCustomers(myCustomers, orders, today);
 
   // --- commissions ---
   const totals = summarize(events);
@@ -126,10 +127,9 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
 
   // --- collections (current customers' orders, as RLS returns them) ---
   const toCollect = collectionRows(orders, customers);
-  const collectedThisMonth = orders
-    .flatMap((o) => o.payments ?? [])
-    .filter((p) => (p.paymentDate ?? "").startsWith(month))
-    .reduce((s, p) => s + Number(p.amount || 0), 0);
+  // Two different questions, kept apart (lib/officerMetrics.ts):
+  const byMe = collectedByMe(orders, profile.id, month);                      // payments.recorded_by = me
+  const fromMyCustomers = collectedFromMyCustomers(orders, myCustomers, month); // current customers, any recorder
   const outstandingToCollect = toCollect.reduce((s, r) => s + r.outstanding, 0);
   const unpaidOrders = toCollect.filter((r) => r.collected <= 0).length;
   const partialOrders = toCollect.filter((r) => r.collected > 0).length;
@@ -199,7 +199,7 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
         <div className="grid grid-cols-3 gap-4">
           <Stat id="total-customers" title="Total Customers" value={String(myCustomers.length)} note="Currently assigned to you" />
           <Stat id="new-customers-2" title="New Customers" value={String(newCustomers.length)} note="Registered this month" />
-          <Stat id="active-customers" title="Active Customers" value={String(activeCustomers.length)} note="Ordered in the last 90 days" />
+          <Stat id="active-customers" title="Active Customers" value={String(active.length)} note="Placed an order in the last 90 days (order date; cancelled orders excluded)" />
         </div>
       </Section>
 
@@ -207,8 +207,19 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
         title="Customer collections"
         action={perms.accessCustomerModule ? <Link href="/admin/customers" className="text-[10px] font-bold uppercase text-brand-blue">Record a payment →</Link> : undefined}
       >
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <Stat id="collected-month" title="Collected This Month" value={money(collectedThisMonth)} />
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+          <Stat
+            id="collected-by-me"
+            title="Collected by Me"
+            value={money(byMe.total)}
+            note={`Payments you recorded yourself · this month ${money(byMe.thisMonth)}`}
+          />
+          <Stat
+            id="collected-from-my-customers"
+            title="Collected from My Customers"
+            value={money(fromMyCustomers.total)}
+            note={`All payments from customers now assigned to you, whoever recorded them · this month ${money(fromMyCustomers.thisMonth)}`}
+          />
           <Stat id="to-collect" title="Outstanding to Collect" value={money(outstandingToCollect)} />
           <Stat id="unpaid-orders" title="Unpaid Orders" value={String(unpaidOrders)} />
           <Stat id="partial-orders" title="Partially Paid Orders" value={String(partialOrders)} />
