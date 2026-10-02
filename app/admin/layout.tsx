@@ -34,7 +34,8 @@ import {
   History,
   Clock,
   Sun,
-  Moon
+  Moon,
+  Wallet
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -65,6 +66,8 @@ const SIDEBAR_LINKS = [
   { name: "Sales & Analytics", href: "/admin/analytics", icon: BarChart3, permission: 'view_reports' as Permission },
   { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
   { name: "Customer Database", href: "/admin/customers", icon: UserCheck, permission: 'view_customers' as Permission },
+  // A Marketing Officer's own commission events (read only). Shown to officers only.
+  { name: "My Commissions", href: "/admin/commissions", icon: Wallet, permission: 'view_commissions' as Permission },
   { name: "Users & Privileges", href: "/admin/users", icon: Users, permission: 'manage_users' as Permission },
 ];
 
@@ -534,6 +537,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 allowed = hasAnyPermission(['view_customers' as Permission, 'view_own_customers_only' as Permission]);
               } else if (link.href === '/admin/orders') {
                 allowed = hasAnyPermission(['view_orders' as Permission, 'create_orders' as Permission]);
+              } else if (link.href === '/admin/commissions') {
+                // Officers' own commission ledger; management uses the payout tools instead.
+                allowed = perms.isMarketingOfficer && hasPermission('view_commissions' as Permission);
               } else if (link.permission) {
                 allowed = hasPermission(link.permission);
               }

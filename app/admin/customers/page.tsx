@@ -8,7 +8,6 @@ import {
   Phone, 
   Mail, 
   Calendar, 
-  DollarSign, 
   TrendingUp, 
   ShoppingBag,
   Award,
@@ -32,11 +31,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { AdminUser, Customer, CustomerOwnershipChange, CustomerTransferNotice, Order } from "@/lib/types";
-import type { CustomerFinancialsRow, OfficerCommissionSummaryRow } from "@/lib/supabase/database.types";
+import type { CustomerFinancialsRow } from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { getOrderPaymentStatus } from "@/lib/financial";
 import { efzToday } from "@/lib/dates";
+import { type CommissionEvent, expectedForOrder, footballIdsOf, money, summarize } from "@/lib/commission";
+import { OrderCommissionPanel } from "@/components/admin/OrderCommissionPanel";
+import { CustomersToCollect, collectionRows } from "@/components/admin/CustomersToCollect";
 
 const emptyCustomerForm = { name: "", email: "", phone: "", notes: "" };
 
@@ -48,9 +50,12 @@ export default function CustomersPage() {
   // Receivables and commissions come from the database's own views, so the
   // figures on this page are the same ones every other report would produce.
   const [financials, setFinancials] = useState<CustomerFinancialsRow[]>([]);
-  const [commissionRows, setCommissionRows] = useState<OfficerCommissionSummaryRow[]>([]);
   const [commissionPolicy, setCommissionPolicy] = useState<Awaited<ReturnType<ReturnType<typeof getDb>["commissions"]["policy"]>>>(null);
   const [transferNotices, setTransferNotices] = useState<CustomerTransferNotice[]>([]);
+  // The officer's own commission events (Marketing Officers with view_commissions).
+  const [myCommissionEvents, setMyCommissionEvents] = useState<CommissionEvent[]>([]);
+  const [footballIds, setFootballIds] = useState<Set<string> | null>(null);
+  const [commissionOrderId, setCommissionOrderId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -86,7 +91,6 @@ export default function CustomersPage() {
       nextUsers,
       nextProfile,
       nextFinancials,
-      nextCommissions,
       nextPolicy,
       nextNotices,
     ] = await Promise.all([
@@ -95,7 +99,6 @@ export default function CustomersPage() {
       db.users.list(),
       db.auth.getProfile(),
       db.customers.financials(),
-      db.commissions.summary(),
       db.commissions.policy(),
       db.customers.transferNotices(),
     ]);
@@ -105,9 +108,23 @@ export default function CustomersPage() {
     setUsers(nextUsers);
     setProfile(nextProfile);
     setFinancials(nextFinancials);
-    setCommissionRows(nextCommissions);
     setCommissionPolicy(nextPolicy);
     setTransferNotices(nextNotices);
+
+    // Commission cards for officers: their own recorded commission events.
+    const scoped = derivePermissions(nextProfile);
+    if (nextProfile && scoped.isMarketingOfficer && scoped.viewCommissions) {
+      setMyCommissionEvents(await db.commissions.mine(nextProfile.id));
+    } else {
+      setMyCommissionEvents([]);
+    }
+    // Product categories decide which balls earn per-ball commission; without
+    // them the forecast is not shown.
+    try {
+      setFootballIds(footballIdsOf(await db.products.list()));
+    } catch {
+      setFootballIds(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -368,33 +385,25 @@ export default function CustomersPage() {
     }
   };
 
-  // Earned / paid / pending come from the commissions ledger, where each row's
-  // rate was frozen when the order became eligible. Changing this officer's
-  // percentage today does not rewrite what they already earned.
-  const myCommissions = commissionRows.find(row => row.user_id === profile.id);
-  const earnedCommissionTotal = Number(myCommissions?.earned_commission ?? 0);
-  const paidCommission = Number(myCommissions?.paid_commission ?? 0);
-  const pendingPayout = Number(myCommissions?.pending_commission ?? 0);
-
-  // A forecast, deliberately computed here rather than stored as if it were a
-  // fact. Legacy (percentage) commission is recorded at confirmation, so only
-  // pending orders add to it. Per-ball commission is earned per delivered
-  // football, so every ball not yet delivered on a per-ball order (or on a
-  // pending order once the per-ball model is active) adds the per-ball rate.
-  // The first-order bonus is not forecast.
+  // Earned / unpaid / on hold / paid: summed from the officer's own commission
+  // rows exactly as the database recorded them. Nothing is recalculated, and
+  // the forecast below is never added to these facts.
+  const myTotals = summarize(myCommissionEvents);
   const perBallActive = Boolean(commissionPolicy?.cutoverAt);
   const perBallRate = commissionPolicy?.perBallRate ?? 0;
-  const myOrders = orders.filter(o => o.marketingOfficerId === profile.id);
-  const ballsToDeliver = (o: Order) => o.items.reduce((sum, i) => sum + Number(i.remainingQuantity ?? i.quantity), 0);
-  const inProgressCommission = myOrders
-    .filter(o => o.status !== 'cancelled' && o.status !== 'delivered')
-    .reduce((sum, o) => {
-      const perBall = o.commissionModel === 'per_ball_v1' || (o.status === 'pending' && perBallActive);
-      if (perBall) return sum + ballsToDeliver(o) * perBallRate;
-      if (o.status === 'pending' && !o.commissionPaid) return sum + (o.total * profile.commissionPercentage / 100);
-      return sum;
-    }, 0);
-  const totalCommission = earnedCommissionTotal + inProgressCommission;
+
+  // EXPECTED (forecast, not earned): per-ball commission on Football balls not
+  // yet delivered on orders whose commission belongs to this officer.
+  const expectedCommission = footballIds
+    ? orders
+        .filter(o => o.marketingOfficerId === profile.id)
+        .reduce((sum, o) => sum + (expectedForOrder(o, commissionPolicy, footballIds)?.amount ?? 0), 0)
+    : null;
+
+  // Officers: their collection work list (customers currently assigned to them,
+  // which is exactly what RLS returns).
+  const toCollect = collectionRows(orders, customers);
+  const commissionOrder = commissionOrderId ? orders.find(o => o.id === commissionOrderId) ?? null : null;
 
   const getCustomerFinancialSummaryData = (customer: Customer) => {
     const customerOrders = orders.filter(order =>
@@ -567,45 +576,44 @@ export default function CustomersPage() {
             <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:scale-110 transition-transform">
               <Award className="h-14 w-14" />
             </div>
-            <CardContent className="p-4 relative z-10">
-              <p className="text-[9px] font-bold uppercase tracking-[0.2em] opacity-70">Lifetime Commission</p>
-              <h3 className="text-2xl font-bold mt-0.5">${totalCommission.toFixed(0)}</h3>
+            <CardContent className="p-4 relative z-10" data-testid="card-lifetime-earned">
+              <p className="text-[9px] font-bold uppercase tracking-[0.2em] opacity-70">Lifetime Earned</p>
+              <h3 className="text-2xl font-bold mt-0.5 font-mono">{money(myTotals.earned)}</h3>
               <div className="mt-3 flex items-center gap-1.5 text-[9px] font-bold bg-white/10 w-fit px-2 py-0.5 rounded-full">
                 <TrendingUp className="h-2.5 w-2.5" />
                 {perBallActive
-                  ? `$${perBallRate.toFixed(2)} per delivered ball`
+                  ? `${money(perBallRate)} per delivered ball`
                   : `${profile.commissionPercentage}% Rate`}
               </div>
             </CardContent>
           </Card>
-          
-          <Card className="border-none shadow-sm bg-white ring-1 ring-green-100">
-            <CardContent className="p-4">
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Available Payout</p>
-              <h3 className="text-xl font-bold text-slate-900">${pendingPayout.toFixed(0)}</h3>
-              <p className="text-[9px] text-green-600 font-bold mt-1.5 flex items-center gap-1">
-                <CheckCircle2 className="h-2.5 w-2.5" /> Ready for withdrawal
-              </p>
-            </CardContent>
-          </Card>
- 
+
           <Card className="border-none shadow-sm bg-white">
-            <CardContent className="p-4">
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Pending Orders</p>
-              <h3 className="text-xl font-bold text-slate-900">${inProgressCommission.toFixed(0)}</h3>
+            <CardContent className="p-4" data-testid="card-unpaid">
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Commission Unpaid</p>
+              <h3 className="text-xl font-bold text-slate-900 font-mono">{money(myTotals.unpaid)}</h3>
               <p className="text-[9px] text-orange-600 font-bold mt-1.5 flex items-center gap-1">
-                <Clock className="h-2.5 w-2.5" /> Waiting for fulfillment
+                <Clock className="h-2.5 w-2.5" />
+                {myTotals.onHold > 0 ? `Earned, awaiting payout · ${money(myTotals.onHold)} on hold` : 'Earned, awaiting payout by management'}
               </p>
             </CardContent>
           </Card>
- 
+
           <Card className="border-none shadow-sm bg-white">
-            <CardContent className="p-4">
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Paid to Date</p>
-              <h3 className="text-xl font-bold text-slate-900">${paidCommission.toFixed(0)}</h3>
+            <CardContent className="p-4" data-testid="card-paid">
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Commission Paid</p>
+              <h3 className="text-xl font-bold text-slate-900 font-mono">{money(myTotals.paid)}</h3>
               <p className="text-[9px] text-blue-600 font-bold mt-1.5 flex items-center gap-1">
-                <DollarSign className="h-2.5 w-2.5" /> Successfully processed
+                <CheckCircle2 className="h-2.5 w-2.5" /> Paid out to you
               </p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-2 border-dashed border-sky-200 bg-sky-50/40 shadow-none">
+            <CardContent className="p-4" data-testid="card-expected">
+              <p className="text-[9px] font-bold text-sky-700 uppercase tracking-widest mb-0.5">Expected from Undelivered Balls</p>
+              <h3 className="text-xl font-bold text-sky-800 font-mono">{expectedCommission === null ? '—' : money(expectedCommission)}</h3>
+              <p className="text-[9px] text-sky-700 font-bold mt-1.5">FORECAST · not earned yet</p>
             </CardContent>
           </Card>
         </div>
@@ -796,6 +804,15 @@ export default function CustomersPage() {
                         <h3 className="text-lg font-bold text-slate-900">{order.id}</h3>
                       </div>
                       <div className="flex items-center gap-2">
+                        {perms.viewCommissions && (
+                          <button
+                            type="button"
+                            onClick={() => setCommissionOrderId(order.id)}
+                            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-700 hover:bg-violet-50 hover:text-violet-700"
+                          >
+                            Commission
+                          </button>
+                        )}
                         <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold uppercase text-slate-700">{order.orderType || 'regular'}</span>
                         <span className={cn(
                           "rounded-full px-2 py-1 text-[9px] font-bold uppercase",
@@ -890,6 +907,22 @@ export default function CustomersPage() {
         </Card>
       )}
 
+      {perms.isMarketingOfficer && (
+        <Card className="border-none shadow-xl shadow-slate-100 overflow-hidden">
+          <div className="p-4 border-b bg-white">
+            <h2 className="text-lg font-bold text-slate-900 tracking-tight">Customers to collect</h2>
+            <p className="text-[10px] text-slate-400 uppercase tracking-widest">Your customers&apos; orders still owing money · oldest delivered first</p>
+          </div>
+          <CardContent className="p-4">
+            <CustomersToCollect
+              rows={toCollect}
+              onRecordPayment={(perms.createOrders || perms.editOrders) ? (orderId) => setPaymentModalOrderId(orderId) : undefined}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {!perms.isMarketingOfficer && (
       <Card className="border-none shadow-xl shadow-slate-100 overflow-hidden">
         <div className="p-4 border-b bg-white flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
@@ -976,6 +1009,21 @@ export default function CustomersPage() {
           </div>
         </CardContent>
       </Card>
+      )}
+
+      {commissionOrder && (
+        <div className="fixed inset-0 z-[120] bg-slate-900/60 flex items-center justify-center p-4" role="dialog" aria-label="Order commission">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-slate-900">Commission</h3>
+              <button type="button" aria-label="Close commission" onClick={() => setCommissionOrderId(null)} className="rounded-full border border-slate-200 p-2 text-slate-500">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <OrderCommissionPanel order={commissionOrder} viewer={profile} policy={commissionPolicy} footballIds={footballIds} />
+          </div>
+        </div>
+      )}
 
       {paymentModalOrderId && (() => {
         const order = orders.find(item => item.id === paymentModalOrderId);

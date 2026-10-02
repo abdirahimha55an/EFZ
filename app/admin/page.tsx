@@ -26,6 +26,7 @@ import { derivePermissions } from "@/lib/permissions";
 import { efzToday } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import { getFinancialSummary } from "@/lib/financial";
+import { OfficerDashboard } from "@/components/admin/OfficerDashboard";
 
 export default function AdminDashboard() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -127,6 +128,12 @@ export default function AdminDashboard() {
         </CardContent>
       </Card>
     );
+  }
+
+  // Marketing Officers get their own focused dashboard. Access to this page is
+  // still decided by view_dashboard (layout); nothing here grants it.
+  if (perms.isMarketingOfficer) {
+    return <OfficerDashboard profile={profile} perms={perms} orders={orders} customers={customers} products={products} />;
   }
 
   // Filter orders based on permissions

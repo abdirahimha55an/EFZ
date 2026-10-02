@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Search, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Plus, User, Package, AlertCircle, X, Loader2, Truck, RefreshCcw, PackageCheck, Wrench } from "lucide-react";
+import { Search, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Plus, User, Package, AlertCircle, X, Loader2, Truck, RefreshCcw, PackageCheck, Wrench, Wallet } from "lucide-react";
+import { OrderCommissionPanel } from "@/components/admin/OrderCommissionPanel";
+import { type CommissionPolicyView, footballIdsOf } from "@/lib/commission";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,6 +58,8 @@ export default function OrdersPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [staff, setStaff] = useState<AdminUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
+  const [commissionPolicy, setCommissionPolicy] = useState<CommissionPolicyView | null>(null);
+  const [commissionOrderId, setCommissionOrderId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -100,14 +104,15 @@ export default function OrdersPage() {
   // Products come from staff_products: cost is null unless this user may see it.
   const loadPage = useCallback(async () => {
     const db = getDb();
-    const [nextOrders, nextCustomers, nextProducts, nextStaff, nextProfile] = await Promise.all([
+    const [nextOrders, nextCustomers, nextProducts, nextStaff, nextProfile, nextPolicy] = await Promise.all([
       db.orders.list(),
       db.customers.list(),
       db.products.list(),
       db.users.list(),
       db.auth.getProfile(),
+      db.commissions.policy(),
     ]);
-    return { nextOrders, nextCustomers, nextProducts, nextStaff, nextProfile };
+    return { nextOrders, nextCustomers, nextProducts, nextStaff, nextProfile, nextPolicy };
   }, []);
 
   const refresh = useCallback(async () => {
@@ -117,6 +122,7 @@ export default function OrdersPage() {
     setProducts(next.nextProducts);
     setStaff(next.nextStaff);
     setCurrentUser(next.nextProfile);
+    setCommissionPolicy(next.nextPolicy);
   }, [loadPage]);
 
   useEffect(() => {
@@ -132,6 +138,7 @@ export default function OrdersPage() {
         setProducts(next.nextProducts);
         setStaff(next.nextStaff);
         setCurrentUser(next.nextProfile);
+        setCommissionPolicy(next.nextPolicy);
         setLoadError(null);
       } catch (error) {
         if (!cancelled) setLoadError(describeDbError(error));
@@ -545,12 +552,11 @@ export default function OrdersPage() {
   };
 
   const filteredOrders = orders.filter(order => {
-    // RLS already limits what comes back; this narrows it further for a user who
-    // holds view_orders but is scoped to their own customers.
-    if (perms.viewOwnCustomersOnly) {
-      const isOwner = currentUser ? String(order.marketingOfficerId) === String(currentUser.id) : false;
-      if (!isOwner) return false;
-    }
+    // RLS (orders_select / can_access_order, migration 11) already returns
+    // exactly the orders of the customers CURRENTLY assigned to an officer -
+    // including that customer's earlier orders after a transfer. They are not
+    // filtered out here any more; each row says whose commission it is
+    // (orders.marketing_officer_id, which a transfer never moves).
 
     const legacyMatches = [order.legacyReferenceId, ...(order.legacyOrderIds || [])]
       .filter((value): value is string => Boolean(value))
@@ -714,10 +720,15 @@ export default function OrdersPage() {
                           <span className="h-1 w-1 rounded-full bg-slate-300" /> {order.phone}
                         </p>
                         <p className="text-[9px] mt-0.5 font-medium text-slate-400">
-                          Officer: {order.marketingOfficerName
+                          {perms.isMarketingOfficer ? 'Commission' : 'Officer'}: {order.marketingOfficerName
                             ? <span className="font-bold text-slate-600">{order.marketingOfficerName}</span>
                             : <span className="italic">unassigned</span>}
                         </p>
+                        {perms.isMarketingOfficer && currentUser && order.marketingOfficerId && order.marketingOfficerId !== currentUser.id && (
+                          <p className="text-[9px] mt-0.5 font-bold text-amber-700" data-testid="inherited-order" title="This customer is now yours. Commission on this earlier order stays with the officer who earned it.">
+                            Earlier order · commission stays with {order.marketingOfficerName ?? 'the previous officer'}
+                          </p>
+                        )}
                       </td>
                       <td className="px-6 py-3">
                         {order.items.map((item, index) => (
@@ -778,7 +789,12 @@ export default function OrdersPage() {
                         </div>
                       </td>
                       <td className="px-6 py-3 text-right">
-                        <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                          {perms.viewCommissions && (
+                            <Button onClick={() => setCommissionOrderId(order.id)} variant="ghost" size="sm" title="Commission" aria-label={`Commission for order ${order.id}`} className="h-7 w-7 p-0 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-md">
+                              <Wallet className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                           {perms.editOrders && canReceiveDelivery(order) && (
                             <Button onClick={() => openDelivery(order)} disabled={isSaving} variant="ghost" size="sm" title="Record delivery" className="h-7 w-7 p-0 text-slate-400 hover:text-teal-600 hover:bg-teal-50 rounded-md">
                               <Truck className="h-3.5 w-3.5" />
@@ -1065,6 +1081,25 @@ export default function OrdersPage() {
           </div>
         </div>
       )}
+
+      {/* Commission on one order (read only) */}
+      {commissionOrderId && currentUser && (() => {
+        const commissionOrder = orders.find(o => o.id === commissionOrderId);
+        if (!commissionOrder) return null;
+        return (
+          <div className="fixed inset-0 z-[120] bg-slate-900/60 flex items-center justify-center p-4" role="dialog" aria-label="Order commission">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-bold text-slate-900">Commission</h3>
+                <button type="button" aria-label="Close commission" onClick={() => setCommissionOrderId(null)} className="rounded-full border border-slate-200 p-2 text-slate-500">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <OrderCommissionPanel order={commissionOrder} viewer={currentUser} policy={commissionPolicy} footballIds={footballIdsOf(products)} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Record Delivery */}
       {deliveryOrder && (

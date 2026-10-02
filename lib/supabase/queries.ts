@@ -40,12 +40,16 @@ import type {
   Json,
   OfficerCommissionSummaryRow,
   OperationalMetrics,
+  OrderDeliveryLineRow,
+  OrderDeliveryRow,
   OrderRequestRow,
   OrderUpdate,
   ProductSalesRow,
   PublicProductRow,
   RepairResult,
 } from "./database.types";
+
+import type { CommissionEvent } from "@/lib/commission";
 
 import type { EfzSupabaseClient } from "./client";
 
@@ -746,6 +750,25 @@ export function createDb(client: EfzSupabaseClient) {
     },
 
     /**
+     * The recorded deliveries of the given orders, each with its lines. Read
+     * only. RLS returns a delivery only while its order is visible to the
+     * caller, so an order this user may not see simply has none here.
+     */
+    async deliveries(orderIds: string[]): Promise<(OrderDeliveryRow & { lines: OrderDeliveryLineRow[] })[]> {
+      if (orderIds.length === 0) return [];
+      const deliveries = unwrapList(
+        "orders.deliveries",
+        await client.from("order_deliveries").select("*").in("order_id", orderIds).order("created_at")
+      );
+      if (deliveries.length === 0) return [];
+      const lines = unwrapList(
+        "orders.deliveryLines",
+        await client.from("order_delivery_lines").select("*").in("delivery_id", deliveries.map((d) => d.id))
+      );
+      return deliveries.map((d) => ({ ...d, lines: lines.filter((l) => l.delivery_id === d.id) }));
+    },
+
+    /**
      * Super Admin only - NOT part of normal delivery (that is recordDelivery,
      * which never changes the invoice). Corrects a wrong delivered count on one
      * order line, with a written reason. 'keep_invoice': invoice unchanged, the
@@ -904,6 +927,42 @@ export function createDb(client: EfzSupabaseClient) {
       if (options.status) query = query.eq("status", options.status);
 
       return unwrapList("commissions.list", await query);
+    },
+
+    /**
+     * The commission events of one officer, exactly as the database recorded
+     * them (one row per legacy order, delivery, correction or bonus). Read
+     * only. The embedded order is null when the officer may no longer see that
+     * order (customer transferred away) - the commission itself stays theirs.
+     */
+    async mine(userId: string): Promise<CommissionEvent[]> {
+      const rows = unwrapList(
+        "commissions.mine",
+        await client
+          .from("commissions")
+          .select("*, orders(id, customer_name, order_date, status)")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false })
+      );
+      // The typed schema has no relationship metadata for the embed; the shape is checked by the query itself.
+      return rows as unknown as CommissionEvent[];
+    },
+
+    /**
+     * The commission events recorded on one order that this user may see:
+     * their own (an officer) or every officer's (view_all commissions). Read only.
+     */
+    async forOrder(orderId: string): Promise<CommissionEvent[]> {
+      const rows = unwrapList(
+        "commissions.forOrder",
+        await client
+          .from("commissions")
+          .select("*, orders(id, customer_name, order_date, status)")
+          .eq("order_id", orderId)
+          .order("created_at", { ascending: true })
+      );
+      // The typed schema has no relationship metadata for the embed; the shape is checked by the query itself.
+      return rows as unknown as CommissionEvent[];
     },
 
     /**

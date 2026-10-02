@@ -220,6 +220,35 @@ export type CommissionRow = {
   review_required?: boolean;
   review_reason?: string;
   void_reason?: string;
+  voided_at?: string | null;
+  /** kind = delivery: the delivery this commission was earned on. */
+  delivery_id?: string | null;
+  /** kind = correction: the delivered-quantity correction behind it. */
+  adjustment_id?: string | null;
+  /** kind = first_order_bonus: the customer the bonus is for. */
+  bonus_customer_id?: string | null;
+};
+
+/** One recorded delivery (migration 12). Readable whenever its order is. */
+export type OrderDeliveryRow = {
+  id: string;
+  order_id: string;
+  delivered_at: string | null;
+  recorded_by: string | null;
+  recorded_by_name: string;
+  source: "delivery" | "backfill";
+  request_id: string | null;
+  note: string;
+  created_at: string;
+};
+
+/** The balls of one order line handed over in one delivery. */
+export type OrderDeliveryLineRow = {
+  id: string;
+  delivery_id: string;
+  order_id: string;
+  order_item_id: string;
+  quantity: number;
 };
 
 export type CommissionPayoutRow = {
@@ -620,6 +649,9 @@ export type Database = {
       customer_ownership_changes: Table<CustomerOwnershipChangeRow, Record<string, never>, Record<string, never>>;
       commission_policy: Table<CommissionPolicyRow, Record<string, never>, Record<string, never>>;
       below_cost_overrides: Table<BelowCostOverrideRow, Record<string, never>, Record<string, never>>;
+      // Read-only to clients: written only by record_delivery() in 12.
+      order_deliveries: Table<OrderDeliveryRow, Record<string, never>, Record<string, never>>;
+      order_delivery_lines: Table<OrderDeliveryLineRow, Record<string, never>, Record<string, never>>;
     };
     Views: {
       public_products: View<PublicProductRow>;
