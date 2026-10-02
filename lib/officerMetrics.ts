@@ -12,6 +12,9 @@
  *   Payments whose recorded_by is the signed-in officer's own profile id - the
  *   identity the database stamped when the payment was recorded. A payment is
  *   never attributed to the officer just because the customer is theirs.
+ *   Computed in the DATABASE by my_collected_payments() (migration 13), not
+ *   here: it must include payments on orders the officer can no longer read
+ *   (customer transferred away), which RLS hides from the browser.
  *
  * COLLECTED FROM MY CUSTOMERS
  *   Payments on orders of customers CURRENTLY assigned to the officer, whoever
@@ -52,11 +55,6 @@ function totalOf(payments: PaymentWithOrder[], month: string): CollectionTotal {
     thisMonth: round2(payments.filter((p) => (p.paymentDate ?? "").startsWith(month)).reduce((s, p) => s + Number(p.amount || 0), 0)),
     payments: payments.length,
   };
-}
-
-/** Payments the signed-in officer personally recorded (payments.recorded_by = their profile id). */
-export function collectedByMe(orders: Order[], profileId: string, month: string): CollectionTotal {
-  return totalOf(paymentsOf(orders).filter((p) => p.recordedBy === profileId), month);
 }
 
 /** Payments on orders of customers currently assigned to the officer, whoever recorded them. */

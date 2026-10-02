@@ -718,6 +718,11 @@ export type Database = {
       };
       efz_today: { Args: Record<string, never>; Returns: string };
       run_diagnostics: { Args: Record<string, never>; Returns: number };
+      // Migration 13: the signed-in Marketing Officer's own recorded payments (aggregates only).
+      my_collected_payments: {
+        Args: Record<string, never>;
+        Returns: { total_amount: number; this_month_amount: number; payment_count: number }[];
+      };
       repair_issue: { Args: { p_issue_id: string }; Returns: Json };
       operational_metrics: { Args: Record<string, never>; Returns: Json };
       current_profile_id: { Args: Record<string, never>; Returns: string | null };

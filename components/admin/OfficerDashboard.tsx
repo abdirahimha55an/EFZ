@@ -30,7 +30,7 @@ import {
   summarize,
 } from "@/lib/commission";
 import { efzToday } from "@/lib/dates";
-import { activeCustomers, collectedByMe, collectedFromMyCustomers } from "@/lib/officerMetrics";
+import { activeCustomers, collectedFromMyCustomers } from "@/lib/officerMetrics";
 import { cn } from "@/lib/utils";
 import { getDb } from "@/lib/supabase/db";
 import type { PermissionFlags } from "@/lib/permissions";
@@ -77,6 +77,20 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
   // Commission cards show "—" until the officer's own rows and the policy have loaded,
   // never a momentary $0.00.
   const [commissionLoaded, setCommissionLoaded] = useState(false);
+  // "Collected by Me" comes from the database (my_collected_payments, migration 13):
+  // it must include payments on orders this officer can no longer see. Null = "—".
+  const [byMe, setByMe] = useState<{ total: number; thisMonth: number; payments: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getDb()
+      .analytics.collectedByMe()
+      .then((value) => { if (!cancelled) setByMe(value); })
+      .catch(() => { if (!cancelled) setByMe(null); });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -128,7 +142,6 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
   // --- collections (current customers' orders, as RLS returns them) ---
   const toCollect = collectionRows(orders, customers);
   // Two different questions, kept apart (lib/officerMetrics.ts):
-  const byMe = collectedByMe(orders, profile.id, month);                      // payments.recorded_by = me
   const fromMyCustomers = collectedFromMyCustomers(orders, myCustomers, month); // current customers, any recorder
   const outstandingToCollect = toCollect.reduce((s, r) => s + r.outstanding, 0);
   const unpaidOrders = toCollect.filter((r) => r.collected <= 0).length;
@@ -211,8 +224,8 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
           <Stat
             id="collected-by-me"
             title="Collected by Me"
-            value={money(byMe.total)}
-            note={`Payments you recorded yourself · this month ${money(byMe.thisMonth)}`}
+            value={byMe ? money(byMe.total) : "—"}
+            note={byMe ? `Payments you recorded yourself · this month ${money(byMe.thisMonth)}` : "Payments you recorded yourself"}
           />
           <Stat
             id="collected-from-my-customers"

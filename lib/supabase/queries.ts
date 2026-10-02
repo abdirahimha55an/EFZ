@@ -1028,6 +1028,22 @@ export function createDb(client: EfzSupabaseClient) {
   // Analytics
   // -------------------------------------------------------------------------
   const analytics = {
+    /**
+     * "Collected by Me": payments the signed-in Marketing Officer personally
+     * recorded (payments.recorded_by), including ones on orders they can no
+     * longer see. Aggregates only, from my_collected_payments() (migration 13),
+     * which takes no parameters and refuses anyone but an active officer.
+     * Null when the function is not installed yet - never a guessed number.
+     */
+    async collectedByMe(): Promise<{ total: number; thisMonth: number; payments: number } | null> {
+      const { data, error } = await client.rpc("my_collected_payments");
+      if (error && (error.code === "PGRST202" || error.code === "42883")) return null;
+      if (error) throw new EfzDbError("analytics.collectedByMe", error);
+      const row = Array.isArray(data) ? data[0] : null;
+      if (!row) return null;
+      return { total: Number(row.total_amount), thisMonth: Number(row.this_month_amount), payments: Number(row.payment_count) };
+    },
+
     /** The dashboard KPI strip, computed in Postgres rather than the browser. */
     async financialSummary(): Promise<FinancialSummaryRow> {
       const { data, error } = await client.from("financial_summary").select("*").single();
