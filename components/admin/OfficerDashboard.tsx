@@ -73,6 +73,9 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
   const [events, setEvents] = useState<CommissionEvent[]>([]);
   const [policy, setPolicy] = useState<CommissionPolicyView | null>(null);
   const [deliveries, setDeliveries] = useState<DeliveryWithLines[]>([]);
+  // Commission cards show "—" until the officer's own rows and the policy have loaded,
+  // never a momentary $0.00.
+  const [commissionLoaded, setCommissionLoaded] = useState(false);
   const [mountedAt] = useState(() => Date.now());
 
   useEffect(() => {
@@ -89,6 +92,7 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
         setEvents(mine);
         setPolicy(nextPolicy);
         setDeliveries(nextDeliveries);
+        setCommissionLoaded(true);
       } catch {
         // The cards below fall back to "—" rather than inventing numbers.
       }
@@ -114,7 +118,7 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
 
   // --- commissions ---
   const totals = summarize(events);
-  const expected = footballIds
+  const expected = footballIds && policy && commissionLoaded
     ? myOrders.reduce((s, o) => s + (expectedForOrder(o, policy, footballIds)?.amount ?? 0), 0)
     : null;
   const earnedOn = (orderId: string) =>
@@ -183,9 +187,9 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
       {perms.viewCommissions && (
         <Section title="My commissions" action={<Link href="/admin/commissions" className="text-[10px] font-bold uppercase text-brand-blue">See every commission →</Link>}>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <Stat id="earned-unpaid" title="Earned · Unpaid" value={money(totals.unpaid)} note="Awaiting payout by management" />
-            <Stat id="paid" title="Paid" value={money(totals.paid)} note="Paid out to you" />
-            <Stat id="on-hold" title="On Hold" value={money(totals.onHold)} note="Flagged for review" />
+            <Stat id="earned-unpaid" title="Earned · Unpaid" value={commissionLoaded ? money(totals.unpaid) : "—"} note="Awaiting payout by management" />
+            <Stat id="paid" title="Paid" value={commissionLoaded ? money(totals.paid) : "—"} note="Paid out to you" />
+            <Stat id="on-hold" title="On Hold" value={commissionLoaded ? money(totals.onHold) : "—"} note="Flagged for review" />
             <Stat id="expected" title="Expected from Undelivered Balls" value={expected === null ? "—" : money(expected)} note="FORECAST · not earned yet" dashed />
           </div>
         </Section>
@@ -253,7 +257,7 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
                       <td className="px-4 py-3 text-right font-mono">{money(o.total)}</td>
                       <td className="px-4 py-3">{o.status.replace("_", " ")}</td>
                       <td className="px-4 py-3 text-right">{counts ? `${counts.delivered} / ${counts.ordered}` : "—"}</td>
-                      <td className="px-4 py-3 text-right font-mono">{mine ? money(earnedOn(o.id)) : <span className="text-slate-400" title="Commission on this earlier order belongs to the previous officer">other officer</span>}</td>
+                      <td className="px-4 py-3 text-right font-mono">{mine ? (commissionLoaded ? money(earnedOn(o.id)) : "—") : <span className="text-slate-400" title="Commission on this earlier order belongs to the previous officer">other officer</span>}</td>
                       <td className="px-4 py-3 text-right font-mono text-sky-700">{exp ? money(exp.amount) : "—"}</td>
                     </tr>
                   );
