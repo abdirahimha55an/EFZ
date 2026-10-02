@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Search, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Plus, User, Package, AlertCircle, X, Loader2, Truck, RefreshCcw } from "lucide-react";
+import { Search, Trash2, ShoppingBag, Clock, CheckCircle2, XCircle, Filter, Plus, User, Package, AlertCircle, X, Loader2, Truck, RefreshCcw, PackageCheck, Wrench } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AdminUser, Customer, Order, Product, ORDER_STATUS_TRANSITIONS, ORDER_STATUSES, OrderStatus } from "@/lib/types";
+import { AdminUser, Customer, Order, Product, ORDER_STATUS_TRANSITIONS, ORDER_STATUSES, OrderStatus, SELECTABLE_ORDER_STATUSES } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { efzToday } from "@/lib/dates";
@@ -14,6 +14,21 @@ import { efzToday } from "@/lib/dates";
 /** Payments or paid commission: cancelling needs a Super Admin and a reason. */
 const isFinanciallyLocked = (order: Order) =>
   Number(order.amountPaid ?? 0) > 0 || (order.payments?.length ?? 0) > 0 || order.commissionPaid === true;
+
+/** Balls delivered so far on the whole order (0 before any delivery). */
+const deliveredBalls = (order: Order) =>
+  order.items.reduce((sum, item) => sum + Number(item.deliveredQuantity ?? 0), 0);
+
+/** Statuses on which record_delivery() accepts a delivery. */
+const canReceiveDelivery = (order: Order) =>
+  order.status === 'processing' || order.status === 'partially_delivered';
+
+/** A fresh id per opened delivery form: a retried submit cannot record twice. */
+const newRequestId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
+        (Number(c) ^ (Math.random() * 16) >> (Number(c) / 4)).toString(16));
 
 /** One editable row in the create-order form. Not persisted as-is. */
 type OrderLineDraft = {
@@ -63,6 +78,21 @@ export default function OrdersPage() {
     belowCostReason: "",
   });
   const [formData, setFormData] = useState(blankForm);
+
+  // Record delivery: quantities per line, a note, and the idempotency key.
+  const [deliveryOrder, setDeliveryOrder] = useState<Order | null>(null);
+  const [deliveryQty, setDeliveryQty] = useState<Record<string, number>>({});
+  const [deliveryNote, setDeliveryNote] = useState("");
+  const [deliveryRequestId, setDeliveryRequestId] = useState("");
+
+  // Super Admin delivered-quantity correction.
+  const [correctionOrder, setCorrectionOrder] = useState<Order | null>(null);
+  const [correction, setCorrection] = useState({
+    itemId: "",
+    newDelivered: 0,
+    mode: "keep_invoice" as "keep_invoice" | "reduce_invoice",
+    reason: "",
+  });
   const [orderItems, setOrderItems] = useState<OrderLineDraft[]>([blankOrderLine("first")]);
 
   // The whole page in one read. Orders arrive from the order_details view with
@@ -140,17 +170,22 @@ export default function OrdersPage() {
     }
   };
 
-  // Everything below mirrors update_order_status() / create_order() in
-  // supabase/10_rpc_hardening.sql so the page only offers what the database
-  // will accept. The database is still the one that decides.
+  // Everything below mirrors update_order_status() / create_order() /
+  // record_delivery() in supabase/12_commission_model.sql so the page only
+  // offers what the database will accept. The database still decides.
   const hideCost = !perms.viewCost;
   const describe = (error: unknown) => describeDbError(error, { hideCost });
 
   /** Statuses this user may move an order to, including overrides for a Super Admin. */
   const statusOptionsFor = (order: Order): OrderStatus[] => {
     if (!perms.editOrders) return [order.status];
+    // Once balls are delivered the status follows the deliveries: only
+    // "deliver the rest" remains (a Super Admin corrects quantities instead).
+    if (deliveredBalls(order) > 0) {
+      return order.status === 'delivered' ? [order.status] : [order.status, 'delivered'];
+    }
     const normal = ORDER_STATUS_TRANSITIONS[order.status] ?? [];
-    const allowed = ORDER_STATUSES.filter(status => {
+    const allowed = SELECTABLE_ORDER_STATUSES.filter(status => {
       if (status === order.status) return true;
       if (perms.overrideOrders) return true;
       if (!normal.includes(status)) return false;
@@ -191,11 +226,15 @@ export default function OrdersPage() {
     // the audit line says why.
     const reasonRequired = !isNormal || cancellingLocked;
     let reason = "";
+    if (targetStatus === 'delivered') {
+      const remaining = order.items.reduce((sum, item) => sum + Number(item.remainingQuantity ?? item.quantity), 0);
+      if (!confirm(`Mark order #${id} delivered? This records the delivery of all ${remaining} remaining ball(s) now. For a partial delivery use "Record delivery" instead.`)) return;
+    }
     if (reasonRequired || targetStatus === 'cancelled') {
       const title = reasonRequired
         ? `Super Admin ${isNormal ? 'cancellation' : 'override'}: order #${id}, ${oldStatus} → ${targetStatus}.\n` +
           `${cancellingLocked ? 'This order has payments or paid commission. ' : ''}A reason is required and will be recorded:`
-        : `Cancel order #${id}? Its stock returns to the shelf.\nReason:`;
+        : `Cancel order #${id}?${order.stockMode === 'at_creation' ? ' Its stock returns to the shelf.' : ''}\nReason:`;
       const input = prompt(title, reasonRequired ? "" : "Customer request");
       if (input === null) return;
       reason = input.trim();
@@ -207,11 +246,92 @@ export default function OrdersPage() {
 
     try {
       setIsSaving(true);
-      // update_order_status() moves the stock, stamps delivered_at on first
-      // delivery and writes the audit line itself, all in one transaction.
+      // update_order_status() fixes the commission model at first
+      // confirmation; "delivered" records one delivery of everything still
+      // outstanding (stock, per-ball commission, delivered_at); the audit line
+      // is written by the database in the same transaction.
       await getDb().orders.setStatus(id, targetStatus, reason);
       await refresh();
       showNotification('success', `Order #${id} updated: ${oldStatus} → ${targetStatus}`);
+    } catch (error) {
+      showNotification('error', describe(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openDelivery = (order: Order) => {
+    setDeliveryOrder(order);
+    setDeliveryQty(Object.fromEntries(order.items.filter(i => i.id).map(i => [i.id as string, 0])));
+    setDeliveryNote("");
+    setDeliveryRequestId(newRequestId());
+  };
+
+  const handleRecordDelivery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deliveryOrder) return;
+    const lines = deliveryOrder.items
+      .filter(item => item.id && Number(deliveryQty[item.id] || 0) > 0)
+      .map(item => ({ orderItemId: item.id as string, quantity: Number(deliveryQty[item.id as string]) }));
+    if (!lines.length) {
+      showNotification('error', 'Enter how many balls were delivered on at least one line.');
+      return;
+    }
+    for (const line of lines) {
+      const item = deliveryOrder.items.find(i => i.id === line.orderItemId);
+      const remaining = Number(item?.remainingQuantity ?? item?.quantity ?? 0);
+      if (!Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > remaining) {
+        showNotification('error', `${item?.productName}: deliver a whole number between 1 and ${remaining}.`);
+        return;
+      }
+    }
+    try {
+      setIsSaving(true);
+      await getDb().orders.recordDelivery(deliveryOrder.id, lines, { note: deliveryNote.trim(), requestId: deliveryRequestId });
+      await refresh();
+      const balls = lines.reduce((sum, l) => sum + l.quantity, 0);
+      setDeliveryOrder(null);
+      showNotification('success', `Delivery of ${balls} ball(s) recorded on order #${deliveryOrder.id}`);
+    } catch (error) {
+      // The same request id is kept: submitting again cannot record twice.
+      showNotification('error', describe(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openCorrection = (order: Order) => {
+    const first = order.items.find(i => i.id);
+    setCorrectionOrder(order);
+    setCorrection({ itemId: first?.id ?? "", newDelivered: Number(first?.deliveredQuantity ?? 0), mode: "keep_invoice", reason: "" });
+  };
+
+  const handleCorrection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!correctionOrder || !perms.isSuperAdmin) return;
+    const item = correctionOrder.items.find(i => i.id === correction.itemId);
+    if (!item) {
+      showNotification('error', 'Choose the order line to correct.');
+      return;
+    }
+    if (!correction.reason.trim()) {
+      showNotification('error', 'A written reason is required.');
+      return;
+    }
+    if (!Number.isInteger(correction.newDelivered) || correction.newDelivered < 0 || correction.newDelivered > item.quantity) {
+      showNotification('error', `The delivered quantity must be between 0 and ${item.quantity}.`);
+      return;
+    }
+    const verb = correction.mode === 'reduce_invoice'
+      ? `correct the delivered count to ${correction.newDelivered} and REDUCE the order line and invoice to ${correction.newDelivered} ball(s)`
+      : `correct the delivered count to ${correction.newDelivered} of ${item.quantity} ball(s), invoice unchanged (the rest stays owed)`;
+    if (!confirm(`Order #${correctionOrder.id}, ${item.productName}: ${verb}? Stock and commission follow; paid commission is flagged for review, never clawed back.`)) return;
+    try {
+      setIsSaving(true);
+      await getDb().orders.correctDelivered(item.id as string, correction.newDelivered, correction.mode, correction.reason.trim());
+      await refresh();
+      setCorrectionOrder(null);
+      showNotification('success', `Delivered quantity corrected on order #${correctionOrder.id}`);
     } catch (error) {
       showNotification('error', describe(error));
     } finally {
@@ -323,8 +443,9 @@ export default function OrdersPage() {
       const db = getDb();
 
       // One transaction: the order (always pending, officer taken from the
-      // customer), its lines with the list price and frozen cost snapshot, the
-      // stock deductions and the movement ledger. Any refusal writes nothing.
+      // customer) and its lines with the list price and frozen cost snapshot.
+      // Stock leaves the shelf only when balls are delivered; the database
+      // refuses balls already promised to other open orders.
       const created = await db.orders.create({
         customerId: customer.id,
         customerName: customer.name,
@@ -399,7 +520,7 @@ export default function OrdersPage() {
       return;
     }
 
-    if (!confirm(`Delete cancelled order ${id}? Its stock was already returned when it was cancelled. This cannot be undone.`)) return;
+    if (!confirm(`Delete cancelled order ${id}? Its stock is already back on the shelf. This cannot be undone.`)) return;
 
     try {
       setIsSaving(true);
@@ -449,6 +570,7 @@ export default function OrdersPage() {
       case 'pending': return { label: 'Pending', color: "bg-orange-100 text-orange-700 border-orange-200", icon: <Clock className="h-3 w-3" /> };
       case 'confirmed': return { label: 'Confirmed', color: "bg-blue-100 text-blue-700 border-blue-200", icon: <CheckCircle2 className="h-3 w-3" /> };
       case 'processing': return { label: 'Processing', color: "bg-purple-100 text-purple-700 border-purple-200", icon: <Loader2 className="h-3 w-3" /> };
+      case 'partially_delivered': return { label: 'Partially Delivered', color: "bg-teal-100 text-teal-700 border-teal-200", icon: <PackageCheck className="h-3 w-3" /> };
       case 'delivered': return { label: 'Delivered', color: "bg-green-100 text-green-700 border-green-200", icon: <Truck className="h-3 w-3" /> };
       case 'cancelled': return { label: 'Cancelled', color: "bg-red-100 text-red-700 border-red-200", icon: <XCircle className="h-3 w-3" /> };
       default: return { label: status, color: "bg-slate-100 text-slate-700 border-slate-200", icon: <Clock className="h-3 w-3" /> };
@@ -504,7 +626,7 @@ export default function OrdersPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        {['all', 'pending', 'confirmed', 'processing', 'delivered', 'cancelled'].map((status) => (
+        {['all', ...ORDER_STATUSES].map((status) => (
           <button 
             key={status}
             onClick={() => setStatusFilter(status)}
@@ -515,7 +637,7 @@ export default function OrdersPage() {
                 : "bg-slate-50/50 border-transparent hover:bg-slate-100/80"
             )}
           >
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{status === 'all' ? 'Total Volume' : status}</p>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{status === 'all' ? 'Total Volume' : getStatusConfig(status).label}</p>
             <h3 className="text-xl font-bold text-slate-900 mt-0.5 capitalize">
               {status === 'all' ? orders.length : orders.filter(o => o.status === status).length}
             </h3>
@@ -546,6 +668,7 @@ export default function OrdersPage() {
                 <option value="pending">Pending</option>
                 <option value="confirmed">Confirmed</option>
                 <option value="processing">Processing</option>
+                <option value="partially_delivered">Partially Delivered</option>
                 <option value="delivered">Delivered</option>
                 <option value="cancelled">Cancelled</option>
               </select>
@@ -601,6 +724,9 @@ export default function OrdersPage() {
                           <div key={`${order.id}-${item.productId}-${index}`}>
                             <p className="text-slate-900 font-bold truncate">{item.productName}</p>
                             <p className="text-slate-500 text-[10px] mt-0.5 font-medium italic">Qty: {item.quantity} · Unit: ${(Number(item.actualUnitPrice ?? item.price ?? item.standardUnitPrice ?? 0)).toFixed(2)}</p>
+                            {order.status === 'partially_delivered' && (
+                              <p className="text-teal-600 text-[10px] font-bold">Delivered {item.deliveredQuantity ?? 0} · {item.remainingQuantity ?? 0} to go</p>
+                            )}
                           </div>
                         ))}
                       </td>
@@ -653,6 +779,16 @@ export default function OrdersPage() {
                       </td>
                       <td className="px-6 py-3 text-right">
                         <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {perms.editOrders && canReceiveDelivery(order) && (
+                            <Button onClick={() => openDelivery(order)} disabled={isSaving} variant="ghost" size="sm" title="Record delivery" className="h-7 w-7 p-0 text-slate-400 hover:text-teal-600 hover:bg-teal-50 rounded-md">
+                              <Truck className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          {perms.isSuperAdmin && (order.status === 'partially_delivered' || order.status === 'delivered') && order.items.some(i => i.id) && (
+                            <Button onClick={() => openCorrection(order)} disabled={isSaving} variant="ghost" size="sm" title="Correct delivered quantity" className="h-7 w-7 p-0 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-md">
+                              <Wrench className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                           {canDelete(order) && (
                             <Button onClick={() => handleDelete(order.id)} disabled={isSaving} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md">
                               <Trash2 className="h-3.5 w-3.5" />
@@ -929,6 +1065,126 @@ export default function OrdersPage() {
           </div>
         </div>
       )}
+
+      {/* Record Delivery */}
+      {deliveryOrder && (
+        <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <form onSubmit={handleRecordDelivery} className="bg-white rounded-[1.5rem] shadow-2xl w-full max-w-lg p-6 space-y-4">
+            <div className="flex justify-between items-start">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900 tracking-tight">Record delivery</h2>
+                <p className="text-slate-500 text-[11px]">Order #{deliveryOrder.id} · {deliveryOrder.customer}. Enter the balls handed over now; the rest stays open.</p>
+              </div>
+              <button type="button" onClick={() => setDeliveryOrder(null)} className="h-8 w-8 hover:bg-slate-100 rounded-full flex items-center justify-center border border-slate-100">
+                <X className="h-4 w-4 text-slate-400" />
+              </button>
+            </div>
+            <div className="space-y-2">
+              {deliveryOrder.items.filter(item => item.id).map(item => {
+                const remaining = Number(item.remainingQuantity ?? item.quantity);
+                return (
+                  <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs">
+                      <p className="font-bold text-slate-900">{item.productName}</p>
+                      <p className="text-[10px] text-slate-500">Ordered {item.quantity} · delivered {item.deliveredQuantity ?? 0} · <span className="font-bold">{remaining} remaining</span></p>
+                    </div>
+                    <Input
+                      type="number" min="0" max={remaining} step="1"
+                      disabled={remaining === 0}
+                      value={deliveryQty[item.id as string] ?? 0}
+                      onChange={e => setDeliveryQty({ ...deliveryQty, [item.id as string]: Math.max(0, Math.floor(Number(e.target.value || 0))) })}
+                      className="h-9 w-24 rounded-lg bg-white border-slate-200 text-xs"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <textarea
+              className="w-full h-16 rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs outline-none"
+              placeholder="Note (optional), e.g. first drop at the training ground"
+              value={deliveryNote}
+              onChange={e => setDeliveryNote(e.target.value)}
+            />
+            <p className="text-[10px] text-slate-500">Stock goes down by the balls delivered now. The ordered quantity and the invoice stay the full order.</p>
+            <div className="flex gap-3">
+              <Button type="submit" disabled={isSaving} className="flex-1 bg-slate-900 text-white h-10 rounded-xl font-bold text-sm">
+                {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Record delivery
+              </Button>
+              <Button type="button" variant="outline" disabled={isSaving} onClick={() => setDeliveryOrder(null)} className="px-6 h-10 rounded-xl text-xs">Cancel</Button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Super Admin: correct a delivered quantity */}
+      {correctionOrder && perms.isSuperAdmin && (() => {
+        const item = correctionOrder.items.find(i => i.id === correction.itemId);
+        return (
+          <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <form onSubmit={handleCorrection} className="bg-white rounded-[1.5rem] shadow-2xl w-full max-w-lg p-6 space-y-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900 tracking-tight">Correct delivered quantity</h2>
+                  <p className="text-slate-500 text-[11px]">Order #{correctionOrder.id}. Only for fixing a wrong delivered count - record normal deliveries with &ldquo;Record delivery&rdquo;. Recorded permanently with your name, the time, the reason, and the quantities, stock, commission and invoice before and after.</p>
+                </div>
+                <button type="button" onClick={() => setCorrectionOrder(null)} className="h-8 w-8 hover:bg-slate-100 rounded-full flex items-center justify-center border border-slate-100">
+                  <X className="h-4 w-4 text-slate-400" />
+                </button>
+              </div>
+              <select
+                className="w-full h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs"
+                value={correction.itemId}
+                onChange={e => {
+                  const next = correctionOrder.items.find(i => i.id === e.target.value);
+                  setCorrection({ ...correction, itemId: e.target.value, newDelivered: Number(next?.deliveredQuantity ?? 0) });
+                }}
+              >
+                {correctionOrder.items.filter(i => i.id).map(i => (
+                  <option key={i.id} value={i.id}>{i.productName} - ordered {i.quantity}, delivered {i.deliveredQuantity ?? 0}</option>
+                ))}
+              </select>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-700 ml-1">Balls actually delivered</label>
+                <Input
+                  type="number" min="0" max={item?.quantity ?? 0} step="1"
+                  value={correction.newDelivered}
+                  onChange={e => setCorrection({ ...correction, newDelivered: Math.max(0, Math.floor(Number(e.target.value || 0))) })}
+                  className="h-9 rounded-lg bg-slate-50 border-slate-200 text-xs"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ['keep_invoice', 'Keep invoice', 'Only the delivered count changes. Ordered quantity and invoice stay as they are; the rest can still be delivered.'],
+                  ['reduce_invoice', 'Reduce invoice', 'The order line and the invoice/receivable are reduced to the corrected delivered count.'],
+                ] as const).map(([mode, label, help]) => (
+                  <button
+                    key={mode} type="button"
+                    onClick={() => setCorrection({ ...correction, mode })}
+                    className={cn("rounded-xl border p-3 text-left text-[10px]", correction.mode === mode ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-slate-50 text-slate-600")}
+                  >
+                    <p className="font-bold text-[11px]">{label}</p>
+                    <p className="mt-1 opacity-80">{help}</p>
+                  </button>
+                ))}
+              </div>
+              <textarea
+                required
+                className="w-full h-16 rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs outline-none"
+                placeholder="Reason (required), e.g. two balls were never handed over"
+                value={correction.reason}
+                onChange={e => setCorrection({ ...correction, reason: e.target.value })}
+              />
+              <p className="text-[10px] text-amber-700">If commission on this order was already paid, nothing is clawed back or added automatically: the difference is flagged for review.</p>
+              <div className="flex gap-3">
+                <Button type="submit" disabled={isSaving} className="flex-1 bg-slate-900 text-white h-10 rounded-xl font-bold text-sm">
+                  {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Save correction
+                </Button>
+                <Button type="button" variant="outline" disabled={isSaving} onClick={() => setCorrectionOrder(null)} className="px-6 h-10 rounded-xl text-xs">Cancel</Button>
+              </div>
+            </form>
+          </div>
+        );
+      })()}
 
       {/* Global Notification Toast */}
       {notification && (

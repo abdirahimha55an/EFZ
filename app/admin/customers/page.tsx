@@ -31,7 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AdminUser, Customer, CustomerOwnershipChange, Order } from "@/lib/types";
+import { AdminUser, Customer, CustomerOwnershipChange, CustomerTransferNotice, Order } from "@/lib/types";
 import type { CustomerFinancialsRow, OfficerCommissionSummaryRow } from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
@@ -49,6 +49,8 @@ export default function CustomersPage() {
   // figures on this page are the same ones every other report would produce.
   const [financials, setFinancials] = useState<CustomerFinancialsRow[]>([]);
   const [commissionRows, setCommissionRows] = useState<OfficerCommissionSummaryRow[]>([]);
+  const [commissionPolicy, setCommissionPolicy] = useState<Awaited<ReturnType<ReturnType<typeof getDb>["commissions"]["policy"]>>>(null);
+  const [transferNotices, setTransferNotices] = useState<CustomerTransferNotice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -85,6 +87,8 @@ export default function CustomersPage() {
       nextProfile,
       nextFinancials,
       nextCommissions,
+      nextPolicy,
+      nextNotices,
     ] = await Promise.all([
       db.customers.list({ includeArchived: true }),
       db.orders.list(),
@@ -92,6 +96,8 @@ export default function CustomersPage() {
       db.auth.getProfile(),
       db.customers.financials(),
       db.commissions.summary(),
+      db.commissions.policy(),
+      db.customers.transferNotices(),
     ]);
 
     setCustomers(nextCustomers);
@@ -100,6 +106,8 @@ export default function CustomersPage() {
     setProfile(nextProfile);
     setFinancials(nextFinancials);
     setCommissionRows(nextCommissions);
+    setCommissionPolicy(nextPolicy);
+    setTransferNotices(nextNotices);
   }, []);
 
   useEffect(() => {
@@ -368,13 +376,24 @@ export default function CustomersPage() {
   const paidCommission = Number(myCommissions?.paid_commission ?? 0);
   const pendingPayout = Number(myCommissions?.pending_commission ?? 0);
 
-  // Still-pending orders have earned nothing yet, so there is no ledger row for
-  // them. This is a forecast at today's rate, deliberately computed here rather
-  // than stored as if it were a fact.
+  // A forecast, deliberately computed here rather than stored as if it were a
+  // fact. Legacy (percentage) commission is recorded at confirmation, so only
+  // pending orders add to it. Per-ball commission is earned per delivered
+  // football, so every ball not yet delivered on a per-ball order (or on a
+  // pending order once the per-ball model is active) adds the per-ball rate.
+  // The first-order bonus is not forecast.
+  const perBallActive = Boolean(commissionPolicy?.cutoverAt);
+  const perBallRate = commissionPolicy?.perBallRate ?? 0;
   const myOrders = orders.filter(o => o.marketingOfficerId === profile.id);
+  const ballsToDeliver = (o: Order) => o.items.reduce((sum, i) => sum + Number(i.remainingQuantity ?? i.quantity), 0);
   const inProgressCommission = myOrders
-    .filter(o => !o.commissionPaid && o.status === 'pending')
-    .reduce((sum, o) => sum + (o.total * profile.commissionPercentage / 100), 0);
+    .filter(o => o.status !== 'cancelled' && o.status !== 'delivered')
+    .reduce((sum, o) => {
+      const perBall = o.commissionModel === 'per_ball_v1' || (o.status === 'pending' && perBallActive);
+      if (perBall) return sum + ballsToDeliver(o) * perBallRate;
+      if (o.status === 'pending' && !o.commissionPaid) return sum + (o.total * profile.commissionPercentage / 100);
+      return sum;
+    }, 0);
   const totalCommission = earnedCommissionTotal + inProgressCommission;
 
   const getCustomerFinancialSummaryData = (customer: Customer) => {
@@ -527,6 +546,20 @@ export default function CustomersPage() {
         </div>
       </div>
 
+      {/* Transfers involving this officer: only which customer and when. */}
+      {profile.role === 'Marketing Officer' && transferNotices.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600 space-y-1">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Customer transfers</p>
+          {transferNotices.slice(0, 5).map(notice => (
+            <p key={notice.id}>
+              <span className="font-bold text-slate-800">{notice.customerName}</span>
+              {notice.direction === 'transferred_away' ? ' was transferred to another officer' : ' was transferred to you'}
+              {' '}on {new Date(notice.changedAt).toLocaleDateString()}.
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* Commission Stats Dashboard (For Marketing Officers) */}
       {profile.role === 'Marketing Officer' && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -538,7 +571,10 @@ export default function CustomersPage() {
               <p className="text-[9px] font-bold uppercase tracking-[0.2em] opacity-70">Lifetime Commission</p>
               <h3 className="text-2xl font-bold mt-0.5">${totalCommission.toFixed(0)}</h3>
               <div className="mt-3 flex items-center gap-1.5 text-[9px] font-bold bg-white/10 w-fit px-2 py-0.5 rounded-full">
-                <TrendingUp className="h-2.5 w-2.5" /> {profile.commissionPercentage}% Rate
+                <TrendingUp className="h-2.5 w-2.5" />
+                {perBallActive
+                  ? `$${perBallRate.toFixed(2)} per delivered ball`
+                  : `${profile.commissionPercentage}% Rate`}
               </div>
             </CardContent>
           </Card>
@@ -1076,8 +1112,9 @@ export default function CustomersPage() {
               </div>
 
               <p className="text-[11px] text-slate-500">
-                Orders not yet delivered move to the new officer. Delivered orders and commission already earned stay with
-                the officer who earned them.
+                Open orders move to the new officer, who earns on balls delivered from now on. Commission already
+                recorded - including legacy commission on orders confirmed before the transfer - stays with the
+                officer who earned it. The former officer loses access to this customer.
               </p>
 
               {ownershipHistory.length > 0 && (

@@ -579,7 +579,7 @@ export default function UsersPage() {
                       <div className="flex flex-col gap-0.5">
                         <div className="flex items-center gap-1.5">
                           <span className="font-bold text-slate-900">{user.commissionPercentage}%</span>
-                          <span className="text-[9px] text-slate-400 font-medium uppercase tracking-tighter">Rate</span>
+                          <span className="text-[9px] text-slate-400 font-medium uppercase tracking-tighter" title="Applies only to orders confirmed before the per-ball model was activated">Legacy rate</span>
                         </div>
                         {user.role === 'Marketing Officer' && (() => {
                           const { earned, paid, pending } = commissionsFor(user.id);
@@ -718,9 +718,10 @@ export default function UsersPage() {
                       </div>
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-slate-700 ml-1 flex items-center justify-between">
-                          Commission Rate (%)
+                          Legacy Commission Rate (%)
                           <span className="text-[9px] text-blue-600 font-bold px-1.5 py-0.5 bg-blue-50 rounded uppercase">Sales Only</span>
                         </label>
+                        <p className="ml-1 text-[9px] text-slate-400">Only for orders confirmed before the per-ball model ($ per delivered ball) was activated.</p>
                         <div className="relative">
                           <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
                           <Input type="number" value={formData.commissionPercentage} onChange={e => setFormData({...formData, commissionPercentage: parseFloat(e.target.value) || 0})} className="bg-white border-slate-200 h-9 pl-9 text-xs" />

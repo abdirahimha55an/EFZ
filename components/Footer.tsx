@@ -69,7 +69,7 @@ export function Footer() {
                 <Link href="/products?category=football" className="hover:text-white transition-colors">Match Footballs</Link>
               </li>
               <li>
-                <Link href="/products?category=futsal" className="hover:text-white transition-colors">Futsal Balls</Link>
+                <Link href="/products" className="hover:text-white transition-colors">All Footballs</Link>
               </li>
               <li>
                 <Link href="/products?category=training" className="hover:text-white transition-colors">Training Equipment</Link>

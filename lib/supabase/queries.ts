@@ -17,6 +17,7 @@ import type {
   AdminUser,
   Customer,
   CustomerOwnershipChange,
+  CustomerTransferNotice,
   Notification,
   Order,
   OrderStatus,
@@ -232,6 +233,10 @@ export type OrderRequestInput = {
 // ---------------------------------------------------------------------------
 // The query surface
 // ---------------------------------------------------------------------------
+
+/** PostgREST / PostgreSQL "no such table or view": the database predates migration 12. */
+const isMissingRelation = (error: PostgrestError | null) =>
+  Boolean(error && (error.code === "PGRST205" || error.code === "42P01"));
 
 export function createDb(client: EfzSupabaseClient) {
   // -------------------------------------------------------------------------
@@ -474,6 +479,26 @@ export function createDb(client: EfzSupabaseClient) {
       if (error) throw new EfzDbError("customers.transferOwner", error);
     },
 
+    /**
+     * Transfers involving the signed-in officer: which customer, when and in
+     * which direction - never the reason (that stays with management).
+     */
+    async transferNotices(): Promise<CustomerTransferNotice[]> {
+      const result = await client
+        .from("customer_transfer_notices")
+        .select("id, customer_id, customer_name, changed_at, direction")
+        .order("changed_at", { ascending: false });
+      if (isMissingRelation(result.error)) return [];
+      const rows = unwrapList("customers.transferNotices", result);
+      return rows.map((row) => ({
+        id: row.id,
+        customerId: row.customer_id,
+        customerName: row.customer_name,
+        changedAt: row.changed_at,
+        direction: row.direction,
+      }));
+    },
+
     /** The audited assignment / transfer history of one customer, newest first. */
     async ownershipHistory(customerId: string): Promise<CustomerOwnershipChange[]> {
       return unwrapList(
@@ -700,6 +725,51 @@ export function createDb(client: EfzSupabaseClient) {
     },
 
     /**
+     * Records one (partial) delivery: record_delivery() moves stock for the
+     * delivered balls, earns per-ball commission on per-ball orders and sets
+     * partially_delivered / delivered. requestId makes a retry safe: the same
+     * id never records a second delivery.
+     */
+    async recordDelivery(
+      orderId: string,
+      lines: { orderItemId: string; quantity: number }[],
+      options: { note?: string; requestId?: string } = {}
+    ): Promise<string> {
+      const { data, error } = await client.rpc("record_delivery", {
+        p_order_id: orderId,
+        p_lines: lines,
+        p_note: options.note ?? "",
+        p_request_id: options.requestId,
+      });
+      if (error) throw new EfzDbError("orders.recordDelivery", error);
+      return data as string;
+    },
+
+    /**
+     * Super Admin only - NOT part of normal delivery (that is recordDelivery,
+     * which never changes the invoice). Corrects a wrong delivered count on one
+     * order line, with a written reason. 'keep_invoice': invoice unchanged, the
+     * rest stays owed. 'reduce_invoice': line and invoice reduced to the
+     * corrected count. Stock, commission and status follow; paid commission is
+     * flagged for review. Recorded permanently with before/after values.
+     */
+    async correctDelivered(
+      orderItemId: string,
+      newDelivered: number,
+      mode: "keep_invoice" | "reduce_invoice",
+      reason: string
+    ): Promise<string> {
+      const { data, error } = await client.rpc("correct_delivered_quantity", {
+        p_order_item_id: orderItemId,
+        p_new_delivered: newDelivered,
+        p_mode: mode,
+        p_reason: reason,
+      });
+      if (error) throw new EfzDbError("orders.correctDelivered", error);
+      return data as string;
+    },
+
+    /**
      * Delivery notes and the contact phone - the only order fields staff edit
      * directly. Totals, status, dates, customer and officer belong to the
      * database and the RPCs.
@@ -803,6 +873,26 @@ export function createDb(client: EfzSupabaseClient) {
   // Commissions
   // -------------------------------------------------------------------------
   const commissions = {
+    /**
+     * The commission rules: $ per delivered football, the first-order bonus and
+     * the cut-over moment (null until activated). Null before migration 12.
+     */
+    async policy(): Promise<{ perBallRate: number; firstOrderBonus: number; bonusMinBalls: number; cutoverAt: string | null } | null> {
+      const { data, error } = await client
+        .from("commission_policy")
+        .select("per_ball_rate, first_order_bonus, bonus_min_balls, cutover_at")
+        .maybeSingle();
+      if (isMissingRelation(error)) return null;
+      if (error) throw new EfzDbError("commissions.policy", error);
+      if (!data) return null;
+      return {
+        perBallRate: Number(data.per_ball_rate),
+        firstOrderBonus: Number(data.first_order_bonus),
+        bonusMinBalls: Number(data.bonus_min_balls),
+        cutoverAt: data.cutover_at,
+      };
+    },
+
     /** An officer always sees their own, regardless of permissions. */
     async list(options: { userId?: string; status?: CommissionRow["status"] } = {}) {
       let query = client
@@ -818,17 +908,21 @@ export function createDb(client: EfzSupabaseClient) {
 
     /**
      * The rows pay_commissions() will accept for this officer: unpaid
-     * (pending / approved), above $0, on a delivered order. The database
-     * checks every one of these again, under lock, and pays all or nothing.
+     * (pending / approved), above $0, not flagged for review, and earned -
+     * per-ball delivery commission once delivered (also on a partially
+     * delivered order); legacy and bonus commission on a delivered order. The
+     * database checks every one of these again, under lock, all or nothing.
      */
     async payable(userId: string) {
       const rows = await commissions.list({ userId });
       return rows.filter((row) => {
         const order = (row as typeof row & { orders: { status: OrderStatus } | null }).orders;
+        const perBallDelivery = row.kind === "delivery" || row.kind === "correction";
         return (
           (row.status === "pending" || row.status === "approved") &&
           Number(row.amount) > 0 &&
-          order?.status === "delivered"
+          !row.review_required &&
+          (order?.status === "delivered" || (perBallDelivery && order?.status === "partially_delivered"))
         );
       });
     },

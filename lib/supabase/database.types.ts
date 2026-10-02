@@ -25,7 +25,7 @@ export type DbUserRole =
 export type DbUserStatus = "active" | "inactive";
 export type DbCustomerStatus = "active" | "archived";
 export type DbProductCategory = "Football" | "Futsal" | "Accessories";
-export type DbOrderStatus = "pending" | "confirmed" | "processing" | "delivered" | "cancelled";
+export type DbOrderStatus = "pending" | "confirmed" | "processing" | "partially_delivered" | "delivered" | "cancelled";
 export type DbOrderType = "regular" | "trial";
 export type DbPaymentStatus = "unpaid" | "partial" | "paid" | "refunded" | "credit";
 export type DbStockMovementType =
@@ -148,6 +148,9 @@ export type OrderRow = {
   created_at: string;
   updated_at: string;
   delivered_at: string | null;
+  /** From migration 12. */
+  confirmed_at?: string | null;
+  stock_mode?: "at_creation" | "at_delivery";
 };
 
 export type OrderItemRow = {
@@ -208,6 +211,15 @@ export type CommissionRow = {
   note: string;
   created_at: string;
   updated_at: string;
+  // From migration 12 (absent before it).
+  rule_version?: "legacy_percent" | "per_ball_v1";
+  kind?: "legacy" | "delivery" | "correction" | "first_order_bonus";
+  units?: number | null;
+  per_ball_rate?: number | null;
+  earned_at?: string | null;
+  review_required?: boolean;
+  review_reason?: string;
+  void_reason?: string;
 };
 
 export type CommissionPayoutRow = {
@@ -322,6 +334,9 @@ export type OrderDetailItem = {
   lineRevenue: number;
   lineCost: number | null;
   lineProfit: number | null;
+  // From migration 12 (absent before it).
+  deliveredQuantity?: number;
+  remainingQuantity?: number;
 };
 
 export type OrderDetailPayment = {
@@ -347,6 +362,28 @@ export type OrderDetailsRow = Omit<
   items: OrderDetailItem[];
   payments: OrderDetailPayment[];
   unit_count: number;
+  // From migration 12 (absent before it).
+  commission_model?: "legacy_percent" | "per_ball_v1" | null;
+};
+
+export type CommissionPolicyRow = {
+  id: boolean;
+  per_ball_rate: number;
+  first_order_bonus: number;
+  bonus_min_balls: number;
+  /** NULL until a Super Admin activates the per-ball model. */
+  cutover_at: string | null;
+  activated_by: string | null;
+  activation_note: string;
+  created_at: string;
+};
+
+export type CustomerTransferNoticeRow = {
+  id: string;
+  customer_id: string;
+  customer_name: string;
+  changed_at: string;
+  direction: "transferred_away" | "transferred_to_you";
 };
 
 export type PublicProductRow = {
@@ -581,6 +618,7 @@ export type Database = {
       testimonials: Table<TestimonialRow, Insertable<TestimonialRow, "id" | "name" | "content">>;
       // Read-only to clients: written only by the RPCs in 10.
       customer_ownership_changes: Table<CustomerOwnershipChangeRow, Record<string, never>, Record<string, never>>;
+      commission_policy: Table<CommissionPolicyRow, Record<string, never>, Record<string, never>>;
       below_cost_overrides: Table<BelowCostOverrideRow, Record<string, never>, Record<string, never>>;
     };
     Views: {
@@ -593,6 +631,7 @@ export type Database = {
       financial_summary: View<FinancialSummaryRow>;
       daily_sales: View<DailySalesRow>;
       product_sales: View<ProductSalesRow>;
+      customer_transfer_notices: View<CustomerTransferNoticeRow>;
     };
     Functions: {
       create_order: { Args: { payload: Json }; Returns: string };
@@ -610,6 +649,14 @@ export type Database = {
       update_order_status: {
         Args: { p_order_id: string; p_status: DbOrderStatus; p_reason?: string };
         Returns: undefined;
+      };
+      record_delivery: {
+        Args: { p_order_id: string; p_lines: Json; p_note?: string; p_request_id?: string };
+        Returns: string;
+      };
+      correct_delivered_quantity: {
+        Args: { p_order_item_id: string; p_new_delivered: number; p_mode: "keep_invoice" | "reduce_invoice"; p_reason: string };
+        Returns: string;
       };
       adjust_stock: {
         Args: {

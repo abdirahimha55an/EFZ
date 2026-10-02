@@ -226,6 +226,14 @@ export function toOrder(row: OrderDetailsRow): Order {
     lineRevenue: num(item.lineRevenue),
     lineCost: numOrNull(item.lineCost),
     lineProfit: numOrNull(item.lineProfit),
+    // Before migration 12 the view has no delivered quantities: a delivered
+    // order was delivered in full, anything else not at all.
+    deliveredQuantity: item.deliveredQuantity !== undefined
+      ? num(item.deliveredQuantity)
+      : row.status === "delivered" ? num(item.quantity) : 0,
+    remainingQuantity: item.remainingQuantity !== undefined
+      ? num(item.remainingQuantity)
+      : row.status === "delivered" ? 0 : num(item.quantity),
   }));
 
   const payments: PaymentRecord[] = (row.payments ?? []).map((payment) => ({
@@ -262,6 +270,9 @@ export function toOrder(row: OrderDetailsRow): Order {
     cost: numOrNull(row.cost),
     grossProfit: numOrNull(row.gross_profit),
     deliveredAt: row.delivered_at ?? null,
+    confirmedAt: row.confirmed_at ?? null,
+    stockMode: row.stock_mode ?? "at_creation",
+    commissionModel: row.commission_model ?? null,
     marketingOfficerName: row.marketing_officer_name ?? null,
     amountPaid: num(row.amount_paid),
     outstandingBalance: num(row.outstanding_balance),

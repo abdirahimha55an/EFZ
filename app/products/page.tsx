@@ -6,7 +6,7 @@ import { Search, Filter, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Product } from "@/lib/types";
+import { ACTIVE_PRODUCT_CATEGORIES, Product } from "@/lib/types";
 import { getDb } from "@/lib/supabase/db";
 import { toPublicProduct } from "@/lib/supabase/mappers";
 import { usePublicSettings } from "@/lib/settings";
@@ -53,7 +53,7 @@ export default function ProductsPage() {
     );
   }
 
-  const categories = ["All", "Football", "Futsal", "Accessories"];
+  const categories = ["All", ...ACTIVE_PRODUCT_CATEGORIES];
 
   const filteredProducts = products.filter((product) => {
     const matchesSearch = product.name.toLowerCase().includes(searchTerm.toLowerCase());

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AdminProfile, Product } from "@/lib/types";
+import { ACTIVE_PRODUCT_CATEGORIES, AdminProfile, Product } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { isValidImageUrl, validateProduct } from "@/lib/validators";
@@ -634,9 +634,11 @@ export default function ProductsPage() {
                         value={formData.category}
                         onChange={e => setFormData({...formData, category: e.target.value as Product["category"]})}
                       >
-                        <option value="Football">Football</option>
-                        <option value="Futsal">Futsal</option>
-                        <option value="Accessories">Accessories</option>
+                        {/* Football is the only active category; older rows may still show another. */}
+                        {ACTIVE_PRODUCT_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                        {!(ACTIVE_PRODUCT_CATEGORIES as readonly string[]).includes(formData.category) && (
+                          <option value={formData.category} disabled>{formData.category} (no longer used)</option>
+                        )}
                       </select>
                     </div>
                     <div>

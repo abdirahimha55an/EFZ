@@ -69,24 +69,31 @@ export type CustomerOwnershipChange = {
   changedAt: string;
 };
 
-export type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'delivered' | 'cancelled';
+export type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'partially_delivered' | 'delivered' | 'cancelled';
 export type OrderType = 'regular' | 'trial';
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded' | 'credit';
 
 /**
  * The normal fulfilment pipeline, identical to update_order_status() in
- * supabase/10_rpc_hardening.sql. Anything not listed - leaving delivered,
- * reactivating a cancelled order - is a Super Admin override with a reason.
+ * supabase/12_commission_model.sql. Anything not listed - reactivating a
+ * cancelled order - is a Super Admin override with a reason.
+ * 'partially_delivered' is never chosen: it follows from record_delivery().
+ * Once balls are delivered the status follows the delivered quantities; only
+ * delivering the rest (or a Super Admin correction) changes it.
  */
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending: ['confirmed', 'cancelled'],
   confirmed: ['processing', 'cancelled'],
   processing: ['delivered', 'cancelled'],
+  partially_delivered: ['delivered'],
   delivered: [],
   cancelled: [],
 };
 
-export const ORDER_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'processing', 'delivered', 'cancelled'];
+export const ORDER_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'processing', 'partially_delivered', 'delivered', 'cancelled'];
+
+/** Statuses a user can pick in a status menu (partially_delivered comes from deliveries). */
+export const SELECTABLE_ORDER_STATUSES: OrderStatus[] = ORDER_STATUSES.filter(s => s !== 'partially_delivered');
 
 export type OrderItem = {
   id?: string;
@@ -104,6 +111,10 @@ export type OrderItem = {
   lineRevenue?: number;
   lineCost?: number | null;
   lineProfit?: number | null;
+  /** Balls delivered so far on this line (deliveries plus corrections). */
+  deliveredQuantity?: number;
+  /** Balls still to deliver on this line. */
+  remainingQuantity?: number;
 };
 
 export type PaymentRecord = {
@@ -153,6 +164,21 @@ export type Order = {
   paymentMethod?: string;
   createdAt?: string;
   payments?: PaymentRecord[];
+  /** First confirmation (from migration 12); null for orders confirmed earlier. */
+  confirmedAt?: string | null;
+  /** at_creation: stock left when the order was taken (before 12); at_delivery: per delivered ball. */
+  stockMode?: 'at_creation' | 'at_delivery';
+  /** Fixed at first confirmation; null while pending. */
+  commissionModel?: 'legacy_percent' | 'per_ball_v1' | null;
+};
+
+/** What an officer may know about a transfer involving them: no reason, no actor. */
+export type CustomerTransferNotice = {
+  id: string;
+  customerId: string;
+  customerName: string;
+  changedAt: string;
+  direction: 'transferred_away' | 'transferred_to_you';
 };
 
 export type StockMovement = {
@@ -181,9 +207,13 @@ export type Product = {
   stock: number;
   lowStockThreshold: number;
   imageUrl: string;
+  /** Futsal / Accessories remain only on historical rows; new products are Football. */
   category: "Football" | "Futsal" | "Accessories";
   isActive?: boolean;
 };
+
+/** Football is the only active category (enforced by the database since 12). */
+export const ACTIVE_PRODUCT_CATEGORIES = ["Football"] as const;
 
 export type LogSeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
 export type LogCategory = 'SECURITY' | 'FINANCIAL' | 'INVENTORY' | 'CUSTOMER' | 'SYSTEM' | 'AUTH' | 'STORAGE' | 'ORDER' | 'PRODUCT';
