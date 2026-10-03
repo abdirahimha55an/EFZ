@@ -364,13 +364,15 @@ export default function CustomersPage() {
           targetId: customer.id,
         });
       } else {
+        // Delete first: customers.remove throws unless the row was actually
+        // deleted, so a refused delete never leaves a "Customer deleted" line.
+        await db.customers.remove(customer.id);
         await db.logs.write({
           category: 'CUSTOMER',
           severity: 'WARNING',
           message: `Customer deleted: ${customer.name}`,
           targetId: customer.id,
         });
-        await db.customers.remove(customer.id);
       }
 
       await loadAll();

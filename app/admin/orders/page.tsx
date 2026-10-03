@@ -533,6 +533,9 @@ export default function OrdersPage() {
       setIsSaving(true);
       const db = getDb();
 
+      // Delete first: orders.remove throws unless the row was actually deleted,
+      // so a refused delete never leaves an "Order deleted" audit line.
+      await db.orders.remove(id);
       await db.logs.write({
         category: 'ORDER',
         severity: 'WARNING',
@@ -541,7 +544,6 @@ export default function OrdersPage() {
         metadata: { total: order.total, status: order.status },
       });
 
-      await db.orders.remove(id);
       await refresh();
       showNotification('success', `Order ${id} deleted`);
     } catch (error) {

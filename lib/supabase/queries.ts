@@ -385,9 +385,16 @@ export function createDb(client: EfzSupabaseClient) {
       return updated;
     },
 
+    /**
+     * Asks for the deleted id back so a refusal cannot pass as success: RLS
+     * (profiles_delete needs manage_users) removes zero rows without an error.
+     */
     async remove(id: string): Promise<void> {
-      const { error } = await client.from("profiles").delete().eq("id", id);
+      const { data, error } = await client.from("profiles").delete().eq("id", id).select("id");
       if (error) throw new EfzDbError("users.remove", error);
+      if (!data || data.length === 0) {
+        throw new Error(`User ${id} was not deleted: you may not delete this account.`);
+      }
     },
 
     /** Replaces the user's whole permission set in one transaction. */
@@ -462,10 +469,17 @@ export function createDb(client: EfzSupabaseClient) {
       return customers.update(id, { status: "archived" });
     },
 
-    /** Refused by the database for a customer with orders - archive those. */
+    /**
+     * Refused by the database for a customer with orders - archive those.
+     * Asks for the deleted id back so a refusal cannot pass as success: RLS
+     * (customers_delete needs delete_customers) removes zero rows without an error.
+     */
     async remove(id: string): Promise<void> {
-      const { error } = await client.from("customers").delete().eq("id", id);
+      const { data, error } = await client.from("customers").delete().eq("id", id).select("id");
       if (error) throw new EfzDbError("customers.remove", error);
+      if (!data || data.length === 0) {
+        throw new Error(`Customer ${id} was not deleted: you may not delete customers, or it no longer exists.`);
+      }
     },
 
     /**
@@ -579,15 +593,22 @@ export function createDb(client: EfzSupabaseClient) {
       return updated;
     },
 
-    /** Soft delete. Keeps the product on historical orders. */
+    /** Soft delete. Keeps the product on historical orders. Zero rows changed (RLS) is a refusal, not success. */
     async deactivate(id: string): Promise<void> {
-      const { error } = await client.from("products").update({ is_active: false }).eq("id", id);
+      const { data, error } = await client.from("products").update({ is_active: false }).eq("id", id).select("id");
       if (error) throw new EfzDbError("products.deactivate", error);
+      if (!data || data.length === 0) {
+        throw new Error(`Product ${id} was not removed from the catalog: you may not edit products, or it no longer exists.`);
+      }
     },
 
+    /** Zero rows deleted (RLS) is a refusal, not success. */
     async remove(id: string): Promise<void> {
-      const { error } = await client.from("products").delete().eq("id", id);
+      const { data, error } = await client.from("products").delete().eq("id", id).select("id");
       if (error) throw new EfzDbError("products.remove", error);
+      if (!data || data.length === 0) {
+        throw new Error(`Product ${id} was not deleted: you may not delete products, or it no longer exists.`);
+      }
     },
 
     /** The anon-safe feed for the public site. Excludes cost price. */

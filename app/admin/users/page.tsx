@@ -443,6 +443,9 @@ export default function UsersPage() {
       setIsSaving(true);
       const db = getDb();
 
+      // Delete first: users.remove throws unless the row was actually deleted,
+      // so a refused delete never leaves a "User deleted" audit line.
+      await db.users.remove(id);
       await db.logs.write({
         category: 'SECURITY',
         severity: 'WARNING',
@@ -451,7 +454,6 @@ export default function UsersPage() {
         metadata: { role: user.role, email: user.email },
       });
 
-      await db.users.remove(id);
       await loadAll();
       showNotification('success', 'User removed.');
     } catch (error) {
