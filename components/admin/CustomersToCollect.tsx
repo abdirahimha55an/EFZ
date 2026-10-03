@@ -5,10 +5,10 @@
  * which of the orders they can see still have money owed, oldest delivered
  * first. Not an accounting report: no business totals, no cost, no margin.
  *
- * The rows are exactly the orders RLS returned to this user (an officer: the
- * customers currently assigned to them), unpaid or partly paid and not
- * cancelled. Amounts come from the order's own amount_paid / outstanding_balance,
- * which the database maintains from the payments.
+ * The rows are the orders RLS returned to this user (an officer: the customers
+ * currently assigned to them), unpaid or partly paid, not cancelled, and not
+ * belonging to an archived customer. Amounts come from the order's own
+ * amount_paid / outstanding_balance, which the database maintains from the payments.
  */
 import { cn } from "@/lib/utils";
 import { daysSince, money } from "@/lib/commission";
@@ -26,8 +26,9 @@ export type CollectionRow = {
 
 /** Orders still owed money, oldest delivered first, then undelivered by order date. */
 export function collectionRows(orders: Order[], customers: Customer[]): CollectionRow[] {
+  const archived = new Set(customers.filter((c) => c.status === "archived" || c.isArchived).map((c) => c.id));
   return orders
-    .filter((o) => o.status !== "cancelled")
+    .filter((o) => o.status !== "cancelled" && !(o.customerId && archived.has(o.customerId)))
     .map((order) => {
       const total = Number(order.total || 0);
       const collected = Number(order.amountPaid ?? 0);
