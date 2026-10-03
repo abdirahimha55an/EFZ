@@ -77,6 +77,61 @@ const SYSTEM_LINKS = [
   { name: "System Management", href: "/admin/system", icon: SettingsIcon, permission: 'manage_system' as Permission },
 ];
 
+/** How often an open admin tab re-derives its alerts (also when the tab regains focus). */
+const ALERT_REFRESH_MS = 30_000;
+
+/** Pending-order alerts are personal: one row per user, `order-<orderId>@<profileId>`. */
+const personalOrderAlertId = (orderId: string, profileId: string) => `order-${orderId}@${profileId}`;
+
+/**
+ * Order alerts written before they became personal were shared rows `order-<orderId>`
+ * (no "@") that every staff member could read, whoever's order it was. Not shown.
+ */
+const isLegacySharedOrderAlert = (n: Notification) => n.id.startsWith("order-") && !n.id.includes("@");
+
+/**
+ * Derives the alert feed from live data and stores any new alerts:
+ * - low/out-of-stock alerts are shared by all staff (stable ids `low-…` / `out-…`);
+ * - "New Order" alerts are personal: only for pending orders this user may see (the
+ *   orders list is RLS-scoped) and stored with user_id = this user, so RLS shows each
+ *   user their own alerts and read/unread is per user.
+ * Ids are stable and the upsert ignores duplicates, so repeating this never creates
+ * copies and an alert already read stays read. Returns the feed, newest first.
+ */
+async function loadAlertFeed(db: ReturnType<typeof getDb>, me: AdminProfile, defaultThreshold: number): Promise<Notification[]> {
+  const [products, orders, existing] = await Promise.all([
+    db.products.list(),
+    db.orders.list({ limit: 200 }),
+    db.notifications.list(),
+  ]);
+
+  const derived: Array<Pick<Notification, "id" | "title" | "message" | "type"> & { userId?: string }> = [];
+
+  products.forEach(p => {
+    if (p.stock === 0) {
+      derived.push({ id: `out-${p.id}`, title: "Out of Stock", message: `${p.name} is out of stock!`, type: 'stock' });
+    } else if (p.stock <= (p.lowStockThreshold || defaultThreshold)) {
+      derived.push({ id: `low-${p.id}`, title: "Low Stock Alert", message: `${p.name} is low (${p.stock}).`, type: 'stock' });
+    }
+  });
+
+  orders.forEach(o => {
+    if (o.status === 'pending') {
+      derived.push({ id: personalOrderAlertId(o.id, me.id), title: "New Order", message: `Order from ${o.customer} pending.`, type: 'order', userId: me.id });
+    }
+  });
+
+  const unseen = derived.filter(alert => !existing.some(n => n.id === alert.id));
+  if (unseen.length > 0) {
+    await db.notifications.upsertAlerts(unseen);
+  }
+
+  const merged = unseen.length > 0 ? await db.notifications.list() : existing;
+  return merged
+    .filter(n => !isLegacySharedOrderAlert(n))
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -130,46 +185,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
         setProfile(nextProfile);
 
-        const [nextSettings, products, orders, existing] = await Promise.all([
-          db.settings.get(),
-          db.products.list(),
-          db.orders.list({ limit: 200 }),
-          db.notifications.list(),
-        ]);
+        const nextSettings = await db.settings.get();
         if (cancelled) return;
 
         setSettings(nextSettings);
         setTheme(nextSettings.theme || 'light');
 
-        // Alerts are derived from live data, with stable ids so the upsert is
-        // idempotent and an already-read alert is never resurrected.
-        const derived: Array<Pick<Notification, "id" | "title" | "message" | "type">> = [];
-
-        products.forEach(p => {
-          if (p.stock === 0) {
-            derived.push({ id: `out-${p.id}`, title: "Out of Stock", message: `${p.name} is out of stock!`, type: 'stock' });
-          } else if (p.stock <= (p.lowStockThreshold || nextSettings.defaultLowStockThreshold)) {
-            derived.push({ id: `low-${p.id}`, title: "Low Stock Alert", message: `${p.name} is low (${p.stock}).`, type: 'stock' });
-          }
-        });
-
-        orders.forEach(o => {
-          if (o.status === 'pending') {
-            derived.push({ id: `order-${o.id}`, title: "New Order", message: `Order from ${o.customer} pending.`, type: 'order' });
-          }
-        });
-
-        const unseen = derived.filter(alert => !existing.some(n => n.id === alert.id));
-        if (unseen.length > 0) {
-          await db.notifications.upsertAlerts(unseen);
-        }
-
-        const merged = unseen.length > 0 ? await db.notifications.list() : existing;
+        const feed = await loadAlertFeed(db, nextProfile, nextSettings.defaultLowStockThreshold);
         if (cancelled) return;
 
-        setNotifications(
-          [...merged].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-        );
+        setNotifications(feed);
       } catch (error) {
         if (!cancelled) console.error("[ADMIN LAYOUT] Failed to load:", describeDbError(error));
       } finally {
@@ -184,6 +209,53 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     // between admin routes, so re-running this would refetch the whole catalog
     // and order list on every click for nothing.
   }, [isLoginPage, router]);
+
+  // Keep the alert feed live while the app is open: re-derive every
+  // ALERT_REFRESH_MS and whenever the tab becomes visible / regains focus, so a
+  // new pending order shows up without a page refresh. One loop per signed-in
+  // user (keyed on the profile id only, so navigation and unrelated state do not
+  // restart it); runs never overlap, a hidden tab does not poll, and everything
+  // is torn down on unmount or when the user changes.
+  const alertProfileRef = useRef<AdminProfile | null>(null);
+  const alertThresholdRef = useRef(DEFAULT_SETTINGS.defaultLowStockThreshold);
+  useEffect(() => { alertProfileRef.current = profile; }, [profile]);
+  useEffect(() => { alertThresholdRef.current = settings.defaultLowStockThreshold; }, [settings.defaultLowStockThreshold]);
+  const alertProfileId = profile?.id ?? null;
+  useEffect(() => {
+    if (isLoginPage || !alertProfileId) return;
+
+    let stopped = false;
+    let running = false;
+
+    const refresh = async () => {
+      const me = alertProfileRef.current;
+      if (stopped || running || !me || document.visibilityState === "hidden") return;
+      running = true;
+      try {
+        const feed = await loadAlertFeed(getDb(), me, alertThresholdRef.current);
+        if (!stopped) setNotifications(feed);
+      } catch (error) {
+        if (!stopped) console.error("[ADMIN LAYOUT] Alert refresh failed:", describeDbError(error));
+      } finally {
+        running = false;
+      }
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+
+    const timer = window.setInterval(() => void refresh(), ALERT_REFRESH_MS);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [isLoginPage, alertProfileId]);
 
   // Click-outside listeners for the header dropdowns.
   useEffect(() => {

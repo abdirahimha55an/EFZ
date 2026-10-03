@@ -1253,12 +1253,13 @@ export function createDb(client: EfzSupabaseClient) {
     /**
      * Writes the derived low-stock and pending-order alerts.
      *
-     * Ids are deterministic (`low-prod-123`, `order-ORD-456`) and duplicates are
-     * ignored, so re-running this on every page load never piles up copies and
-     * an alert someone already read stays read.
+     * Ids are deterministic (`low-prod-123`, `order-ORD-456@u-1`) and duplicates
+     * are ignored, so re-running this on every refresh never piles up copies and
+     * an alert someone already read stays read. `userId` makes an alert personal
+     * (RLS shows it to that user only); without it the alert is shared by all staff.
      */
     async upsertAlerts(
-      alerts: Array<Pick<Notification, "id" | "title" | "message" | "type">>
+      alerts: Array<Pick<Notification, "id" | "title" | "message" | "type"> & { userId?: string | null }>
     ): Promise<void> {
       if (alerts.length === 0) return;
 
@@ -1268,6 +1269,7 @@ export function createDb(client: EfzSupabaseClient) {
           title: alert.title,
           message: alert.message,
           type: alert.type,
+          user_id: alert.userId ?? null,
         })),
         { onConflict: "id", ignoreDuplicates: true }
       );
