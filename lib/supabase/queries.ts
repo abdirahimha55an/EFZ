@@ -1331,13 +1331,21 @@ export function createDb(client: EfzSupabaseClient) {
       return toSettings(data);
     },
 
+    /**
+     * Global company settings: business name, brand, contact, colours, theme.
+     * Only an active Super Admin may write them (RLS settings_update and
+     * settings_insert = is_super_admin(), migration 14; a change_settings grant
+     * does not open them to anyone else). RLS refuses by updating zero rows without
+     * an error, so that is reported as a refusal here. One UPDATE statement:
+     * either every field in the patch is saved or none is.
+     */
     async update(patch: Partial<AdminSettings>): Promise<AdminSettings> {
-      return toSettings(
-        unwrap(
-          "settings.update",
-          await client.from("settings").update(fromSettings(patch)).eq("id", true).select().single()
-        )
-      );
+      const { data, error } = await client.from("settings").update(fromSettings(patch)).eq("id", true).select();
+      if (error) throw new EfzDbError("settings.update", error);
+      if (!data || data.length === 0) {
+        throw new Error("Company settings were not changed: only a Super Admin can change them.");
+      }
+      return toSettings(data[0]);
     },
   };
 

@@ -269,9 +269,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Row counts for the System Management panel, fetched only when it opens.
+  // Row counts for the System Management panel, fetched only when it opens -
+  // and only for users who may manage the system (backups are manage_system in RLS).
   useEffect(() => {
-    if (!isSettingsOpen) return;
+    if (!isSettingsOpen || !can(profile, "manage_system")) return;
 
     let cancelled = false;
 
@@ -293,7 +294,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     return () => {
       cancelled = true;
     };
-  }, [isSettingsOpen]);
+  }, [isSettingsOpen, profile]);
 
   // Handle Theme Application
   useEffect(() => {
@@ -448,6 +449,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const saveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    // Company settings are Super Admin only - the role, not a grantable
+    // permission. The database refuses anyone else too (RLS settings_update =
+    // is_super_admin(), migration 14); this just says so before trying.
+    if (!perms.isSuperAdmin) {
+      showToast('error', 'Only a Super Admin can change company settings.');
+      return;
+    }
+
     try {
       const db = getDb();
       const saved = await db.settings.update(settings);
@@ -469,6 +478,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);   // applied immediately; persistence follows
 
+    // Theme is a shared company setting: anyone but the Super Admin flips it
+    // for this visit only and does not try to save it for everyone.
+    if (!perms.isSuperAdmin) return;
+
     try {
       const db = getDb();
       await db.settings.update({ theme: newTheme });
@@ -478,8 +491,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         message: `User switched theme to ${newTheme} mode`,
       });
     } catch (error) {
-      // Theme is a shared setting, so anyone without change_settings can flip it
-      // for this visit but cannot save it for everyone.
+      // Theme is a shared setting: only the Super Admin can save it for everyone.
       showToast('error', describeDbError(error));
     }
   };
@@ -1016,6 +1028,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 </div>
               </section>
 
+              {/* Company-wide settings: Super Admin only (RLS settings_update = is_super_admin()). Others see their own profile. */}
+              {perms.isSuperAdmin ? (
+              <>
               {/* Branding Section */}
               <section className="pt-8 border-t border-slate-100">
                 <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
@@ -1146,8 +1161,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   <Button variant="outline" onClick={() => setIsSettingsOpen(false)} className="flex-1">Discard Changes</Button>
                 </div>
               </section>
+              </>
+              ) : (
+                <section className="pt-8 border-t border-slate-100" data-testid="company-settings-locked">
+                  <p className="flex items-center gap-2 text-xs text-slate-500">
+                    <ShieldCheck className="h-3.5 w-3.5" /> Company settings (business name, branding, contact details, theme) are managed by the Super Admin.
+                  </p>
+                </section>
+              )}
 
-              {/* Data Backup & Recovery Section */}
+              {/* Data Backup & Recovery Section - backups hold every core table: manage_system only (RLS backups_all). */}
+              {perms.manageSystem && (
               <section className="pt-8 border-t border-slate-100">
                 <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                   <Database className="h-4 w-4" /> Data Backup & Recovery
@@ -1206,6 +1230,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   </div>
                 </div>
               </section>
+              )}
             </div>
           </div>
         </div>
