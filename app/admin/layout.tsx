@@ -42,6 +42,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AdminSettings, AdminProfile, Notification, Order, Permission, Product } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { derivePermissions, hasPermission as can, hasAnyPermission as canAny } from "@/lib/permissions";
 import { SystemStatusBadge } from "@/components/admin/SystemStatusBadge";
 
@@ -79,6 +80,12 @@ const SYSTEM_LINKS = [
 
 /** How often an open admin tab re-derives its alerts (also when the tab regains focus). */
 const ALERT_REFRESH_MS = 30_000;
+
+/** A burst of Realtime order changes (e.g. an order and its status update) becomes one refresh. */
+const ALERT_SIGNAL_DEBOUNCE_MS = 300;
+
+/** Realtime channel topic prefix for the "an order I can see changed" signal. */
+const ORDER_ALERT_TOPIC = "order-alerts";
 
 /** Pending-order alerts are personal: one row per user, `order-<orderId>@<profileId>`. */
 const personalOrderAlertId = (orderId: string, profileId: string) => `order-${orderId}@${profileId}`;
@@ -169,6 +176,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     let cancelled = false;
 
     (async () => {
+      // The layout outlives /admin/login, so drop whoever was signed in before:
+      // their alerts must not show, or be refreshed, under the next sign-in.
+      setProfile(null);
+      setNotifications([]);
       try {
         const db = getDb();
         const nextProfile = await db.auth.getProfile();
@@ -210,12 +221,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     // and order list on every click for nothing.
   }, [isLoginPage, router]);
 
-  // Keep the alert feed live while the app is open: re-derive every
-  // ALERT_REFRESH_MS and whenever the tab becomes visible / regains focus, so a
-  // new pending order shows up without a page refresh. One loop per signed-in
-  // user (keyed on the profile id only, so navigation and unrelated state do not
-  // restart it); runs never overlap, a hidden tab does not poll, and everything
-  // is torn down on unmount or when the user changes.
+  // Keep the alert feed live while the app is open: re-derive at once when
+  // Realtime reports a change to an order this user may read, every
+  // ALERT_REFRESH_MS as the fallback, and whenever the tab becomes visible /
+  // regains focus, so a new pending order shows up without a page refresh. One
+  // loop and one channel per signed-in user (keyed on the profile id only, so
+  // navigation and unrelated state do not restart it); runs never overlap, a
+  // request made during a run is replayed once it ends, a hidden tab does not
+  // refresh, and everything is torn down on unmount, logout or when the user
+  // changes.
   const alertProfileRef = useRef<AdminProfile | null>(null);
   const alertThresholdRef = useRef(DEFAULT_SETTINGS.defaultLowStockThreshold);
   useEffect(() => { alertProfileRef.current = profile; }, [profile]);
@@ -226,16 +240,38 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
     let stopped = false;
     let running = false;
+    // Set when a refresh is asked for while one is running: that run may have
+    // read the orders before the change committed, so it must not be dropped.
+    let again = false;
+    let signalTimer: number | undefined;
+    const supabase = getSupabaseBrowserClient();
 
     const refresh = async () => {
-      const me = alertProfileRef.current;
-      if (stopped || running || !me || document.visibilityState === "hidden") return;
+      if (running) {
+        again = true;
+        return;
+      }
       running = true;
       try {
-        const feed = await loadAlertFeed(getDb(), me, alertThresholdRef.current);
-        if (!stopped) setNotifications(feed);
-      } catch (error) {
-        if (!stopped) console.error("[ADMIN LAYOUT] Alert refresh failed:", describeDbError(error));
+        do {
+          again = false;
+          const me = alertProfileRef.current;
+          if (stopped || !me || document.visibilityState === "hidden") break;
+          try {
+            // The session can change under an open tab (logout and sign-in as
+            // someone else, here or in another tab). Derive alerts for `me` only
+            // while the database still sees `me` signed in: a session holding
+            // manage_system could otherwise store `me` alerts for orders `me`
+            // may not see.
+            const { data: signedInId, error: whoError } = await supabase.rpc("current_profile_id");
+            if (whoError) throw whoError;
+            if (signedInId !== me.id) break;
+            const feed = await loadAlertFeed(getDb(), me, alertThresholdRef.current);
+            if (!stopped) setNotifications(feed);
+          } catch (error) {
+            if (!stopped) console.error("[ADMIN LAYOUT] Alert refresh failed:", describeDbError(error));
+          }
+        } while (again && !stopped);
       } finally {
         running = false;
       }
@@ -245,6 +281,32 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       if (document.visibilityState === "visible") void refresh();
     };
 
+    // Realtime (migration 15): an INSERT/UPDATE of an order reaches this tab only
+    // if this user's own JWT passes the orders SELECT policy. The event is just a
+    // "refresh now" signal - the payload is never read and no notification is
+    // written from it; loadAlertFeed derives and stores alerts exactly as the
+    // polling does (same ids, duplicates ignored). DELETE is not subscribed to.
+    const onOrderChange = () => {
+      window.clearTimeout(signalTimer);
+      signalTimer = window.setTimeout(() => void refresh(), ALERT_SIGNAL_DEBOUNCE_MS);
+    };
+
+    // One channel per tab: drop any left over from an earlier user or mount.
+    // Each mount gets its own topic, so it never reuses a channel still closing.
+    supabase.getChannels()
+      .filter(c => c.topic.startsWith(`realtime:${ORDER_ALERT_TOPIC}:`))
+      .forEach(c => void supabase.removeChannel(c));
+    const channel = supabase
+      .channel(`${ORDER_ALERT_TOPIC}:${alertProfileId}:${Date.now().toString(36)}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "orders" }, onOrderChange)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "orders" }, onOrderChange)
+      .subscribe(status => {
+        // Changes made while the channel was down are not replayed: catch up on
+        // every (re)join. Errors need nothing here - the client rejoins by
+        // itself and the timer below keeps refreshing meanwhile.
+        if (status === "SUBSCRIBED") onOrderChange();
+      });
+
     const timer = window.setInterval(() => void refresh(), ALERT_REFRESH_MS);
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
@@ -252,8 +314,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     return () => {
       stopped = true;
       window.clearInterval(timer);
+      window.clearTimeout(signalTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
+      void supabase.removeChannel(channel);
     };
   }, [isLoginPage, alertProfileId]);
 
