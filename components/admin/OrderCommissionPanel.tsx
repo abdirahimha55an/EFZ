@@ -58,19 +58,23 @@ export function OrderCommissionPanel({ order, viewer, policy, footballIds }: Pro
   const [rows, setRows] = useState<CommissionEvent[] | null>(null);
   const [deliveries, setDeliveries] = useState<DeliveryWithLines[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // 16: the order's officer has commission eligibility OFF (only known to that officer and management).
+  const [ownerPaused, setOwnerPaused] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const db = getDb();
-        const [nextRows, nextDeliveries] = await Promise.all([
+        const [nextRows, nextDeliveries, eligibility] = await Promise.all([
           db.commissions.forOrder(order.id),
           db.orders.deliveries([order.id]),
+          db.commissions.eligibility().catch(() => []),
         ]);
         if (cancelled) return;
         setRows(nextRows);
         setDeliveries(nextDeliveries);
+        setOwnerPaused(eligibility.some((e) => e.officer_id === order.marketingOfficerId && !e.eligible));
       } catch (e) {
         if (!cancelled) setError(describeDbError(e));
       }
@@ -78,7 +82,7 @@ export function OrderCommissionPanel({ order, viewer, policy, footballIds }: Pro
     return () => {
       cancelled = true;
     };
-  }, [order.id]);
+  }, [order.id, order.marketingOfficerId]);
 
   if (error) return <p className="text-xs text-red-600">Could not load the commission: {error}</p>;
   if (!rows) {
@@ -92,7 +96,7 @@ export function OrderCommissionPanel({ order, viewer, policy, footballIds }: Pro
   const isOwnOrder = order.marketingOfficerId === viewer.id;
   const isOfficer = viewer.role === "Marketing Officer";
   const counts = footballCounts(order, footballIds);
-  const expected = isOwnOrder || !isOfficer ? expectedForOrder(order, policy, footballIds) : null;
+  const expected = (isOwnOrder || !isOfficer) && !ownerPaused ? expectedForOrder(order, policy, footballIds) : null;
   const ownerName = order.marketingOfficerName ?? "another officer";
   const totals = summarize(rows);
   const deliveryById = new Map(deliveries.map((d) => [d.id, d]));
@@ -204,6 +208,13 @@ export function OrderCommissionPanel({ order, viewer, policy, footballIds }: Pro
           <div><p className="text-[9px] uppercase opacity-60">On hold</p><p className="font-mono text-sm font-bold">{money(totals.onHold)}</p></div>
           <div><p className="text-[9px] uppercase opacity-60">Paid</p><p className="font-mono text-sm font-bold">{money(totals.paid)}</p></div>
         </div>
+      )}
+
+      {ownerPaused && (isOwnOrder || !isOfficer) && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900" data-testid="commission-paused">
+          Commission eligibility of {isOwnOrder ? "you" : ownerName} is OFF: deliveries on this order earn no commission and
+          no first-order bonus while it stays off. Commission already recorded is unchanged.
+        </p>
       )}
 
       {expected && expected.balls > 0 && (

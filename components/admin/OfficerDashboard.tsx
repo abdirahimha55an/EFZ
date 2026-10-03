@@ -80,6 +80,8 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
   // "Collected by Me" comes from the database (my_collected_payments, migration 13):
   // it must include payments on orders this officer can no longer see. Null = "—".
   const [byMe, setByMe] = useState<{ total: number; thisMonth: number; payments: number } | null>(null);
+  // 16: commission eligibility OFF = no commission on new deliveries / bonuses.
+  const [paused, setPaused] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,12 +99,14 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
     (async () => {
       const db = getDb();
       try {
-        const [mine, nextPolicy, nextDeliveries] = await Promise.all([
+        const [mine, nextPolicy, nextDeliveries, eligibility] = await Promise.all([
           perms.viewCommissions ? db.commissions.mine(profile.id) : Promise.resolve([]),
           db.commissions.policy(),
           db.orders.deliveries(orders.map((o) => o.id)),
+          db.commissions.eligibility().catch(() => []),
         ]);
         if (cancelled) return;
+        setPaused(eligibility.some((e) => e.officer_id === profile.id && !e.eligible));
         setEvents(mine);
         setPolicy(nextPolicy);
         setDeliveries(nextDeliveries);
@@ -133,9 +137,11 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
 
   // --- commissions ---
   const totals = summarize(events);
-  const expected = footballIds && policy && commissionLoaded
-    ? myOrders.reduce((s, o) => s + (expectedForOrder(o, policy, footballIds)?.amount ?? 0), 0)
-    : null;
+  const expected = paused
+    ? 0
+    : footballIds && policy && commissionLoaded
+      ? myOrders.reduce((s, o) => s + (expectedForOrder(o, policy, footballIds)?.amount ?? 0), 0)
+      : null;
   const earnedOn = (orderId: string) =>
     summarize(events.filter((e) => e.order_id === orderId)).earned;
 
@@ -203,8 +209,14 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
             <Stat id="earned-unpaid" title="Earned · Unpaid" value={commissionLoaded ? money(totals.unpaid) : "—"} note="Awaiting payout by management" />
             <Stat id="paid" title="Paid" value={commissionLoaded ? money(totals.paid) : "—"} note="Paid out to you" />
             <Stat id="on-hold" title="On Hold" value={commissionLoaded ? money(totals.onHold) : "—"} note="Flagged for review" />
-            <Stat id="expected" title="Expected from Undelivered Balls" value={expected === null ? "—" : money(expected)} note="FORECAST · not earned yet" dashed />
+            <Stat id="expected" title="Expected from Undelivered Balls" value={expected === null ? "—" : money(expected)} note={paused ? "PAUSED · no commission on new deliveries" : "FORECAST · not earned yet"} dashed />
           </div>
+          {paused && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" data-testid="commission-paused">
+              Commission earning is paused: new deliveries and first-order bonuses do not earn commission for you until
+              management turns it back on. Commission already recorded is unchanged.
+            </p>
+          )}
         </Section>
       )}
 
@@ -273,7 +285,7 @@ export function OfficerDashboard({ profile, perms, orders, customers, products }
                 {inProgress.map((o) => {
                   const counts = footballCounts(o, footballIds);
                   const mine = o.marketingOfficerId === profile.id;
-                  const exp = mine ? expectedForOrder(o, policy, footballIds) : null;
+                  const exp = mine && !paused ? expectedForOrder(o, policy, footballIds) : null;
                   return (
                     <tr key={o.id}>
                       <td className="px-4 py-3 font-bold">{o.customer}</td>

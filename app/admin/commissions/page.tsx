@@ -40,6 +40,8 @@ export default function MyCommissionsPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [policy, setPolicy] = useState<CommissionPolicyView | null>(null);
   const [footballIds, setFootballIds] = useState<Set<string> | null>(null);
+  // 16: OFF = no commission on future deliveries / bonuses (recorded history unchanged).
+  const [paused, setPaused] = useState<{ since: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
@@ -50,10 +52,14 @@ export default function MyCommissionsPage() {
     const me = await db.auth.getProfile();
     setProfile(me);
     if (!me) return;
-    const [mine, nextOrders, nextPolicy] = await Promise.all([db.commissions.mine(me.id), db.orders.list(), db.commissions.policy()]);
+    const [mine, nextOrders, nextPolicy, eligibility] = await Promise.all([
+      db.commissions.mine(me.id), db.orders.list(), db.commissions.policy(), db.commissions.eligibility(),
+    ]);
     setRows(mine);
     setOrders(nextOrders);
     setPolicy(nextPolicy);
+    const own = eligibility.find((e) => e.officer_id === me.id);
+    setPaused(own && !own.eligible ? { since: own.since } : null);
     // Product categories decide which balls earn per-ball commission. If this
     // user may not read the catalogue, the forecast is simply not shown.
     try {
@@ -84,13 +90,13 @@ export default function MyCommissionsPage() {
   const totals = useMemo(() => summarize(rows), [rows]);
   const expectedOrders = useMemo(
     () =>
-      profile
+      profile && !paused
         ? orders
             .filter((o) => o.marketingOfficerId === profile.id)
             .map((o) => ({ order: o, expected: expectedForOrder(o, policy, footballIds) }))
             .filter((x): x is { order: Order; expected: { balls: number; amount: number } } => Boolean(x.expected && x.expected.balls > 0))
         : [],
-    [orders, policy, footballIds, profile]
+    [orders, policy, footballIds, profile, paused]
   );
   const expectedTotal = expectedOrders.reduce((s, x) => s + x.expected.amount, 0);
 
@@ -134,6 +140,16 @@ export default function MyCommissionsPage() {
         </p>
       </div>
 
+      {paused && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900" data-testid="commission-paused">
+          <p className="font-bold">Commission earning is paused{paused.since ? ` since ${new Date(paused.since).toLocaleDateString()}` : ""}.</p>
+          <p className="mt-0.5">
+            New deliveries and first-order bonuses do not earn commission for you until management turns it back on.
+            Commission already recorded below is unchanged and is still paid out as usual.
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         {cards.map((c) => (
           <Card key={c.id} className={cn("border-none shadow-sm", c.cls)} data-testid={`card-${c.id}`}>
@@ -147,8 +163,8 @@ export default function MyCommissionsPage() {
         <Card className="border-2 border-dashed border-sky-200 bg-sky-50/40 shadow-none" data-testid="card-expected">
           <CardContent className="p-4">
             <p className="text-[9px] font-bold uppercase tracking-widest text-sky-700">Expected from Undelivered Balls</p>
-            <h3 className="mt-0.5 font-mono text-2xl font-bold text-sky-800">{footballIds ? money(expectedTotal) : "—"}</h3>
-            <p className="mt-1.5 text-[10px] font-bold text-sky-700">FORECAST · not earned yet</p>
+            <h3 className="mt-0.5 font-mono text-2xl font-bold text-sky-800">{paused ? money(0) : footballIds ? money(expectedTotal) : "—"}</h3>
+            <p className="mt-1.5 text-[10px] font-bold text-sky-700">{paused ? "PAUSED · no commission on new deliveries" : "FORECAST · not earned yet"}</p>
           </CardContent>
         </Card>
       </div>

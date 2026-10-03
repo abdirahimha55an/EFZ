@@ -407,6 +407,27 @@ export type CommissionPolicyRow = {
   created_at: string;
 };
 
+/** Migration 16: one append-only row per change; the latest row is the current state (none = ON). */
+export type CommissionEligibilityChangeRow = {
+  id: string;
+  seq: number;
+  officer_id: string;
+  eligible: boolean;
+  previous_eligible: boolean;
+  reason: string;
+  changed_by: string | null;
+  changed_by_name: string;
+  changed_at: string;
+};
+
+/** Migration 16: current state per Marketing Officer (own row for an officer, all for management). */
+export type CommissionEligibilityStatusRow = {
+  officer_id: string;
+  eligible: boolean;
+  /** When the current state was set; null = never changed (ON by default). */
+  since: string | null;
+};
+
 export type CustomerTransferNoticeRow = {
   id: string;
   customer_id: string;
@@ -652,6 +673,8 @@ export type Database = {
       // Read-only to clients: written only by record_delivery() in 12.
       order_deliveries: Table<OrderDeliveryRow, Record<string, never>, Record<string, never>>;
       order_delivery_lines: Table<OrderDeliveryLineRow, Record<string, never>, Record<string, never>>;
+      // Read-only to clients: written only by set_commission_eligibility() in 16.
+      commission_eligibility_changes: Table<CommissionEligibilityChangeRow, Record<string, never>, Record<string, never>>;
     };
     Views: {
       public_products: View<PublicProductRow>;
@@ -664,6 +687,7 @@ export type Database = {
       daily_sales: View<DailySalesRow>;
       product_sales: View<ProductSalesRow>;
       customer_transfer_notices: View<CustomerTransferNoticeRow>;
+      commission_eligibility_status: View<CommissionEligibilityStatusRow>;
     };
     Functions: {
       create_order: { Args: { payload: Json }; Returns: string };
@@ -715,6 +739,11 @@ export type Database = {
       transfer_customer_owner: {
         Args: { p_customer_id: string; p_new_officer_id: string; p_reason: string };
         Returns: Json;
+      };
+      // Migration 16: Super Admin only, written reason required.
+      set_commission_eligibility: {
+        Args: { p_officer_id: string; p_eligible: boolean; p_reason: string };
+        Returns: string;
       };
       efz_today: { Args: Record<string, never>; Returns: string };
       run_diagnostics: { Args: Record<string, never>; Returns: number };

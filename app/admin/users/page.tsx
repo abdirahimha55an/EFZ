@@ -24,14 +24,19 @@ import {
   Plus,
   Loader2,
   RefreshCcw,
-  Info
+  Info,
+  Power
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { AdminUser, UserRole, Permission, USER_ROLES } from "@/lib/types";
-import type { OfficerCommissionSummaryRow } from "@/lib/supabase/database.types";
+import type {
+  CommissionEligibilityChangeRow,
+  CommissionEligibilityStatusRow,
+  OfficerCommissionSummaryRow,
+} from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { validateUser } from "@/lib/validators";
@@ -129,6 +134,14 @@ export default function UsersPage() {
   // Earned / paid / pending per officer, straight from the ledger view. The old
   // page re-derived these four separate times from the order list.
   const [commissionRows, setCommissionRows] = useState<OfficerCommissionSummaryRow[]>([]);
+  // Commission eligibility (migration 16): current state per Marketing Officer.
+  const [eligibility, setEligibility] = useState<CommissionEligibilityStatusRow[]>([]);
+  // The Super Admin's ON/OFF dialog: the officer, the reason typed, the history shown.
+  const [eligibilityTarget, setEligibilityTarget] = useState<AdminUser | null>(null);
+  const [eligibilityReason, setEligibilityReason] = useState("");
+  const [eligibilityHistory, setEligibilityHistory] = useState<CommissionEligibilityChangeRow[] | null>(null);
+  const [eligibilityError, setEligibilityError] = useState<string | null>(null);
+  const [isEligibilitySaving, setIsEligibilitySaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -151,14 +164,16 @@ export default function UsersPage() {
 
   const loadAll = useCallback(async () => {
     const db = getDb();
-    const [nextUsers, nextProfile, nextCommissions] = await Promise.all([
+    const [nextUsers, nextProfile, nextCommissions, nextEligibility] = await Promise.all([
       db.users.list(),
       db.auth.getProfile(),
       db.commissions.summary(),
+      db.commissions.eligibility(),
     ]);
     setUsers(nextUsers);
     setCurrentUser(nextProfile);
     setCommissionRows(nextCommissions);
+    setEligibility(nextEligibility);
   }, []);
 
   useEffect(() => {
@@ -202,6 +217,53 @@ export default function UsersPage() {
       paid: Number(row?.paid_commission ?? 0),
       pending: Number(row?.pending_commission ?? 0),
     };
+  };
+
+  /** Current commission eligibility of one officer; undefined when this user may not see it. */
+  const eligibilityOf = (userId: string) => eligibility.find(e => e.officer_id === userId);
+
+  const openEligibility = async (user: AdminUser) => {
+    setEligibilityTarget(user);
+    setEligibilityReason("");
+    setEligibilityError(null);
+    setEligibilityHistory(null);
+    try {
+      setEligibilityHistory(await getDb().commissions.eligibilityHistory(user.id));
+    } catch (error) {
+      setEligibilityError(describeDbError(error));
+      setEligibilityHistory([]);
+    }
+  };
+
+  const closeEligibility = () => {
+    if (isEligibilitySaving) return;
+    setEligibilityTarget(null);
+  };
+
+  /** Super Admin only (the database refuses everyone else): switch ON <-> OFF with a reason. */
+  const confirmEligibility = async () => {
+    if (!eligibilityTarget) return;
+    const current = eligibilityOf(eligibilityTarget.id)?.eligible ?? true;
+    const reason = eligibilityReason.trim();
+    if (!reason) {
+      setEligibilityError("A written reason is required.");
+      return;
+    }
+    try {
+      setIsEligibilitySaving(true);
+      setEligibilityError(null);
+      const db = getDb();
+      await db.commissions.setEligibility(eligibilityTarget.id, !current, reason);
+      setEligibility(await db.commissions.eligibility());
+      showNotification('success', `Commission eligibility for ${eligibilityTarget.name} is now ${current ? 'OFF' : 'ON'}.`);
+      setEligibilityTarget(null);
+    } catch (error) {
+      setEligibilityError(describeDbError(error));
+      // The state may have changed meanwhile (another tab): show the real one.
+      try { setEligibility(await getDb().commissions.eligibility()); } catch { /* keep the error shown */ }
+    } finally {
+      setIsEligibilitySaving(false);
+    }
   };
 
   if (isLoading) {
@@ -594,6 +656,21 @@ export default function UsersPage() {
                             </div>
                           );
                         })()}
+                        {user.role === 'Marketing Officer' && eligibilityOf(user.id) && (() => {
+                          const on = eligibilityOf(user.id)!.eligible;
+                          return (
+                            <span
+                              data-testid={`eligibility-badge-${user.id}`}
+                              title={on ? "Earns commission on future deliveries and bonuses" : "Earns no commission on future deliveries or bonuses; earlier commission is unchanged"}
+                              className={cn(
+                                "mt-0.5 inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase",
+                                on ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
+                              )}
+                            >
+                              <Power className="h-2.5 w-2.5" /> Commission {on ? "ON" : "OFF"}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </td>
                     <td className="px-6 py-3 text-right">
@@ -619,6 +696,25 @@ export default function UsersPage() {
                             </Button>
                           );
                         })()}
+                        {/* 16: Super Admin only (the database enforces it too). */}
+                        {perms.isSuperAdmin && user.role === 'Marketing Officer' && (() => {
+                          const on = eligibilityOf(user.id)?.eligible ?? true;
+                          return (
+                            <Button
+                              data-testid={`eligibility-toggle-${user.id}`}
+                              onClick={() => openEligibility(user)}
+                              disabled={isSaving || isEligibilitySaving}
+                              variant="outline"
+                              size="sm"
+                              className={cn(
+                                "h-7 px-2 text-[9px] font-bold uppercase rounded-md",
+                                on ? "text-red-600 border-red-200 hover:bg-red-50" : "text-brand-green border-brand-green hover:bg-green-50"
+                              )}
+                            >
+                              <Power className="h-3 w-3 mr-1" /> {on ? "Commission OFF" : "Commission ON"}
+                            </Button>
+                          );
+                        })()}
                         <Button onClick={() => { setEditingUser(user); setFormData(user); setIsModalOpen(true); }} disabled={isSaving} variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-brand-blue hover:bg-blue-50 rounded-md">
                           <Edit className="h-3.5 w-3.5" />
                         </Button>
@@ -634,6 +730,80 @@ export default function UsersPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Commission eligibility (16): Super Admin confirmation with a required reason */}
+      {eligibilityTarget && (() => {
+        const on = eligibilityOf(eligibilityTarget.id)?.eligible ?? true;
+        return (
+          <div className="fixed inset-0 z-[110] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4" data-testid="eligibility-dialog">
+            <Card className="w-full max-w-lg border-none shadow-2xl">
+              <CardHeader className="border-b border-slate-100 pb-3">
+                <CardTitle className="text-base font-bold text-slate-900">
+                  Turn commission {on ? "OFF" : "ON"} for {eligibilityTarget.name}?
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4 p-5 text-xs">
+                <p className="text-slate-600">
+                  Currently <b>{on ? "ON" : "OFF"}</b> → <b>{on ? "OFF" : "ON"}</b>.{" "}
+                  {on
+                    ? "From now on this officer earns no commission on deliveries or first-order bonuses. Deliveries and orders continue normally."
+                    : "From now on this officer earns commission again on new deliveries and first-order bonuses."}{" "}
+                  This affects future commission events only: commission already recorded is not changed, and nothing is added
+                  for events that happened while commission was OFF.
+                </p>
+                <div className="space-y-1">
+                  <label htmlFor="eligibility-reason" className="text-[10px] font-bold text-slate-700">Reason (required)</label>
+                  <textarea
+                    id="eligibility-reason"
+                    data-testid="eligibility-reason"
+                    value={eligibilityReason}
+                    onChange={e => setEligibilityReason(e.target.value)}
+                    maxLength={500}
+                    rows={3}
+                    className="w-full rounded-lg border border-slate-200 p-2 text-xs outline-none focus:ring-2 focus:ring-brand-blue/20"
+                    placeholder="Why is commission eligibility being changed?"
+                  />
+                </div>
+                {eligibilityError && (
+                  <p className="rounded-lg bg-red-50 p-2 text-red-700" data-testid="eligibility-error">{eligibilityError}</p>
+                )}
+                <div>
+                  <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">History</p>
+                  {eligibilityHistory === null ? (
+                    <p className="text-slate-400">Loading…</p>
+                  ) : eligibilityHistory.length === 0 ? (
+                    <p className="text-slate-400" data-testid="eligibility-history-empty">No changes yet: ON since the officer was created.</p>
+                  ) : (
+                    <ul className="max-h-40 space-y-1 overflow-y-auto" data-testid="eligibility-history">
+                      {eligibilityHistory.map(h => (
+                        <li key={h.id} className="rounded bg-slate-50 p-2">
+                          <span className="font-bold">{h.previous_eligible ? "ON" : "OFF"} → {h.eligible ? "ON" : "OFF"}</span>
+                          <span className="text-slate-500"> · {new Date(h.changed_at).toLocaleString()} · {h.changed_by_name || "SQL editor"}</span>
+                          <p className="text-slate-600">{h.reason}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="outline" onClick={closeEligibility} disabled={isEligibilitySaving} className="h-9 rounded-lg text-xs">
+                    Cancel
+                  </Button>
+                  <Button
+                    data-testid="eligibility-confirm"
+                    onClick={confirmEligibility}
+                    disabled={isEligibilitySaving || !eligibilityReason.trim()}
+                    className={cn("h-9 rounded-lg text-xs text-white", on ? "bg-red-600 hover:bg-red-700" : "bg-brand-green hover:bg-green-600")}
+                  >
+                    {isEligibilitySaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Power className="mr-1.5 h-3.5 w-3.5" />}
+                    Turn commission {on ? "OFF" : "ON"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
 
       {/* User Management Modal */}
       {isModalOpen && (

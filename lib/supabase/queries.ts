@@ -31,6 +31,8 @@ import type {
 } from "@/lib/types";
 
 import type {
+  CommissionEligibilityChangeRow,
+  CommissionEligibilityStatusRow,
   CommissionRow,
   CustomerFinancialsRow,
   DailySalesRow,
@@ -1042,6 +1044,45 @@ export function createDb(client: EfzSupabaseClient) {
         .order("paid_at", { ascending: false });
       if (userId) query = query.eq("user_id", userId);
       return unwrapList("commissions.payouts", await query);
+    },
+
+    /**
+     * Commission eligibility (migration 16), current state per Marketing Officer:
+     * an officer gets only their own row, the Super Admin and commission
+     * management every officer. Empty before migration 16 (everyone earns).
+     */
+    async eligibility(): Promise<CommissionEligibilityStatusRow[]> {
+      const { data, error } = await client.from("commission_eligibility_status").select("*");
+      if (isMissingRelation(error)) return [];
+      if (error) throw new EfzDbError("commissions.eligibility", error);
+      return data ?? [];
+    },
+
+    /** Every ON/OFF change of one officer, newest first (Super Admin / commission management only). */
+    async eligibilityHistory(officerId: string): Promise<CommissionEligibilityChangeRow[]> {
+      const { data, error } = await client
+        .from("commission_eligibility_changes")
+        .select("*")
+        .eq("officer_id", officerId)
+        .order("seq", { ascending: false });
+      if (isMissingRelation(error)) return [];
+      if (error) throw new EfzDbError("commissions.eligibilityHistory", error);
+      return data ?? [];
+    },
+
+    /**
+     * Super Admin only: switch a Marketing Officer's commission eligibility, with a
+     * written reason. Affects future commission events only; the database refuses
+     * everyone else, a missing reason and a no-op change.
+     */
+    async setEligibility(officerId: string, eligible: boolean, reason: string): Promise<string> {
+      const { data, error } = await client.rpc("set_commission_eligibility", {
+        p_officer_id: officerId,
+        p_eligible: eligible,
+        p_reason: reason,
+      });
+      if (error) throw new EfzDbError("commissions.setEligibility", error);
+      return data as string;
     },
   };
 
