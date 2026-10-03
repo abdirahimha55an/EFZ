@@ -24,11 +24,16 @@ export type CollectionRow = {
   delivered: boolean;
 };
 
-/** Orders still owed money, oldest delivered first, then undelivered by order date. */
+/**
+ * Orders still owed money, oldest delivered first, then undelivered by order date.
+ * Only orders of a customer in `customers` that is not archived count: callers
+ * that load active customers only (the dashboard) and callers that also load
+ * archived ones (the Customers page) get the same list.
+ */
 export function collectionRows(orders: Order[], customers: Customer[]): CollectionRow[] {
-  const archived = new Set(customers.filter((c) => c.status === "archived" || c.isArchived).map((c) => c.id));
+  const current = new Set(customers.filter((c) => c.status !== "archived" && !c.isArchived).map((c) => c.id));
   return orders
-    .filter((o) => o.status !== "cancelled" && !(o.customerId && archived.has(o.customerId)))
+    .filter((o) => o.status !== "cancelled" && Boolean(o.customerId) && current.has(o.customerId as string))
     .map((order) => {
       const total = Number(order.total || 0);
       const collected = Number(order.amountPaid ?? 0);
