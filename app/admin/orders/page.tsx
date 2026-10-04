@@ -140,6 +140,9 @@ export default function OrdersPage() {
         setCurrentUser(next.nextProfile);
         setCommissionPolicy(next.nextPolicy);
         setLoadError(null);
+        // Links from Sales & Analytics open the order: /admin/orders?search=<order id>
+        const linked = new URLSearchParams(window.location.search).get("search");
+        if (linked) setSearchTerm(linked);
       } catch (error) {
         if (!cancelled) setLoadError(describeDbError(error));
       } finally {

@@ -196,10 +196,28 @@ function zipStored(files: { name: string; data: Uint8Array }[]): Uint8Array {
   return out;
 }
 
+export type XlsxSheet = { name: string; columns: XlsxColumn[]; rows: XlsxCell[][] };
+
 /** Builds a one-sheet .xlsx workbook. Returns the file bytes. */
 export function buildXlsx(sheetName: string, columns: XlsxColumn[], rows: XlsxCell[][]): Uint8Array {
+  return buildXlsxWorkbook([{ name: sheetName, columns, rows }]);
+}
+
+/**
+ * Builds a workbook with one or more sheets. With a single sheet the bytes are
+ * identical to what buildXlsx() always produced (Phase 12 audit export).
+ */
+export function buildXlsxWorkbook(sheets: XlsxSheet[]): Uint8Array {
+  if (sheets.length === 0) throw new Error("A workbook needs at least one sheet");
   const enc = new TextEncoder();
-  const safeSheet = xmlEscape(sheetName.replace(/[\\/?*[\]:]/g, " ").slice(0, 31) || "Sheet1");
+  const used = new Set<string>();
+  const names = sheets.map((sh, i) => {
+    const base = sh.name.replace(/[\\/?*[\]:]/g, " ").slice(0, 31) || `Sheet${i + 1}`;
+    let name = base, n = 2;
+    while (used.has(name.toLowerCase())) name = `${base.slice(0, 28)} ${n++}`;
+    used.add(name.toLowerCase());
+    return xmlEscape(name);
+  });
   const files: { name: string; text: string }[] = [
     {
       name: "[Content_Types].xml",
@@ -209,7 +227,7 @@ export function buildXlsx(sheetName: string, columns: XlsxColumn[], rows: XlsxCe
         `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
         `<Default Extension="xml" ContentType="application/xml"/>` +
         `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
-        `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
+        sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("") +
         `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
         `</Types>`,
     },
@@ -226,8 +244,10 @@ export function buildXlsx(sheetName: string, columns: XlsxColumn[], rows: XlsxCe
       text:
         `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
         `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-        `<sheets><sheet name="${safeSheet}" sheetId="1" r:id="rId1"/></sheets>` +
-        `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">'${safeSheet.replace(/'/g, "''")}'!$A$1:$${columnName(Math.max(columns.length - 1, 0))}$${rows.length + 1}</definedName></definedNames>` +
+        `<sheets>` + names.map((n, i) => `<sheet name="${n}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("") + `</sheets>` +
+        `<definedNames>` +
+        sheets.map((sh, i) => `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${names[i].replace(/'/g, "''")}'!$A$1:$${columnName(Math.max(sh.columns.length - 1, 0))}$${sh.rows.length + 1}</definedName>`).join("") +
+        `</definedNames>` +
         `</workbook>`,
     },
     {
@@ -235,12 +255,12 @@ export function buildXlsx(sheetName: string, columns: XlsxColumn[], rows: XlsxCe
       text:
         `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
         `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-        `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>` +
-        `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+        sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("") +
+        `<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
         `</Relationships>`,
     },
     { name: "xl/styles.xml", text: STYLES_XML },
-    { name: "xl/worksheets/sheet1.xml", text: sheetXml(columns, rows) },
+    ...sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: sheetXml(sh.columns, sh.rows) })),
   ];
   return zipStored(files.map((f) => ({ name: f.name, data: enc.encode(f.text) })));
 }

@@ -94,6 +94,13 @@ export function derivePermissions(profile: AdminProfile | null | undefined) {
     viewOwnCustomersOnly: !viewAllCustomers && can("view_own_customers_only"),
 
     viewReports: can("view_reports"),
+    /**
+     * has_all_order_scope() in supabase/11_order_scope_and_audit.sql: every
+     * order is visible (Super Admin, or view_orders without
+     * view_own_customers_only). Sales & Analytics shows the Marketing Officer
+     * breakdown only then; the database scopes the rows either way.
+     */
+    allOrderScope: isSuperAdmin || (can("view_orders") && !can("view_own_customers_only")),
     viewCommissions: can("view_commissions"),
     markCommissionsPaid: can("mark_commissions_paid"),
 

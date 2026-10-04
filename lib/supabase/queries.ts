@@ -766,6 +766,29 @@ export function createDb(client: EfzSupabaseClient) {
       return unwrapList("orders.list", await query).map(toOrder);
     },
 
+    /**
+     * Every order this user may see, read in pages of 1,000 so a large history
+     * is never cut off at the API's row limit (Sales & Analytics).
+     */
+    async listAll(): Promise<Order[]> {
+      const PAGE = 1000;
+      const rows: Order[] = [];
+      for (let offset = 0; ; offset += PAGE) {
+        const page = unwrapList(
+          "orders.listAll",
+          await client
+            .from("order_details")
+            .select("*")
+            .order("order_date", { ascending: false })
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: true })
+            .range(offset, offset + PAGE - 1)
+        ).map(toOrder);
+        rows.push(...page);
+        if (page.length < PAGE) return rows;
+      }
+    },
+
     async get(id: string): Promise<Order | null> {
       const { data, error } = await client
         .from("order_details")
