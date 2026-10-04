@@ -181,6 +181,20 @@ export default function AuditTrailPage() {
       }
       const bytes = buildAuditWorkbook(rows);
       const fileName = auditExportFileName(range);
+      // Exporting the audit trail is itself recorded, and the record is written
+      // BEFORE the file is handed over: an export that cannot be recorded does
+      // not happen, and closing the tab right after the download cannot skip it.
+      try {
+        await db.logs.write({
+          category: 'SECURITY',
+          severity: 'INFO',
+          message: `Audit trail exported to Excel: ${rows.length} event(s)`,
+          metadata: { fileName, events: rows.length, filter: { ...filter } },
+        });
+      } catch (error) {
+        setExportState({ busy: false, message: `Export cancelled: the export could not be recorded in the audit trail (${describeDbError(error)}). Nothing was downloaded.`, error: true });
+        return;
+      }
       const blob = new Blob([bytes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -190,17 +204,6 @@ export default function AuditTrailPage() {
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      // Exporting the audit trail is itself worth recording.
-      try {
-        await db.logs.write({
-          category: 'SECURITY',
-          severity: 'INFO',
-          message: `Audit trail exported to Excel: ${rows.length} event(s)`,
-          metadata: { fileName, events: rows.length, filter: { ...filter } },
-        });
-      } catch {
-        // The file is already saved; a failed note must not look like a failed export.
-      }
       setExportState({ busy: false, message: `Exported ${rows.length.toLocaleString()} event(s) to ${fileName}.`, error: false });
     } catch (error) {
       setExportState({ busy: false, message: describeDbError(error), error: true });
