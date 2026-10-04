@@ -108,13 +108,22 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 /** Deterministic rules; the thresholds are ATTENTION_RULES. At most five items. */
 export function attentionItems(m: AnalyticsModel): AttentionItem[] {
   const items: AttentionItem[] = [];
-  const short = m.stock.filter((s) => s.state === "shortfall" || s.state === "out");
+  // Sales attention only: a product with no open orders and no booked sales in
+  // 28 days is an Inventory matter, not a sales one.
+  const inDemand = m.stock.filter((s) => s.commitments > 0 || s.unitsLast28 > 0);
+  const short = inDemand.filter((s) => s.state === "shortfall");
   if (short.length) {
     items.push({ id: "stock-short", severity: "high", section: "inventory",
       title: `${plural(short.length, "product")} cannot cover open orders`,
-      detail: short.slice(0, 3).map((s) => `${s.name}: ${s.available < 0 ? `short by ${-s.available}` : "0 available"}`).join("; ") });
+      detail: short.slice(0, 3).map((s) => `${s.name}: short by ${-s.available}`).join("; ") });
   }
-  const risk = m.stock.filter((s) => s.state === "at_risk" || s.state === "low");
+  const out = inDemand.filter((s) => s.state === "out");
+  if (out.length) {
+    items.push({ id: "stock-out", severity: "high", section: "inventory",
+      title: `${plural(out.length, "product")} with recent demand ${out.length === 1 ? "has" : "have"} nothing available`,
+      detail: out.slice(0, 3).map((s) => `${s.name}: ${s.unitsLast28} booked in 28 days, 0 available`).join("; ") });
+  }
+  const risk = inDemand.filter((s) => s.state === "at_risk" || s.state === "low");
   if (risk.length) {
     items.push({ id: "stock-risk", severity: "medium", section: "inventory",
       title: `${plural(risk.length, "product")} at or near the low-stock threshold`,

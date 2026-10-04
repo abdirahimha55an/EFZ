@@ -25,7 +25,7 @@ export type ControlsProps = {
   comparisonText: string | null;
 };
 
-const selectCls = "h-8 min-w-0 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 shadow-sm outline-none focus:border-slate-400";
+const selectCls = "h-8 w-full min-w-0 md:w-auto md:max-w-[12.5rem] rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 shadow-sm outline-none focus:border-slate-400";
 
 export function Controls(p: ControlsProps) {
   const [open, setOpen] = useState(false);

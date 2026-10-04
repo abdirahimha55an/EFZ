@@ -71,6 +71,7 @@ export function CumulativeChart({ data }: { data: CumulativePoint[] }) {
     projected: p.projectedCents === null ? null : fromCents(p.projectedCents),
   }));
   const names: Record<string, string> = { current: "This month (booked)", previous: "Last month (booked)", projected: "Indicative pace" };
+  const hasProjection = rows.some((r) => r.projected !== null);
   return (
     <ResponsiveContainer width="100%" height={H}>
       <LineChart data={rows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
@@ -79,9 +80,9 @@ export function CumulativeChart({ data }: { data: CumulativePoint[] }) {
         <YAxis {...axis} tickFormatter={usdShort} width={48} />
         <Tooltip {...tooltipStyle} labelFormatter={(d) => `Day ${d}`} formatter={(v, n) => [usd(v), names[String(n)] ?? String(n)]} />
         <Legend wrapperStyle={{ fontSize: 11 }} formatter={(v) => names[String(v)] ?? v} />
-        <Line type="monotone" dataKey="previous" stroke={C.previous} strokeWidth={1.5} dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="current" stroke={C.booked} strokeWidth={2.5} dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="projected" stroke={C.indicative} strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls={false} />
+        <Line type="linear" dataKey="previous" stroke={C.previous} strokeWidth={1.5} dot={false} connectNulls={false} />
+        <Line type="linear" dataKey="current" stroke={C.booked} strokeWidth={2.5} dot={false} connectNulls={false} />
+        {hasProjection && <Line type="linear" dataKey="projected" stroke={C.indicative} strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls={false} />}
       </LineChart>
     </ResponsiveContainer>
   );
@@ -126,10 +127,10 @@ export function PriceRealizationChart({ rows }: { rows: ProductRow[] }) {
 export function ParetoChart({ data }: { data: Concentration["pareto"] }) {
   const rows = data.map((d) => ({ name: d.name, revenue: fromCents(d.bookedCents), cumulative: Math.round(d.cumulativePct * 10) / 10 }));
   return (
-    <ResponsiveContainer width="100%" height={H}>
+    <ResponsiveContainer width="100%" height={H + 30}>
       <ComposedChart data={rows} margin={{ top: 8, right: 0, left: -8, bottom: 0 }}>
         <CartesianGrid stroke={C.grid} vertical={false} />
-        <XAxis dataKey="name" {...axis} interval={0} tickFormatter={(n: string) => (n.length > 10 ? `${n.slice(0, 9)}…` : n)} />
+        <XAxis dataKey="name" {...axis} interval={0} angle={-35} textAnchor="end" height={70} tickFormatter={(n: string) => (n.length > 14 ? `${n.slice(0, 13)}…` : n)} />
         <YAxis yAxisId="l" {...axis} tickFormatter={usdShort} width={48} />
         <YAxis yAxisId="r" orientation="right" {...axis} domain={[0, 100]} tickFormatter={(v) => `${v}%`} width={36} />
         <Tooltip {...tooltipStyle} formatter={(v, n) => (n === "revenue" ? [usd(v), "Booked revenue"] : [`${v}%`, "Cumulative share"])} />

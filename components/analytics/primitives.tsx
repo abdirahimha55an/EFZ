@@ -129,7 +129,7 @@ export function DataTable<T>({ columns, rows, rowKey, empty = "Nothing to show f
             {shown.map((r) => (
               <tr key={rowKey(r)} className="hover:bg-slate-50/70" data-row={rowKey(r)}>
                 {columns.map((c) => (
-                  <td key={c.key} className={cn("px-2 py-2 text-slate-700", c.align === "right" && "whitespace-nowrap text-right font-mono tabular-nums")}>{c.render(r)}</td>
+                  <td key={c.key} className={cn("px-2 py-2 text-slate-700", c.align === "right" && "whitespace-nowrap text-right tabular-nums")}>{c.render(r)}</td>
                 ))}
               </tr>
             ))}

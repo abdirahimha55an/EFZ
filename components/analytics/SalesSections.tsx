@@ -52,7 +52,7 @@ export function AttentionPanel({ m }: { m: AnalyticsModel }) {
       </ul>
       <div className="mt-2">
         <MethodNote label="Attention rules">
-          <p>Shown when: a product cannot cover its open orders, is at or below its low-stock threshold, or would run out within {ATTENTION_RULES.stockOutDays} days at the 28-day pace (indicative); an open order is older than {ATTENTION_RULES.openOrderAgeDays} days; one customer holds over {ATTENTION_RULES.concentrationPct}% of booked revenue (with at least two buying customers); a trial customer has no regular order after {ATTENTION_RULES.trialFollowUpDays} days; booked revenue is {ATTENTION_RULES.revenueDropPct}% or more below the comparison period (only once the history is at least “developing”).</p>
+          <p>Shown when: a product with recent demand (open orders, or sales in the last 28 days) cannot cover its open orders, has nothing available, is at or below its low-stock threshold, or would run out within {ATTENTION_RULES.stockOutDays} days at the 28-day pace (indicative); an open order is older than {ATTENTION_RULES.openOrderAgeDays} days; one customer holds over {ATTENTION_RULES.concentrationPct}% of booked revenue (with at least two buying customers); a trial customer has no regular order after {ATTENTION_RULES.trialFollowUpDays} days; booked revenue is {ATTENTION_RULES.revenueDropPct}% or more below the comparison period (only once the history is at least “developing”).</p>
         </MethodNote>
       </div>
     </section>
