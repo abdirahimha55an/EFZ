@@ -54,6 +54,7 @@ import type {
 import type { CommissionEvent } from "@/lib/commission";
 
 import type { EfzSupabaseClient } from "./client";
+import { efzRangeBounds, isYmd } from "@/lib/dates";
 
 import {
   fromAdminUser,
@@ -158,6 +159,63 @@ const unwrapList = <T>(context: string, result: Result<T[]>): T[] => {
 
 const newId = (prefix: string): string =>
   `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`}`;
+
+// ---------------------------------------------------------------------------
+// Audit trail filters (applied in the database, never to a loaded page)
+// ---------------------------------------------------------------------------
+
+/** What the Audit Trail is filtered by. Every field is optional; empty = no restriction. */
+export type AuditLogFilter = {
+  /** Free text matched (case-insensitive) against message, username, user id and target id. */
+  search?: string;
+  category?: LogCategory;
+  severity?: LogSeverity;
+  severities?: LogSeverity[];
+  /** A profile id; NO_AUDIT_USER selects lines written without a signed-in user. */
+  userId?: string;
+  /** Inclusive Mogadishu calendar dates (YYYY-MM-DD). */
+  range?: { from: string; to: string };
+};
+
+/** userId value meaning "written by the system / no user". */
+export const NO_AUDIT_USER = "__none__";
+
+/**
+ * A PostgREST-quoted ILIKE pattern that matches `text` literally anywhere:
+ * LIKE wildcards in the text are escaped, then the value is quoted so commas,
+ * parentheses and dots cannot break out of the or=(...) filter.
+ */
+const quoteLike = (text: string): string => {
+  const like = `%${text.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+  return `"${like.replace(/[\\"]/g, (m) => `\\${m}`)}"`;
+};
+
+type AuditFilterable<Q> = {
+  eq(column: string, value: string): Q;
+  is(column: string, value: null): Q;
+  in(column: string, values: string[]): Q;
+  gte(column: string, value: string): Q;
+  lt(column: string, value: string): Q;
+  or(filters: string): Q;
+};
+
+function applyAuditFilter<Q extends AuditFilterable<Q>>(query: Q, filter: AuditLogFilter): Q {
+  let q = query;
+  const search = filter.search?.trim();
+  if (search) {
+    const p = quoteLike(search);
+    q = q.or(`message.ilike.${p},username.ilike.${p},user_id.ilike.${p},target_id.ilike.${p}`);
+  }
+  if (filter.category) q = q.eq("category", filter.category);
+  if (filter.severity) q = q.eq("severity", filter.severity);
+  if (filter.userId === NO_AUDIT_USER) q = q.is("user_id", null);
+  else if (filter.userId) q = q.eq("user_id", filter.userId);
+  if (filter.range && isYmd(filter.range.from) && isYmd(filter.range.to)) {
+    const bounds = efzRangeBounds(filter.range);
+    q = q.gte("occurred_at", bounds.gte).lt("occurred_at", bounds.lt);
+  }
+  return q;
+}
 
 // ---------------------------------------------------------------------------
 // Column lists
@@ -1176,6 +1234,54 @@ export function createDb(client: EfzSupabaseClient) {
         .select("id", { count: "exact", head: true });
       if (error) throw new EfzDbError("logs.count", error);
       return count ?? 0;
+    },
+
+    /**
+     * One page of the audit trail with every filter applied in the database,
+     * newest first, plus the total number of matching rows. Runs as the signed-in
+     * user, so RLS (system_logs_select: view_audit_trail) decides what exists.
+     */
+    async search(filter: AuditLogFilter, page: { offset: number; limit: number }): Promise<{ rows: SystemLog[]; total: number }> {
+      const result = await applyAuditFilter(client.from("system_logs").select("*", { count: "exact" }), filter)
+        .order("occurred_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(page.offset, page.offset + page.limit - 1);
+      if (result.error) throw new EfzDbError("logs.search", result.error);
+      return { rows: (result.data ?? []).map(toSystemLog), total: result.count ?? 0 };
+    },
+
+    /** How many rows match the filter, optionally narrowed further (summary cards). */
+    async countWhere(filter: AuditLogFilter, extra: Partial<AuditLogFilter> & { messageLike?: string[] } = {}): Promise<number> {
+      let query = applyAuditFilter(client.from("system_logs").select("id", { count: "exact", head: true }), filter);
+      if (extra.category) query = query.eq("category", extra.category);
+      if (extra.severities?.length) query = query.in("severity", extra.severities);
+      if (extra.messageLike?.length) query = query.or(extra.messageLike.map((m) => `message.ilike.${quoteLike(m)}`).join(","));
+      const { count, error } = await query;
+      if (error) throw new EfzDbError("logs.countWhere", error);
+      return count ?? 0;
+    },
+
+    /**
+     * EVERY row matching the filter (not just the page on screen), for export.
+     * Same query and RLS as search(); fetched in batches in a stable order.
+     * Refuses rather than truncating silently above `max`.
+     */
+    async exportAll(filter: AuditLogFilter, max = 50_000): Promise<SystemLog[]> {
+      const BATCH = 1000;
+      const out: SystemLog[] = [];
+      for (let offset = 0; ; offset += BATCH) {
+        const result = await applyAuditFilter(client.from("system_logs").select("*", { count: offset === 0 ? "exact" : undefined }), filter)
+          .order("occurred_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(offset, offset + BATCH - 1);
+        if (result.error) throw new EfzDbError("logs.exportAll", result.error);
+        if (offset === 0 && (result.count ?? 0) > max) {
+          throw new Error(`${result.count} audit events match these filters; narrow them (for example by date) to export at most ${max} at a time.`);
+        }
+        const rows = result.data ?? [];
+        out.push(...rows.map(toSystemLog));
+        if (rows.length < BATCH) return out;
+      }
     },
 
     /** Append-only. Nothing in the app can edit or erase an existing line. */

@@ -49,3 +49,68 @@ export function efzToday(now: Date = new Date()): string {
     day: "2-digit",
   }).format(now);
 }
+
+/**
+ * Mogadishu is UTC+3 all year (no daylight saving), so a Mogadishu calendar day
+ * D runs from D 00:00+03:00 up to (not including) D+1 00:00+03:00.
+ */
+export const EFZ_UTC_OFFSET = "+03:00";
+const EFZ_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+/** True for a real calendar date written as YYYY-MM-DD. */
+export function isYmd(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+/** YYYY-MM-DD plus `days` (calendar arithmetic, independent of the viewer's timezone). */
+export function addDaysYmd(ymd: string, days: number): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The instant a Mogadishu calendar day begins, as an ISO timestamp with offset. */
+export function efzDayStartIso(ymd: string): string {
+  return `${ymd}T00:00:00${EFZ_UTC_OFFSET}`;
+}
+
+export type EfzDatePreset = "all" | "today" | "yesterday" | "last7" | "last30" | "date" | "custom";
+
+/**
+ * Inclusive Mogadishu calendar range for a preset (from / to as YYYY-MM-DD),
+ * or null for "all time". "last7" is today and the six days before it.
+ */
+export function efzDateRange(
+  preset: EfzDatePreset,
+  custom: { from?: string; to?: string } = {},
+  now: Date = new Date()
+): { from: string; to: string } | null {
+  const today = efzToday(now);
+  switch (preset) {
+    case "today": return { from: today, to: today };
+    case "yesterday": { const y = addDaysYmd(today, -1); return { from: y, to: y }; }
+    case "last7": return { from: addDaysYmd(today, -6), to: today };
+    case "last30": return { from: addDaysYmd(today, -29), to: today };
+    case "date": return custom.from && isYmd(custom.from) ? { from: custom.from, to: custom.from } : null;
+    case "custom": {
+      const from = custom.from && isYmd(custom.from) ? custom.from : undefined;
+      const to = custom.to && isYmd(custom.to) ? custom.to : undefined;
+      if (!from && !to) return null;
+      const f = from ?? to!, t = to ?? from!;
+      return f <= t ? { from: f, to: t } : { from: t, to: f };
+    }
+    default: return null;
+  }
+}
+
+/** Query bounds for an inclusive Mogadishu date range: occurred_at >= gte and < lt. */
+export function efzRangeBounds(range: { from: string; to: string }): { gte: string; lt: string } {
+  return { gte: efzDayStartIso(range.from), lt: efzDayStartIso(addDaysYmd(range.to, 1)) };
+}
+
+/** A stored timestamp as Mogadishu wall-clock milliseconds (for Excel date cells). */
+export function efzWallClockMs(value: string | Date): number {
+  return new Date(value).getTime() + EFZ_OFFSET_MS;
+}
