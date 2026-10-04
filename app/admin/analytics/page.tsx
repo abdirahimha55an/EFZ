@@ -22,6 +22,7 @@ import { buildAnalyticsModel } from "@/lib/analytics/model";
 import { monthStart, type PeriodPreset } from "@/lib/analytics/period";
 import { officersOnOrders } from "@/lib/analytics/officers";
 import { analyticsExportFileName, analyticsExportMetadata, buildAnalyticsSheets, buildAnalyticsWorkbook, type FilterLabels } from "@/lib/analytics/export";
+import { loadDismissed, saveDismissed } from "@/lib/analytics/attentionDismissals";
 import { Controls, type Option } from "@/components/analytics/Controls";
 import { KpiStrip } from "@/components/analytics/KpiStrip";
 import { BasisLegend } from "@/components/analytics/primitives";
@@ -46,6 +47,8 @@ export default function AnalyticsPage() {
   const [filters, setFilters] = useState<SalesFilters>(NO_FILTERS);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [exportState, setExportState] = useState<ExportState>({ busy: false, message: null, error: false });
+  // "Needs attention" notices this user has closed (this browser only; no business data changes).
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +58,7 @@ export default function AnalyticsPage() {
         const me = await db.auth.getProfile();
         if (cancelled) return;
         setProfile(me);
+        if (me) setDismissed(loadDismissed(me.id));
         if (!me || !derivePermissions(me).viewReports) {
           setStatus("denied");
           return;
@@ -115,6 +119,16 @@ export default function AnalyticsPage() {
   }, [options, effectiveFilters]);
 
   /** Excel export of exactly what is on screen. Recorded in the audit trail BEFORE the download (Phase 12 rule). */
+  /** Hides one "Needs attention" notice for this user and remembers it in this browser. */
+  const dismissAttention = useCallback((key: string) => {
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      if (profile) saveDismissed(profile.id, next);
+      return next;
+    });
+  }, [profile]);
+
   const exportExcel = useCallback(async () => {
     if (!model) return;
     setExportState({ busy: true, message: null, error: false });
@@ -217,7 +231,7 @@ export default function AnalyticsPage() {
       <BasisLegend />
 
       <KpiStrip m={model} />
-      <AttentionPanel m={model} />
+      <AttentionPanel m={model} dismissed={dismissed} onDismiss={dismissAttention} />
       <TrendsSection m={model} />
       <ProductsSection m={model} velocityByProduct={velocityByProduct} />
       <CustomersSection m={model} />

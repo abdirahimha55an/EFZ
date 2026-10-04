@@ -24,7 +24,15 @@ export type AnalyticsInput = {
   granularity?: Granularity | "auto";
 };
 
-export type AttentionItem = { id: string; severity: "high" | "medium"; title: string; detail: string; section: string };
+/**
+ * `key` identifies WHAT an item is about (the rule plus the products, orders or
+ * customers it names). A user's dismissal is stored against the key, so the same
+ * notice stays dismissed, while a changed situation (e.g. a new trial customer)
+ * produces a new key and shows again.
+ */
+export type AttentionItem = { id: string; key: string; severity: "high" | "medium"; title: string; detail: string; section: string };
+
+const keyOf = (id: string, subjects: string[]) => `${id}:${[...subjects].sort().join(",")}`;
 
 export type AnalyticsModel = {
   today: string;
@@ -113,44 +121,44 @@ export function attentionItems(m: AnalyticsModel): AttentionItem[] {
   const inDemand = m.stock.filter((s) => s.commitments > 0 || s.unitsLast28 > 0);
   const short = inDemand.filter((s) => s.state === "shortfall");
   if (short.length) {
-    items.push({ id: "stock-short", severity: "high", section: "inventory",
+    items.push({ id: "stock-short", key: keyOf("stock-short", short.map((s) => s.productKey)), severity: "high", section: "inventory",
       title: `${plural(short.length, "product")} cannot cover open orders`,
       detail: short.slice(0, 3).map((s) => `${s.name}: short by ${-s.available}`).join("; ") });
   }
   const out = inDemand.filter((s) => s.state === "out");
   if (out.length) {
-    items.push({ id: "stock-out", severity: "high", section: "inventory",
+    items.push({ id: "stock-out", key: keyOf("stock-out", out.map((s) => s.productKey)), severity: "high", section: "inventory",
       title: `${plural(out.length, "product")} with recent demand ${out.length === 1 ? "has" : "have"} nothing available`,
       detail: out.slice(0, 3).map((s) => `${s.name}: ${s.unitsLast28} booked in 28 days, 0 available`).join("; ") });
   }
   const risk = inDemand.filter((s) => s.state === "at_risk" || s.state === "low");
   if (risk.length) {
-    items.push({ id: "stock-risk", severity: "medium", section: "inventory",
+    items.push({ id: "stock-risk", key: keyOf("stock-risk", risk.map((s) => s.productKey)), severity: "medium", section: "inventory",
       title: `${plural(risk.length, "product")} at or near the low-stock threshold`,
       detail: risk.slice(0, 3).map((s) => (s.stockOutDate && s.state === "at_risk" ? `${s.name}: indicative stock-out ${s.stockOutDate}` : `${s.name}: ${s.available} available, threshold ${s.threshold}`)).join("; ") });
   }
   const aged = m.pipeline.orders.filter((o) => o.ageDays > ATTENTION_RULES.openOrderAgeDays);
   if (aged.length) {
-    items.push({ id: "aged-orders", severity: "medium", section: "pipeline",
+    items.push({ id: "aged-orders", key: keyOf("aged-orders", aged.map((o) => o.orderId)), severity: "medium", section: "pipeline",
       title: `${plural(aged.length, "open order")} older than ${ATTENTION_RULES.openOrderAgeDays} days`,
       detail: `Oldest: ${aged[0].orderId} (${aged[0].customerName}), ${aged[0].ageDays} days, ${aged[0].remainingUnits} ball(s) still to deliver.` });
   }
   const named = m.customers.filter((c) => c.customerId !== null);
   if (named.length >= 2 && m.concentration.top1Pct > ATTENTION_RULES.concentrationPct) {
-    items.push({ id: "concentration", severity: "medium", section: "customers",
+    items.push({ id: "concentration", key: keyOf("concentration", [named[0].customerId ?? named[0].key]), severity: "medium", section: "customers",
       title: `One customer holds ${m.concentration.top1Pct.toFixed(0)}% of booked revenue`,
       detail: `${named[0].name} in ${m.periodText}.` });
   }
   const followUp = m.trials.notConverted.filter((t) => t.daysSinceTrial > ATTENTION_RULES.trialFollowUpDays);
   if (followUp.length) {
-    items.push({ id: "trials", severity: "medium", section: "customers",
+    items.push({ id: "trials", key: keyOf("trials", followUp.map((t) => t.customerId)), severity: "medium", section: "customers",
       title: `${plural(followUp.length, "trial customer")} with no regular order after ${ATTENTION_RULES.trialFollowUpDays} days`,
       detail: followUp.slice(0, 3).map((t) => `${t.name} (trial ${t.trialDate})`).join("; ") });
   }
   if (m.sufficiency.level !== "limited" && m.sufficiency.level !== "none" && m.comparisonKpis && m.comparison) {
     const c = change(m.kpis.bookedCents, m.comparisonKpis.bookedCents);
     if (c && c.pct !== null && c.pct <= -ATTENTION_RULES.revenueDropPct) {
-      items.push({ id: "revenue-drop", severity: "medium", section: "trends",
+      items.push({ id: "revenue-drop", key: keyOf("revenue-drop", [`${m.period.from}..${m.period.to}`]), severity: "medium", section: "trends",
         title: `Booked revenue ${Math.abs(c.pct).toFixed(0)}% below the comparison period`,
         detail: `${m.periodText} vs ${m.comparison.text}.` });
     }

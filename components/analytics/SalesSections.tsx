@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AnalyticsModel } from "@/lib/analytics/model";
+import { visibleAttention } from "@/lib/analytics/attentionDismissals";
 import { ATTENTION_RULES } from "@/lib/analytics/model";
 import type { ProductRow } from "@/lib/analytics/products";
 import type { CustomerRow } from "@/lib/analytics/customers";
@@ -29,8 +30,13 @@ export const ordersLink = (search: string) => `/admin/orders?search=${encodeURIC
 // Attention
 // ---------------------------------------------------------------------------
 
-export function AttentionPanel({ m }: { m: AnalyticsModel }) {
-  if (m.attention.length === 0) return null;
+/**
+ * `dismissed` holds the keys the user has closed (see lib/analytics/attentionDismissals.ts).
+ * Closing a notice only hides it for this user; no business data is touched.
+ */
+export function AttentionPanel({ m, dismissed, onDismiss }: { m: AnalyticsModel; dismissed: Set<string>; onDismiss: (key: string) => void }) {
+  const items = visibleAttention(m.attention, dismissed);
+  if (items.length === 0) return null;
   return (
     <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4" data-testid="attention-panel">
       <div className="mb-2 flex items-center gap-2">
@@ -38,9 +44,19 @@ export function AttentionPanel({ m }: { m: AnalyticsModel }) {
         <h2 className="text-sm font-bold text-amber-950">Needs attention</h2>
       </div>
       <ul className="grid gap-2 md:grid-cols-2">
-        {m.attention.map((a) => (
-          <li key={a.id} data-testid={`attention-${a.id}`}>
-            <a href={`#${a.section}`} className="flex items-start gap-2 rounded-lg bg-white/80 p-2.5 text-xs hover:bg-white">
+        {items.map((a) => (
+          <li key={a.key} data-testid={`attention-${a.id}`} data-key={a.key} className="relative">
+            <button
+              type="button"
+              onClick={() => onDismiss(a.key)}
+              aria-label={`Dismiss: ${a.title}`}
+              title="Dismiss"
+              data-testid={`attention-dismiss-${a.id}`}
+              className="absolute right-1.5 top-1.5 z-10 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+            <a href={`#${a.section}`} className="flex items-start gap-2 rounded-lg bg-white/80 p-2.5 pr-8 text-xs hover:bg-white">
               <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", a.severity === "high" ? "bg-rose-600" : "bg-amber-500")} />
               <span className="min-w-0">
                 <span className="block font-bold text-slate-900">{a.title}</span>

@@ -788,9 +788,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 relative h-full">
+      {/* The whole column scrolls, so the header scrolls away with the page instead of staying on top of it. */}
+      <div className="flex-1 flex flex-col min-w-0 relative h-full overflow-y-auto custom-scrollbar">
         {/* Dedicated Admin Top Header */}
-        <header className="sticky top-0 z-50 flex h-20 items-center justify-between border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md px-6 md:px-10 shrink-0 transition-colors">
+        <header className="relative z-50 flex h-20 items-center justify-between border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md px-6 md:px-10 shrink-0 transition-colors">
           <div className="flex items-center gap-4 flex-1">
             <button
               onClick={() => setIsMobileOpen(true)}
@@ -988,7 +989,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-6 md:p-10 lg:p-12 custom-scrollbar">
+        <main className="flex-1 p-6 md:p-10 lg:p-12">
           <div className="max-w-7xl mx-auto w-full">
             {isAccessDenied ? (
               <div className="min-h-[60vh] flex items-center justify-center">
