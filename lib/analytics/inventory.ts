@@ -80,10 +80,11 @@ export function stockCover(ds: Dataset, today: string, productKey: string | null
       const v28 = a.u28 / VELOCITY_WINDOW_DAYS;
       const v7 = a.u7 / SHORT_WINDOW_DAYS;
       let daysOfCover: number | null = null, stockOutDate: string | null = null, thresholdDate: string | null = null;
-      if (available <= 0) {
+      if (available < 0 || (available === 0 && (v28 > 0 || a.c > 0))) {
+        // Short now, or empty while there is demand.
         daysOfCover = 0;
         stockOutDate = today;
-      } else if (v28 > 0) {
+      } else if (available > 0 && v28 > 0) {
         daysOfCover = available / v28;
         stockOutDate = addDaysYmd(today, Math.floor(daysOfCover));
       }

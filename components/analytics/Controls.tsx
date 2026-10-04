@@ -63,7 +63,7 @@ export function Controls(p: ControlsProps) {
   );
 
   return (
-    <div className="sticky top-0 z-20 -mx-1 space-y-2 rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2.5 shadow-sm backdrop-blur">
+    <div className="z-20 -mx-1 space-y-2 md:sticky md:top-0 rounded-xl border border-slate-200/80 bg-white/95 px-3 py-2.5 shadow-sm backdrop-blur">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex max-w-full flex-wrap gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
           {PERIOD_PRESETS.map(({ key, label: l }) => (
