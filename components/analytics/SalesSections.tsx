@@ -218,15 +218,13 @@ export function OfficersSection({ m }: { m: AnalyticsModel }) {
   ];
   return (
     <SectionCard id="officers" title="Sales by Marketing Officer" subtitle="Who generated the sales in this period. A breakdown, not a target comparison.">
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard title="Booked vs delivered by officer" basis={["booked", "actual"]} testId="chart-officers"
-          chart={m.officers.length ? <OfficerChart rows={m.officers} /> : <Empty />}
-          table={<DataTable rows={m.officers} rowKey={(r) => r.officerId} columns={cols} />} />
-        <div className="min-w-0">
-          <DataTable rows={m.officers} rowKey={(r) => r.officerId} columns={cols} testId="officers-table" empty="No sales in this selection." />
-          <div className="mt-2"><MethodNote><p>Attributed to the Marketing Officer recorded on the order. Orders without one are “Unassigned”. Commission is not shown here.</p></MethodNote></div>
-        </div>
+      <ChartCard title="Booked vs delivered by officer" basis={["booked", "actual"]} testId="chart-officers"
+        chart={m.officers.length ? <OfficerChart rows={m.officers} /> : <Empty />}
+        table={<DataTable rows={m.officers} rowKey={(r) => r.officerId} columns={cols} />} />
+      <div className="mt-4">
+        <DataTable rows={m.officers} rowKey={(r) => r.officerId} columns={cols} testId="officers-table" empty="No sales in this selection." />
       </div>
+      <div className="mt-2"><MethodNote><p>Attributed to the Marketing Officer recorded on the order. Orders without one are “Unassigned”. Commission is not shown here.</p></MethodNote></div>
     </SectionCard>
   );
 }

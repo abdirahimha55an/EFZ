@@ -126,18 +126,16 @@ export function InventorySection({ m }: { m: AnalyticsModel }) {
   ];
   return (
     <SectionCard id="inventory" title="Sales-driven stock cover" subtitle="How long current stock lasts at the recent sales pace. For stock levels and adjustments use Inventory." actions={<BasisBadge basis="indicative" />}>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard title="Days of cover" basis={["indicative"]} testId="chart-stock" subtitle={`Dashed line: ${STOCK_OUT_ALERT_DAYS} days. Bars are capped at 90 days.`}
-          chart={m.stock.length ? <StockCoverChart rows={m.stock} /> : <div className="flex h-40 items-center justify-center text-xs text-slate-400">No active products.</div>}
-          table={<DataTable rows={m.stock} rowKey={(s) => s.productKey} columns={[cols[0], cols[3], cols[5], cols[6], cols[7]]} />} />
-        <div className="min-w-0 space-y-2">
+      <ChartCard title="Days of cover" basis={["indicative"]} testId="chart-stock" subtitle={`Dashed line: ${STOCK_OUT_ALERT_DAYS} days. Bars are capped at 90 days; products with no recent demand have no bar.`}
+        chart={m.stock.length ? <StockCoverChart rows={m.stock} /> : <div className="flex h-40 items-center justify-center text-xs text-slate-400">No active products.</div>}
+        table={<DataTable rows={m.stock} rowKey={(s) => s.productKey} columns={[cols[0], cols[3], cols[5], cols[6], cols[7]]} />} />
+      <div className="mt-4 min-w-0 space-y-2">
           <DataTable rows={m.stock} rowKey={(s) => s.productKey} columns={cols} testId="stock-table" empty="No active products." />
           <MethodNote>
             <p>Committed = balls still to deliver on open orders taken under per-delivery stock (orders taken before that change were deducted when entered, so they are not counted again). Available = on hand − committed.</p>
             <p>Pace = booked balls per day over the last {VELOCITY_WINDOW_DAYS} days (all customers; only the product filter applies). Days of cover = available ÷ pace; stock-out = today + days of cover. Booked balls are used because delivery dates are not recorded for older deliveries.</p>
             <p>With a short sales history one large order can move these dates a lot. They are indicative, not a forecast.</p>
           </MethodNote>
-        </div>
       </div>
     </SectionCard>
   );

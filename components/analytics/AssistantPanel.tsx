@@ -63,9 +63,9 @@ export function AssistantPanel({ open, onClose, ctx }: { open: boolean; onClose:
               {msg.details && msg.details.length > 0 && (
                 <dl className="mt-2 space-y-1 border-t border-slate-200 pt-2">
                   {msg.details.map((d, i) => (
-                    <div key={`${d.label}-${i}`} className="flex justify-between gap-3">
-                      <dt className="text-slate-500">{d.label}</dt>
-                      <dd className="text-right font-medium text-slate-800">{d.value}</dd>
+                    <div key={`${d.label}-${i}`} className={d.value.length > 32 ? "space-y-0.5" : "flex justify-between gap-3"}>
+                      <dt className={d.value.length > 32 ? "font-semibold text-slate-700" : "text-slate-500"}>{d.label}</dt>
+                      <dd className={d.value.length > 32 ? "text-slate-600" : "text-right font-medium text-slate-800"}>{d.value}</dd>
                     </div>
                   ))}
                 </dl>
