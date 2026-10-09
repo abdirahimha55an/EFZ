@@ -60,7 +60,8 @@ const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = 
   { id: 'edit_orders', label: 'Update Order Status', category: 'Orders' },
   { id: 'delete_orders', label: 'Delete Orders', category: 'Orders' },
   { id: 'override_order_status', label: 'Override Locked Order Statuses', category: 'Orders' },
-  
+  { id: 'manage_website_requests', label: 'Handle Website Requests (read, contact, convert)', category: 'Orders' },
+
   { id: 'view_customers', label: 'View Customer List', category: 'CRM' },
   { id: 'add_customers', label: 'Register New Customers', category: 'CRM' },
   { id: 'edit_customers', label: 'Edit Customer Info', category: 'CRM' },
@@ -99,6 +100,7 @@ const DEFAULT_PERMISSIONS: Record<UserRole, Permission[]> = {
     'view_customers', 'add_customers', 'edit_customers', 'view_all_customers',
     'view_reports', 'view_commissions', 'mark_commissions_paid',
     'view_audit_trail',
+    'manage_website_requests',   // 18
   ],
   'Marketing Officer': [
     'view_dashboard',

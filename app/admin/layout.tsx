@@ -35,7 +35,8 @@ import {
   Clock,
   Sun,
   Moon,
-  Wallet
+  Wallet,
+  Inbox
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,7 @@ import { getDb, describeDbError } from "@/lib/supabase/db";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { derivePermissions, hasPermission as can, hasAnyPermission as canAny } from "@/lib/permissions";
 import { SystemStatusBadge } from "@/components/admin/SystemStatusBadge";
+import { RequestSignalContext } from "@/components/admin/requests/RequestSignal";
 
 // Shown until the real row arrives, so the chrome never renders blank.
 const DEFAULT_SETTINGS: AdminSettings = {
@@ -64,6 +66,8 @@ const DEFAULT_SETTINGS: AdminSettings = {
 const SIDEBAR_LINKS = [
   { name: "Overview", href: "/admin", icon: LayoutDashboard, permission: 'view_dashboard' as Permission },
   { name: "Order Tracking", href: "/admin/orders", icon: ShoppingBag, permission: 'view_orders' as Permission },
+  // 18: requests from the public order page. Super Admin and Managers (manage_website_requests).
+  { name: "Website Requests", href: "/admin/requests", icon: Inbox, permission: 'manage_website_requests' as Permission },
   { name: "Sales & Analytics", href: "/admin/analytics", icon: BarChart3, permission: 'view_reports' as Permission },
   { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
   { name: "Customer Database", href: "/admin/customers", icon: UserCheck, permission: 'view_customers' as Permission },
@@ -96,20 +100,30 @@ const personalOrderAlertId = (orderId: string, profileId: string) => `order-${or
  */
 const isLegacySharedOrderAlert = (n: Notification) => n.id.startsWith("order-") && !n.id.includes("@");
 
+/** 18: "New website request" alerts are personal too: `req-<requestId>@<profileId>`. */
+const personalRequestAlertId = (requestId: string, profileId: string) => `req-${requestId}@${profileId}`;
+/** The request a `req-` alert points at, or null for any other alert. */
+const requestIdOfAlert = (n: Notification) => (n.id.startsWith("req-") && n.id.includes("@") ? n.id.slice(4, n.id.indexOf("@")) : null);
+
 /**
  * Derives the alert feed from live data and stores any new alerts:
  * - low/out-of-stock alerts are shared by all staff (stable ids `low-…` / `out-…`);
  * - "New Order" alerts are personal: only for pending orders this user may see (the
  *   orders list is RLS-scoped) and stored with user_id = this user, so RLS shows each
  *   user their own alerts and read/unread is per user.
+ * - "New website request" alerts (18) are personal in the same way, for request
+ *   handlers only, one per request still in status new. They carry no customer name
+ *   or phone; the request itself (RLS-scoped) stays the source of truth.
  * Ids are stable and the upsert ignores duplicates, so repeating this never creates
  * copies and an alert already read stays read. Returns the feed, newest first.
  */
 async function loadAlertFeed(db: ReturnType<typeof getDb>, me: AdminProfile, defaultThreshold: number): Promise<Notification[]> {
-  const [products, orders, existing] = await Promise.all([
+  const handlesRequests = can(me, "manage_website_requests");
+  const [products, orders, existing, newRequests] = await Promise.all([
     db.products.list(),
     db.orders.list({ limit: 200 }),
     db.notifications.list(),
+    handlesRequests ? db.orderRequests.newForAlerts() : Promise.resolve([]),
   ]);
 
   const derived: Array<Pick<Notification, "id" | "title" | "message" | "type"> & { userId?: string }> = [];
@@ -126,6 +140,16 @@ async function loadAlertFeed(db: ReturnType<typeof getDb>, me: AdminProfile, def
     if (o.status === 'pending') {
       derived.push({ id: personalOrderAlertId(o.id, me.id), title: "New Order", message: `Order from ${o.customer} pending.`, type: 'order', userId: me.id });
     }
+  });
+
+  newRequests.forEach(r => {
+    derived.push({
+      id: personalRequestAlertId(r.id, me.id),
+      title: "New website request",
+      message: `${r.items} item(s), submitted ${new Date(r.createdAt).toLocaleString()}.`,
+      type: 'order',
+      userId: me.id,
+    });
   });
 
   const unseen = derived.filter(alert => !existing.some(n => n.id === alert.id));
@@ -156,6 +180,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [profile, setProfile] = useState<AdminProfile | null>(null);
   const [settings, setSettings] = useState<AdminSettings>(DEFAULT_SETTINGS);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  // 18: open website requests (badge) and a version the Website Requests page re-reads on.
+  const [openRequestCount, setOpenRequestCount] = useState<number | null>(null);
+  const [requestSignalVersion, setRequestSignalVersion] = useState(0);
+  const refreshNowRef = useRef<() => void>(() => {});
   const [toast, setToast] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [dataCounts, setDataCounts] = useState<Record<string, number>>({});
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
@@ -180,6 +208,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       // their alerts must not show, or be refreshed, under the next sign-in.
       setProfile(null);
       setNotifications([]);
+      setOpenRequestCount(null);
       try {
         const db = getDb();
         const nextProfile = await db.auth.getProfile();
@@ -206,6 +235,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         if (cancelled) return;
 
         setNotifications(feed);
+
+        if (can(nextProfile, "manage_website_requests")) {
+          const openRequests = await db.orderRequests.openCount();
+          if (!cancelled) setOpenRequestCount(openRequests);
+        }
       } catch (error) {
         if (!cancelled) console.error("[ADMIN LAYOUT] Failed to load:", describeDbError(error));
       } finally {
@@ -268,6 +302,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             if (signedInId !== me.id) break;
             const feed = await loadAlertFeed(getDb(), me, alertThresholdRef.current);
             if (!stopped) setNotifications(feed);
+            // 18: badge count, and tell the Website Requests page to re-read.
+            if (can(me, "manage_website_requests")) {
+              const openRequests = await getDb().orderRequests.openCount();
+              if (!stopped) {
+                setOpenRequestCount(openRequests);
+                setRequestSignalVersion(v => v + 1);
+              }
+            }
           } catch (error) {
             if (!stopped) console.error("[ADMIN LAYOUT] Alert refresh failed:", describeDbError(error));
           }
@@ -290,9 +332,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       window.clearTimeout(signalTimer);
       signalTimer = window.setTimeout(() => void refresh(), ALERT_SIGNAL_DEBOUNCE_MS);
     };
+    // The Website Requests page asks for a refresh after its own changes.
+    refreshNowRef.current = onOrderChange;
 
     // One channel per tab: drop any left over from an earlier user or mount.
     // Each mount gets its own topic, so it never reuses a channel still closing.
+    // 18: order_requests rides the same channel and the same refresh. RLS
+    // (order_requests_select) delivers its events to request handlers only, and
+    // the payload - which holds a visitor's details - is never read.
     supabase.getChannels()
       .filter(c => c.topic.startsWith(`realtime:${ORDER_ALERT_TOPIC}:`))
       .forEach(c => void supabase.removeChannel(c));
@@ -300,6 +347,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       .channel(`${ORDER_ALERT_TOPIC}:${alertProfileId}:${Date.now().toString(36)}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "orders" }, onOrderChange)
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "orders" }, onOrderChange)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "order_requests" }, onOrderChange)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "order_requests" }, onOrderChange)
       .subscribe(status => {
         // Changes made while the channel was down are not replayed: catch up on
         // every (re)join. Errors need nothing here - the client rejoins by
@@ -318,6 +367,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
       void supabase.removeChannel(channel);
+      refreshNowRef.current = () => {};
     };
   }, [isLoginPage, alertProfileId]);
 
@@ -715,7 +765,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     <Icon className="h-4 w-4" />
                   </div>
                   {link.name}
-                  {isActive && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+                  {/* 18: open requests (new, contacted, confirmed), RLS-scoped to this user. */}
+                  {link.href === '/admin/requests' && (openRequestCount ?? 0) > 0 && (
+                    <span
+                      className={cn("ml-auto min-w-5 rounded-full px-1.5 text-center text-[10px] font-bold", isActive ? "bg-white text-brand-blue" : "bg-red-500 text-white")}
+                      data-testid="requests-badge"
+                    >
+                      {openRequestCount}
+                    </span>
+                  )}
+                  {isActive && link.href !== '/admin/requests' && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
                 </Link>
               );
             })}
@@ -898,14 +957,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     </div>
                     <div className="max-h-80 overflow-y-auto">
                       {notifications.length > 0 ? (
-                        notifications.map(n => (
-                          <div key={n.id} className={cn("p-4 border-b border-slate-50 transition-colors", !n.read && "bg-blue-50/30")}>
+                        notifications.map(n => {
+                          const requestId = requestIdOfAlert(n);
+                          const body = (
                             <div className="flex gap-3">
                               <div className={cn(
                                 "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
                                 n.type === 'stock' ? "bg-amber-100 text-amber-600" : "bg-blue-100 text-blue-600"
                               )}>
-                                {n.type === 'stock' ? <Package className="h-4 w-4" /> : <ShoppingBag className="h-4 w-4" />}
+                                {n.type === 'stock' ? <Package className="h-4 w-4" /> : requestId ? <Inbox className="h-4 w-4" /> : <ShoppingBag className="h-4 w-4" />}
                               </div>
                               <div className="min-w-0">
                                 <p className="text-xs font-bold text-slate-900">{n.title}</p>
@@ -913,8 +973,29 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                                 <p className="text-[9px] text-slate-400 mt-1">{new Date(n.date).toLocaleTimeString()}</p>
                               </div>
                             </div>
-                          </div>
-                        ))
+                          );
+                          // 18: a website-request alert opens that request.
+                          return requestId ? (
+                            <Link
+                              key={n.id}
+                              href={`/admin/requests?id=${requestId}`}
+                              onClick={() => {
+                                setIsNotificationsOpen(false);
+                                if (!n.read) {
+                                  setNotifications(current => current.map(x => (x.id === n.id ? { ...x, read: true } : x)));
+                                  void getDb().notifications.markRead(n.id).catch(() => {});
+                                }
+                              }}
+                              className={cn("block p-4 border-b border-slate-50 transition-colors hover:bg-slate-50", !n.read && "bg-blue-50/30")}
+                            >
+                              {body}
+                            </Link>
+                          ) : (
+                            <div key={n.id} className={cn("p-4 border-b border-slate-50 transition-colors", !n.read && "bg-blue-50/30")}>
+                              {body}
+                            </div>
+                          );
+                        })
                       ) : (
                         <div className="p-8 text-center">
                           <p className="text-sm text-slate-400">No notifications</p>
@@ -1011,7 +1092,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   </Button>
                 </div>
               </div>
-            ) : children}
+            ) : (
+              <RequestSignalContext.Provider
+                value={{ version: requestSignalVersion, openCount: openRequestCount, refresh: () => refreshNowRef.current() }}
+              >
+                {children}
+              </RequestSignalContext.Provider>
+            )}
           </div>
           
           <footer className="py-10 text-center">

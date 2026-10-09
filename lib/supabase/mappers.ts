@@ -20,6 +20,9 @@ import type {
   StockMovement,
   SystemIssue,
   SystemLog,
+  WebsiteRequest,
+  WebsiteRequestEvent,
+  WebsiteRequestNote,
 } from "@/lib/types";
 
 import type {
@@ -28,6 +31,10 @@ import type {
   CustomerUpdate,
   NotificationRow,
   OrderDetailsRow,
+  OrderRequestEventRow,
+  OrderRequestLineRow,
+  OrderRequestNoteRow,
+  OrderRequestRow,
   ProductUpdate,
   StaffProductRow,
   ProfileRow,
@@ -343,6 +350,68 @@ export function toNotification(row: NotificationRow): Notification {
     type: row.type,
     date: row.created_at,
     read: row.read,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Website requests (migration 18)
+// ---------------------------------------------------------------------------
+
+/** REQ-<first 8 of the id>: the short reference the database writes in the audit trail. */
+export const websiteRequestReference = (id: string): string => `REQ-${id.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+export function toWebsiteRequest(row: OrderRequestRow, lines: OrderRequestLineRow[]): WebsiteRequest {
+  return {
+    id: row.id,
+    reference: websiteRequestReference(row.id),
+    customerName: row.customer_name,
+    phone: row.phone,
+    phoneCanonical: row.phone_canonical ?? null,
+    organization: row.organization,
+    deliveryLocation: row.delivery_location,
+    visitorNotes: row.notes,
+    status: row.status,
+    convertedOrderId: row.converted_order_id,
+    handledBy: row.handled_by,
+    assignedTo: row.assigned_to ?? null,
+    rejectedReason: row.rejected_reason ?? null,
+    statusChangedAt: row.status_changed_at ?? null,
+    createdAt: row.created_at,
+    lines: [...lines]
+      .sort((a, b) => a.line_no - b.line_no)
+      .map((l) => ({
+        lineNo: l.line_no,
+        productId: l.product_id,
+        productName: l.product_name,
+        quantity: num(l.quantity),
+        legacy: l.legacy,
+      })),
+  };
+}
+
+export function toWebsiteRequestNote(row: OrderRequestNoteRow): WebsiteRequestNote {
+  return {
+    id: row.id,
+    body: row.body,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    editedBy: row.edited_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function toWebsiteRequestEvent(row: OrderRequestEventRow): WebsiteRequestEvent {
+  return {
+    seq: num(row.seq),
+    event: row.event,
+    source: row.source,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    actorName: row.actor_name,
+    orderId: row.order_id,
+    note: row.note,
+    occurredAt: row.occurred_at,
   };
 }
 

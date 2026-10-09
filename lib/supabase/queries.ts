@@ -28,6 +28,11 @@ import type {
   LogCategory,
   LogSeverity,
   UserRole,
+  CustomerMatch,
+  WebsiteRequest,
+  WebsiteRequestEvent,
+  WebsiteRequestNote,
+  WebsiteRequestStatus,
 } from "@/lib/types";
 
 import type {
@@ -44,7 +49,8 @@ import type {
   OperationalMetrics,
   OrderDeliveryLineRow,
   OrderDeliveryRow,
-  OrderRequestRow,
+  OrderRequestLineRow,
+  CustomerMatchRow,
   OrderUpdate,
   ProductSalesRow,
   PublicProductRow,
@@ -72,6 +78,9 @@ import {
   toSystemIssue,
   toSystemLog,
   toTestimonial,
+  toWebsiteRequest,
+  toWebsiteRequestEvent,
+  toWebsiteRequestNote,
   type Testimonial,
 } from "./mappers";
 
@@ -283,15 +292,26 @@ export type CustomerInput = {
   notes?: string;
 };
 
+/** What the public /order form sends (migration 18: one request, 1-20 product lines). */
 export type OrderRequestInput = {
   customerName: string;
   phone: string;
   organization?: string;
-  productId?: string;
-  productName?: string;
-  quantity: number;
   deliveryLocation?: string;
   notes?: string;
+  lines: { productId: string; quantity: number }[];
+  /** Made once per form; the same key again returns the first request (double submit). */
+  submissionKey?: string;
+};
+
+/** Convert to Order: an existing customer, or a new one (optionally owned by a Marketing Officer). */
+export type ConvertRequestInput = {
+  customer:
+    | { kind: "existing"; customerId: string }
+    | { kind: "new"; name: string; phone: string; email?: string; notes?: string; ownerOfficerId?: string; confirmNoDuplicate?: boolean };
+  lines: { productId: string; quantity: number; actualUnitPrice: number }[];
+  deliveryNotes?: string;
+  belowCostReason?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -944,52 +964,155 @@ export function createDb(client: EfzSupabaseClient) {
   };
 
   // -------------------------------------------------------------------------
-  // Public order requests
+  // Website requests (migration 18). A request is a lead: none of these calls
+  // touches stock, prices, payments or commissions. Only convert() creates an
+  // order, inside the database, through the unchanged create_order().
+  // Reads are RLS-scoped to request handlers (manage_website_requests).
   // -------------------------------------------------------------------------
   const orderRequests = {
     /**
-     * Called from the public order form. Works for signed-out visitors.
-     *
-     * No `.select()` after the insert: anon may write a request but never read
-     * one back, and RETURNING would be checked against the (absent) anon
-     * select policy and fail. The id is generated here instead.
+     * Called from the public order form; works for signed-out visitors. One
+     * database call stores the request and all its lines, after the phone check,
+     * the per-phone limit and the double-submit check. Returns the request id.
      */
     async submit(input: OrderRequestInput): Promise<string> {
-      const id = globalThis.crypto?.randomUUID?.();
-      const { error } = await client
-        .from("order_requests")
-        .insert({
-          ...(id ? { id } : {}),
-          customer_name: input.customerName,
+      const { data, error } = await client.rpc("submit_order_request", {
+        p_payload: {
+          customerName: input.customerName,
           phone: input.phone,
           organization: input.organization ?? "",
-          product_id: input.productId ?? null,
-          product_name: input.productName ?? "",
-          quantity: Math.max(1, Math.round(input.quantity)),
-          delivery_location: input.deliveryLocation ?? "",
+          deliveryLocation: input.deliveryLocation ?? "",
           notes: input.notes ?? "",
-        });
-
+          lines: input.lines.map((l) => ({ productId: l.productId, quantity: Math.round(l.quantity) })),
+          submissionKey: input.submissionKey ?? null,
+        } as unknown as Json,
+      });
       if (error) throw new EfzDbError("orderRequests.submit", error);
-      return id ?? "";
+      return data as string;
     },
 
-    async list(status?: OrderRequestRow["status"]): Promise<OrderRequestRow[]> {
-      let query = client.from("order_requests").select("*").order("created_at", { ascending: false });
-      if (status) query = query.eq("status", status);
-      return unwrapList("orderRequests.list", await query);
+    /** Every request this user may read, newest first, with its lines. */
+    async list(): Promise<WebsiteRequest[]> {
+      const [rows, lines] = await Promise.all([
+        unwrapList(
+          "orderRequests.list",
+          await client.from("order_requests").select("*").order("created_at", { ascending: false }).limit(1000)
+        ),
+        unwrapList("orderRequests.lines", await client.from("order_request_lines").select("*").limit(20000)),
+      ]);
+      const byRequest = new Map<string, OrderRequestLineRow[]>();
+      for (const line of lines) {
+        const list = byRequest.get(line.request_id) ?? [];
+        list.push(line);
+        byRequest.set(line.request_id, list);
+      }
+      return rows.map((row) => toWebsiteRequest(row, byRequest.get(row.id) ?? []));
     },
 
-    async setStatus(id: string, status: OrderRequestRow["status"]): Promise<void> {
-      const { error } = await client.from("order_requests").update({ status }).eq("id", id);
+    /** Requests still in status new (for the personal alert feed): id, time and line count. */
+    async newForAlerts(): Promise<{ id: string; createdAt: string; items: number }[]> {
+      const rows = unwrapList(
+        "orderRequests.newForAlerts",
+        await client.from("order_requests").select("id, created_at").eq("status", "new").order("created_at", { ascending: false }).limit(200)
+      );
+      if (rows.length === 0) return [];
+      const lines = unwrapList(
+        "orderRequests.newForAlerts.lines",
+        await client.from("order_request_lines").select("request_id").in("request_id", rows.map((r) => r.id))
+      );
+      return rows.map((r) => ({ id: r.id, createdAt: r.created_at, items: lines.filter((l) => l.request_id === r.id).length }));
+    },
+
+    /** Open requests (new, contacted, confirmed) this user may read - the menu badge. */
+    async openCount(): Promise<number> {
+      const { count, error } = await client
+        .from("order_requests")
+        .select("id", { count: "exact", head: true })
+        .in("status", ["new", "contacted", "confirmed"]);
+      if (error) throw new EfzDbError("orderRequests.openCount", error);
+      return count ?? 0;
+    },
+
+    /** Timeline and staff notes of one request. */
+    async activity(requestId: string): Promise<{ notes: WebsiteRequestNote[]; events: WebsiteRequestEvent[] }> {
+      const [notes, events] = await Promise.all([
+        unwrapList(
+          "orderRequests.notes",
+          await client.from("order_request_notes").select("*").eq("request_id", requestId).order("created_at")
+        ),
+        unwrapList(
+          "orderRequests.events",
+          await client.from("order_request_events").select("*").eq("request_id", requestId).order("seq")
+        ),
+      ]);
+      return { notes: notes.map(toWebsiteRequestNote), events: events.map(toWebsiteRequestEvent) };
+    },
+
+    /** new -> contacted / confirmed / rejected, contacted -> confirmed / rejected, confirmed -> rejected. */
+    async setStatus(requestId: string, to: Exclude<WebsiteRequestStatus, "new" | "converted">, reason?: string): Promise<void> {
+      const { error } = await client.rpc("set_order_request_status", {
+        p_request_id: requestId,
+        p_to: to,
+        p_reason: reason ?? null,
+      });
       if (error) throw new EfzDbError("orderRequests.setStatus", error);
     },
 
-    /** Turns a website submission into a real order in one transaction. */
-    async convert(requestId: string, customerId: string): Promise<string> {
-      const { data, error } = await client.rpc("convert_order_request", {
+    async addNote(requestId: string, body: string): Promise<string> {
+      const { data, error } = await client.rpc("add_order_request_note", { p_request_id: requestId, p_body: body });
+      if (error) throw new EfzDbError("orderRequests.addNote", error);
+      return data as string;
+    },
+
+    async editNote(noteId: string, body: string): Promise<void> {
+      const { error } = await client.rpc("edit_order_request_note", { p_note_id: noteId, p_body: body });
+      if (error) throw new EfzDbError("orderRequests.editNote", error);
+    },
+
+    /** Existing customers whose phone is the same number (canonical form). Never matches by name. */
+    async findCustomers(requestId: string, phone?: string): Promise<CustomerMatch[]> {
+      const { data, error } = await client.rpc("find_customers_by_phone", {
         p_request_id: requestId,
-        p_customer_id: customerId,
+        p_phone: phone?.trim() ? phone : null,
+      });
+      if (error) throw new EfzDbError("orderRequests.findCustomers", error);
+      return ((data ?? []) as CustomerMatchRow[]).map((m) => ({
+        customerId: m.customer_id,
+        name: m.name,
+        phoneMasked: m.phone_masked,
+        officerId: m.officer_id,
+        officerName: m.officer_name,
+        status: m.status,
+      }));
+    },
+
+    /**
+     * One transaction in the database: the customer (existing or new, with an
+     * optional initial owner), one order with all lines through create_order(),
+     * and the request marked converted and linked. Returns the order id.
+     */
+    async convert(requestId: string, input: ConvertRequestInput): Promise<string> {
+      const customer =
+        input.customer.kind === "existing"
+          ? { customerId: input.customer.customerId }
+          : {
+              newCustomer: {
+                name: input.customer.name,
+                phone: input.customer.phone,
+                email: input.customer.email ?? "",
+                notes: input.customer.notes ?? "",
+                ...(input.customer.ownerOfficerId ? { ownerOfficerId: input.customer.ownerOfficerId } : {}),
+              },
+              confirmNoDuplicate: input.customer.confirmNoDuplicate ?? false,
+            };
+      const { data, error } = await client.rpc("convert_website_request", {
+        p_request_id: requestId,
+        p_payload: {
+          ...customer,
+          lines: input.lines,
+          deliveryNotes: input.deliveryNotes ?? "",
+          ...(input.belowCostReason ? { belowCostReason: input.belowCostReason } : {}),
+        } as unknown as Json,
       });
       if (error) throw new EfzDbError("orderRequests.convert", error);
       return data as string;

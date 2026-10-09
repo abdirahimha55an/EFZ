@@ -1,0 +1,7 @@
+# Migration 18 SQL and its generator inputs are executed and hashed byte for byte:
+# keep them LF in every checkout, on every platform (core.autocrlf would otherwise
+# turn them into CRLF on Windows, and psql would carry the CRs into function bodies).
+supabase/18*.sql            text eol=lf
+supabase/rollback/18*.sql   text eol=lf
+supabase/production/m18/**  text eol=lf
+supabase/staging/staging_checks_18.sql  text eol=lf

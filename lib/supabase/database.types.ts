@@ -47,7 +47,7 @@ export type DbLogCategory =
   | "PRODUCT";
 export type DbCommissionStatus = "pending" | "approved" | "paid" | "void";
 export type DbNotificationType = "stock" | "order" | "system";
-export type DbOrderRequestStatus = "new" | "contacted" | "converted" | "rejected";
+export type DbOrderRequestStatus = "new" | "contacted" | "confirmed" | "converted" | "rejected";
 
 export type ProfileRow = {
   id: string;
@@ -197,6 +197,70 @@ export type OrderRequestRow = {
   handled_by: string | null;
   created_at: string;
   updated_at: string;
+  // 18
+  assigned_to: string | null;
+  status_changed_at: string | null;
+  rejected_reason: string | null;
+  submission_key: string | null;
+  phone_canonical: string | null;
+};
+
+// Migration 18: read-only to clients (written by the website-request RPCs).
+export type OrderRequestLineRow = {
+  request_id: string;
+  line_no: number;
+  product_id: string | null;
+  product_name: string;
+  quantity: number;
+  legacy: boolean;
+};
+
+export type OrderRequestNoteRow = {
+  id: string;
+  request_id: string;
+  body: string;
+  author_id: string | null;
+  author_name: string;
+  edited_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrderRequestEventRow = {
+  id: string;
+  seq: number;
+  request_id: string;
+  event: "submitted" | "status_changed" | "converted" | "note_added" | "note_edited";
+  source: "rpc" | "legacy_direct" | null;
+  from_status: string | null;
+  to_status: string | null;
+  actor_id: string | null;
+  actor_name: string;
+  order_id: string | null;
+  note: string | null;
+  details: Json;
+  occurred_at: string;
+};
+
+export type WebsiteRequestSettingsRow = {
+  id: boolean;
+  max_new_per_phone: number;
+  window_hours: number;
+  limit_enabled: boolean;
+  default_phone_country: string;
+  so_leading_digits: string;
+  accept_international: boolean;
+  updated_by: string | null;
+  updated_at: string;
+};
+
+export type CustomerMatchRow = {
+  customer_id: string;
+  name: string;
+  phone_masked: string;
+  officer_id: string | null;
+  officer_name: string;
+  status: DbCustomerStatus;
 };
 
 export type CommissionRow = {
@@ -675,6 +739,12 @@ export type Database = {
       order_delivery_lines: Table<OrderDeliveryLineRow, Record<string, never>, Record<string, never>>;
       // Read-only to clients: written only by set_commission_eligibility() in 16.
       commission_eligibility_changes: Table<CommissionEligibilityChangeRow, Record<string, never>, Record<string, never>>;
+      // Read-only to clients: written only by the website-request RPCs in 18.
+      order_request_items: Table<Omit<OrderRequestLineRow, "legacy"> & { id: string; created_at: string }, Record<string, never>, Record<string, never>>;
+      order_request_notes: Table<OrderRequestNoteRow, Record<string, never>, Record<string, never>>;
+      order_request_events: Table<OrderRequestEventRow, Record<string, never>, Record<string, never>>;
+      // Readable by request handlers; only the Super Admin may change it (RLS).
+      website_request_settings: Table<WebsiteRequestSettingsRow, Record<string, never>>;
     };
     Views: {
       public_products: View<PublicProductRow>;
@@ -688,6 +758,8 @@ export type Database = {
       product_sales: View<ProductSalesRow>;
       customer_transfer_notices: View<CustomerTransferNoticeRow>;
       commission_eligibility_status: View<CommissionEligibilityStatusRow>;
+      // 18: request lines, or the legacy header product as line 1 (caller's RLS applies).
+      order_request_lines: View<OrderRequestLineRow>;
     };
     Functions: {
       create_order: { Args: { payload: Json }; Returns: string };
@@ -735,7 +807,13 @@ export type Database = {
       };
       set_user_permissions: { Args: { p_user_id: string; p_codes: string[] }; Returns: undefined };
       grant_role_preset: { Args: { p_user_id: string; p_role: DbUserRole }; Returns: undefined };
-      convert_order_request: { Args: { p_request_id: string; p_customer_id: string }; Returns: string };
+      // Migration 18 (website requests). convert_order_request is retired (no client grant).
+      submit_order_request: { Args: { p_payload: Json }; Returns: string };
+      set_order_request_status: { Args: { p_request_id: string; p_to: string; p_reason?: string | null }; Returns: undefined };
+      add_order_request_note: { Args: { p_request_id: string; p_body: string }; Returns: string };
+      edit_order_request_note: { Args: { p_note_id: string; p_body: string }; Returns: undefined };
+      find_customers_by_phone: { Args: { p_request_id: string; p_phone?: string | null }; Returns: CustomerMatchRow[] };
+      convert_website_request: { Args: { p_request_id: string; p_payload: Json }; Returns: string };
       transfer_customer_owner: {
         Args: { p_customer_id: string; p_new_officer_id: string; p_reason: string };
         Returns: Json;

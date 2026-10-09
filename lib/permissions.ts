@@ -104,6 +104,12 @@ export function derivePermissions(profile: AdminProfile | null | undefined) {
     viewCommissions: can("view_commissions"),
     markCommissionsPaid: can("mark_commissions_paid"),
 
+    /**
+     * 18: website requests - read, work and convert (can_access_order_request()).
+     * Super Admin always; Managers through their preset; never Marketing Officers by default.
+     */
+    handleWebsiteRequests: can("manage_website_requests"),
+
     manageUsers: can("manage_users"),
     changeSettings: can("change_settings"),
     viewDiagnostics: can("view_diagnostics"),

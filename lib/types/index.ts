@@ -6,7 +6,8 @@ export const OFFICIAL_PERMISSIONS = [
   'mark_commissions_paid', 'manage_users', 'change_settings',
   'view_all_customers', 'view_own_customers_only',
   'view_diagnostics', 'view_audit_trail', 'manage_system',
-  'override_order_status'
+  'override_order_status',
+  'manage_website_requests'
 ] as const;
 
 export type Permission = typeof OFFICIAL_PERMISSIONS[number];
@@ -256,6 +257,92 @@ export type Notification = {
   type: 'stock' | 'order' | 'system';
   date: string;
   read: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Website requests (migration 18): what a visitor asked for on /order. A lead,
+// never an order: no stock, price or money is attached until a request handler
+// converts it with convert_website_request(), which calls create_order().
+// ---------------------------------------------------------------------------
+
+export type WebsiteRequestStatus = 'new' | 'contacted' | 'confirmed' | 'converted' | 'rejected';
+
+/** Requests that still need staff action (the menu badge counts these). */
+export const OPEN_WEBSITE_REQUEST_STATUSES: WebsiteRequestStatus[] = ['new', 'contacted', 'confirmed'];
+
+/**
+ * The moves set_order_request_status() accepts (design C). converted is reached
+ * only through Convert to Order; converted and rejected are final.
+ */
+export const WEBSITE_REQUEST_TRANSITIONS: Record<WebsiteRequestStatus, WebsiteRequestStatus[]> = {
+  new: ['contacted', 'confirmed', 'rejected'],
+  contacted: ['confirmed', 'rejected'],
+  confirmed: ['rejected'],
+  converted: [],
+  rejected: [],
+};
+
+/** One requested product. legacy = a pre-18 request shown from its header columns. */
+export type WebsiteRequestLine = {
+  lineNo: number;
+  productId: string | null;
+  productName: string;
+  quantity: number;
+  legacy: boolean;
+};
+
+export type WebsiteRequest = {
+  id: string;
+  /** Short reference used in the audit trail: REQ-<first 8 of the id>. */
+  reference: string;
+  customerName: string;
+  phone: string;
+  phoneCanonical: string | null;
+  organization: string;
+  deliveryLocation: string;
+  /** The visitor's own notes from the form (read only). */
+  visitorNotes: string;
+  status: WebsiteRequestStatus;
+  convertedOrderId: string | null;
+  handledBy: string | null;
+  assignedTo: string | null;
+  rejectedReason: string | null;
+  statusChangedAt: string | null;
+  createdAt: string;
+  lines: WebsiteRequestLine[];
+};
+
+/** A staff processing note: belongs to the request, never copied to the order. */
+export type WebsiteRequestNote = {
+  id: string;
+  body: string;
+  authorId: string | null;
+  authorName: string;
+  editedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WebsiteRequestEvent = {
+  seq: number;
+  event: 'submitted' | 'status_changed' | 'converted' | 'note_added' | 'note_edited';
+  source: 'rpc' | 'legacy_direct' | null;
+  fromStatus: string | null;
+  toStatus: string | null;
+  actorName: string;
+  orderId: string | null;
+  note: string | null;
+  occurredAt: string;
+};
+
+/** A possible match for conversion, by canonical phone. Phone is masked by the database. */
+export type CustomerMatch = {
+  customerId: string;
+  name: string;
+  phoneMasked: string;
+  officerId: string | null;
+  officerName: string;
+  status: 'active' | 'archived';
 };
 
 export type AdminSettings = {
