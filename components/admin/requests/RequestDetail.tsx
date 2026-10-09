@@ -266,17 +266,20 @@ export function RequestDetail({ request, profile, staff, onClose, onChanged }: P
       </div>
 
       {converting && (
-        <ConvertRequestDialog
-          request={request}
-          profile={profile}
-          staff={staff}
-          onClose={() => setConverting(false)}
-          onConverted={async () => {
-            setConverting(false);
-            await onChanged();
-            await loadActivity();
-          }}
-        />
+        // The dialog sits inside this overlay, whose onClick closes the request: keep its clicks from reaching it.
+        <div onClick={(e) => e.stopPropagation()}>
+          <ConvertRequestDialog
+            request={request}
+            profile={profile}
+            staff={staff}
+            onClose={() => setConverting(false)}
+            onConverted={async () => {
+              setConverting(false);
+              await onChanged();
+              await loadActivity();
+            }}
+          />
+        </div>
       )}
     </div>
   );
