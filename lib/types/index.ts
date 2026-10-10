@@ -7,7 +7,10 @@ export const OFFICIAL_PERMISSIONS = [
   'view_all_customers', 'view_own_customers_only',
   'view_diagnostics', 'view_audit_trail', 'manage_system',
   'override_order_status',
-  'manage_website_requests'
+  'manage_website_requests',
+  // 19: delegated website-request capabilities (granted explicitly, never by role)
+  'view_website_requests', 'view_all_website_requests', 'assign_website_requests',
+  'reject_website_requests', 'convert_website_requests'
 ] as const;
 
 export type Permission = typeof OFFICIAL_PERMISSIONS[number];
@@ -325,14 +328,23 @@ export type WebsiteRequestNote = {
 
 export type WebsiteRequestEvent = {
   seq: number;
-  event: 'submitted' | 'status_changed' | 'converted' | 'note_added' | 'note_edited';
+  event: 'submitted' | 'status_changed' | 'converted' | 'note_added' | 'note_edited' | 'assigned';
   source: 'rpc' | 'legacy_direct' | null;
   fromStatus: string | null;
   toStatus: string | null;
   actorName: string;
   orderId: string | null;
   note: string | null;
+  /** 19: for 'assigned' - who it went to; null when it was unassigned. */
+  assignedToName: string | null;
   occurredAt: string;
+};
+
+/** 19: staff a website request can be assigned to (active, allowed to view requests). */
+export type WebsiteRequestAssignee = {
+  id: string;
+  name: string;
+  role: string;
 };
 
 /** A possible match for conversion, by canonical phone. Phone is masked by the database. */

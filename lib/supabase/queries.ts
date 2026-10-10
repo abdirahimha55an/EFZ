@@ -30,6 +30,7 @@ import type {
   UserRole,
   CustomerMatch,
   WebsiteRequest,
+  WebsiteRequestAssignee,
   WebsiteRequestEvent,
   WebsiteRequestNote,
   WebsiteRequestStatus,
@@ -967,7 +968,8 @@ export function createDb(client: EfzSupabaseClient) {
   // Website requests (migration 18). A request is a lead: none of these calls
   // touches stock, prices, payments or commissions. Only convert() creates an
   // order, inside the database, through the unchanged create_order().
-  // Reads are RLS-scoped to request handlers (manage_website_requests).
+  // Reads are RLS-scoped by can_access_order_request(): view_website_requests, and
+  // view_all_website_requests or being the request's assignee (migration 19).
   // -------------------------------------------------------------------------
   const orderRequests = {
     /**
@@ -1056,6 +1058,19 @@ export function createDb(client: EfzSupabaseClient) {
         p_reason: reason ?? null,
       });
       if (error) throw new EfzDbError("orderRequests.setStatus", error);
+    },
+
+    /** 19: assign, reassign or (null) unassign. Recorded on the timeline; the assignee is notified. */
+    async assign(requestId: string, assigneeId: string | null): Promise<void> {
+      const { error } = await client.rpc("assign_order_request", { p_request_id: requestId, p_assignee: assigneeId });
+      if (error) throw new EfzDbError("orderRequests.assign", error);
+    },
+
+    /** 19: who a request can be assigned to (active staff allowed to view requests). Needs assign_website_requests. */
+    async assignees(): Promise<WebsiteRequestAssignee[]> {
+      const { data, error } = await client.rpc("website_request_assignees");
+      if (error) throw new EfzDbError("orderRequests.assignees", error);
+      return (data ?? []) as WebsiteRequestAssignee[];
     },
 
     async addNote(requestId: string, body: string): Promise<string> {

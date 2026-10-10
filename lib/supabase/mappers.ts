@@ -411,6 +411,11 @@ export function toWebsiteRequestEvent(row: OrderRequestEventRow): WebsiteRequest
     actorName: row.actor_name,
     orderId: row.order_id,
     note: row.note,
+    // 19: 'assigned' events carry the assignee in details (database-written)
+    assignedToName:
+      row.event === "assigned" && row.details && typeof row.details === "object" && !Array.isArray(row.details)
+        ? ((row.details as { toName?: string }).toName || null)
+        : null,
     occurredAt: row.occurred_at,
   };
 }

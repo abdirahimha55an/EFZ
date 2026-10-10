@@ -230,7 +230,7 @@ export type OrderRequestEventRow = {
   id: string;
   seq: number;
   request_id: string;
-  event: "submitted" | "status_changed" | "converted" | "note_added" | "note_edited";
+  event: "submitted" | "status_changed" | "converted" | "note_added" | "note_edited" | "assigned";
   source: "rpc" | "legacy_direct" | null;
   from_status: string | null;
   to_status: string | null;
@@ -814,6 +814,9 @@ export type Database = {
       edit_order_request_note: { Args: { p_note_id: string; p_body: string }; Returns: undefined };
       find_customers_by_phone: { Args: { p_request_id: string; p_phone?: string | null }; Returns: CustomerMatchRow[] };
       convert_website_request: { Args: { p_request_id: string; p_payload: Json }; Returns: string };
+      // Migration 19 (delegated request handling).
+      assign_order_request: { Args: { p_request_id: string; p_assignee: string | null }; Returns: undefined };
+      website_request_assignees: { Args: Record<string, never>; Returns: { id: string; name: string; role: string }[] };
       transfer_customer_owner: {
         Args: { p_customer_id: string; p_new_officer_id: string; p_reason: string };
         Returns: Json;

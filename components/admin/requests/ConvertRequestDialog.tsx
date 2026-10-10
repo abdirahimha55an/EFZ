@@ -280,13 +280,16 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                   <span className="text-[10px] font-bold uppercase text-slate-500">Email (optional)</span>
                   <input value={newCustomer.email} onChange={(e) => setNewCustomer({ ...newCustomer, email: e.target.value })} className="w-full rounded-md border border-slate-200 p-2" />
                 </label>
-                <label className="space-y-1">
-                  <span className="text-[10px] font-bold uppercase text-slate-500">Initial Marketing Officer (optional)</span>
-                  <select value={newCustomer.ownerOfficerId} onChange={(e) => setNewCustomer({ ...newCustomer, ownerOfficerId: e.target.value })} className="w-full rounded-md border border-slate-200 p-2">
-                    <option value="">None - leave unassigned</option>
-                    {officers.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                  </select>
-                </label>
+                {/* 19: setting the initial owner needs assign_website_requests (checked again by convert_website_request). */}
+                {perms.assignWebsiteRequests && (
+                  <label className="space-y-1">
+                    <span className="text-[10px] font-bold uppercase text-slate-500">Initial Marketing Officer (optional)</span>
+                    <select value={newCustomer.ownerOfficerId} onChange={(e) => setNewCustomer({ ...newCustomer, ownerOfficerId: e.target.value })} className="w-full rounded-md border border-slate-200 p-2">
+                      <option value="">None - leave unassigned</option>
+                      {officers.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </label>
+                )}
                 <label className="space-y-1 sm:col-span-2">
                   <span className="text-[10px] font-bold uppercase text-slate-500">Customer notes</span>
                   <input value={newCustomer.notes} onChange={(e) => setNewCustomer({ ...newCustomer, notes: e.target.value })} className="w-full rounded-md border border-slate-200 p-2" />

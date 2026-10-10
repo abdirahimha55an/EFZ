@@ -66,8 +66,8 @@ const DEFAULT_SETTINGS: AdminSettings = {
 const SIDEBAR_LINKS = [
   { name: "Overview", href: "/admin", icon: LayoutDashboard, permission: 'view_dashboard' as Permission },
   { name: "Order Tracking", href: "/admin/orders", icon: ShoppingBag, permission: 'view_orders' as Permission },
-  // 18: requests from the public order page. Super Admin and Managers (manage_website_requests).
-  { name: "Website Requests", href: "/admin/requests", icon: Inbox, permission: 'manage_website_requests' as Permission },
+  // 18/19: requests from the public order page - anyone granted view_website_requests (all, or assigned only).
+  { name: "Website Requests", href: "/admin/requests", icon: Inbox, permission: 'view_website_requests' as Permission },
   { name: "Sales & Analytics", href: "/admin/analytics", icon: BarChart3, permission: 'view_reports' as Permission },
   { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
   { name: "Customer Database", href: "/admin/customers", icon: UserCheck, permission: 'view_customers' as Permission },
@@ -118,7 +118,7 @@ const requestIdOfAlert = (n: Notification) => (n.id.startsWith("req-") && n.id.i
  * copies and an alert already read stays read. Returns the feed, newest first.
  */
 async function loadAlertFeed(db: ReturnType<typeof getDb>, me: AdminProfile, defaultThreshold: number): Promise<Notification[]> {
-  const handlesRequests = can(me, "manage_website_requests");
+  const handlesRequests = can(me, "view_website_requests");
   const [products, orders, existing, newRequests] = await Promise.all([
     db.products.list(),
     db.orders.list({ limit: 200 }),
@@ -236,7 +236,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
         setNotifications(feed);
 
-        if (can(nextProfile, "manage_website_requests")) {
+        if (can(nextProfile, "view_website_requests")) {
           const openRequests = await db.orderRequests.openCount();
           if (!cancelled) setOpenRequestCount(openRequests);
         }
@@ -303,7 +303,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             const feed = await loadAlertFeed(getDb(), me, alertThresholdRef.current);
             if (!stopped) setNotifications(feed);
             // 18: badge count, and tell the Website Requests page to re-read.
-            if (can(me, "manage_website_requests")) {
+            if (can(me, "view_website_requests")) {
               const openRequests = await getDb().orderRequests.openCount();
               if (!stopped) {
                 setOpenRequestCount(openRequests);
@@ -338,8 +338,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     // One channel per tab: drop any left over from an earlier user or mount.
     // Each mount gets its own topic, so it never reuses a channel still closing.
     // 18: order_requests rides the same channel and the same refresh. RLS
-    // (order_requests_select) delivers its events to request handlers only, and
-    // the payload - which holds a visitor's details - is never read.
+    // (order_requests_select, i.e. can_access_order_request()) delivers an event
+    // only to users who may read that request - since 19 an assigned-only
+    // delegate gets events for their own requests only - and the payload, which
+    // holds a visitor's details, is never read.
     supabase.getChannels()
       .filter(c => c.topic.startsWith(`realtime:${ORDER_ALERT_TOPIC}:`))
       .forEach(c => void supabase.removeChannel(c));

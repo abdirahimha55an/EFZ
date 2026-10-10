@@ -60,7 +60,14 @@ const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = 
   { id: 'edit_orders', label: 'Update Order Status', category: 'Orders' },
   { id: 'delete_orders', label: 'Delete Orders', category: 'Orders' },
   { id: 'override_order_status', label: 'Override Locked Order Statuses', category: 'Orders' },
-  { id: 'manage_website_requests', label: 'Handle Website Requests (read, contact, convert)', category: 'Orders' },
+
+  // 19: delegated website-request handling. Without "View all", a person sees only the requests assigned to them.
+  { id: 'view_website_requests', label: 'View Website Requests (assigned to them)', category: 'Website Requests' },
+  { id: 'view_all_website_requests', label: 'View All Website Requests', category: 'Website Requests' },
+  { id: 'manage_website_requests', label: 'Work Requests (notes, contacted, confirmed)', category: 'Website Requests' },
+  { id: 'assign_website_requests', label: 'Assign / Reassign Requests', category: 'Website Requests' },
+  { id: 'reject_website_requests', label: 'Reject Requests (with a reason)', category: 'Website Requests' },
+  { id: 'convert_website_requests', label: 'Convert Requests to Orders (also needs Place New Orders)', category: 'Website Requests' },
 
   { id: 'view_customers', label: 'View Customer List', category: 'CRM' },
   { id: 'add_customers', label: 'Register New Customers', category: 'CRM' },
@@ -100,7 +107,7 @@ const DEFAULT_PERMISSIONS: Record<UserRole, Permission[]> = {
     'view_customers', 'add_customers', 'edit_customers', 'view_all_customers',
     'view_reports', 'view_commissions', 'mark_commissions_paid',
     'view_audit_trail',
-    'manage_website_requests',   // 18
+    // 19: website-request capabilities are granted explicitly, never by role (grant_role_preset in 19).
   ],
   'Marketing Officer': [
     'view_dashboard',
@@ -912,7 +919,7 @@ export default function UsersPage() {
                     <div className="flex-1 bg-slate-900 rounded-2xl p-6 text-slate-300 overflow-y-auto max-h-[400px] shadow-2xl custom-scrollbar border border-slate-800">
                       <p className="text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-4 border-b border-slate-800 pb-1.5">Manual Override</p>
                       
-                      {['General', 'Inventory', 'Orders', 'CRM', 'Customer Visibility', 'Finance'].map(category => (
+                      {['General', 'Inventory', 'Orders', 'Website Requests', 'CRM', 'Customer Visibility', 'Finance'].map(category => (
                         <div key={category} className="mb-6">
                           <h4 className="text-[10px] font-bold text-brand-green uppercase tracking-wider mb-3 opacity-80">{category}</h4>
                           <div className="space-y-2">

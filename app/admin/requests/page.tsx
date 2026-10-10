@@ -4,13 +4,15 @@
  * Website Requests - what visitors asked for on /order (migration 18).
  *
  * A request is a lead, not an order: nothing here touches stock, prices or
- * money. Handlers (manage_website_requests: Super Admin, Managers) contact the
+ * money. Staff granted the website-request capabilities (migration 19: view,
+ * view all, work, assign, reject, convert - Super Admin has all) contact the
  * customer, confirm, and convert it into a normal order; the database does the
  * conversion in one transaction through create_order().
  *
- * The list is RLS-scoped (order_requests_select), so anyone else reads nothing
- * even by calling the API directly. The layout's alert loop signals new or
- * changed requests (Realtime + 30 s poll); see RequestSignal.
+ * The list is RLS-scoped (order_requests_select = can_access_order_request()):
+ * view_website_requests plus view_all_website_requests or being the assignee,
+ * so anyone else reads nothing even by calling the API directly. The layout's
+ * alert loop signals new or changed requests (Realtime + 30 s poll); see RequestSignal.
  */
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -225,13 +227,14 @@ function WebsiteRequestsInbox() {
                   <th className="px-4 py-3">Products</th>
                   <th className="px-4 py-3 text-right">Qty</th>
                   <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Assigned to</th>
                   <th className="px-4 py-3">Handled by</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {visible.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-slate-400">
+                    <td colSpan={9} className="px-4 py-12 text-center text-slate-400">
                       <Inbox className="mx-auto mb-2 h-6 w-6" />
                       No requests here.
                     </td>
@@ -270,6 +273,7 @@ function WebsiteRequestsInbox() {
                       <td className="px-4 py-3">
                         <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase", STATUS_CLASS[r.status])}>{STATUS_LABEL[r.status]}</span>
                       </td>
+                      <td className="px-4 py-3 text-slate-700" data-testid="request-assignee">{r.assignedTo ? staffName(r.assignedTo) : <span className="text-slate-400">Unassigned</span>}</td>
                       <td className="px-4 py-3 text-slate-500">{staffName(r.handledBy)}</td>
                     </tr>
                   );

@@ -1,9 +1,11 @@
 "use client";
 
 /**
- * One website request: what was asked, its timeline and notes, and the moves its
- * status allows (WEBSITE_REQUEST_TRANSITIONS, enforced again by
- * set_order_request_status()). Convert to Order is offered only when confirmed.
+ * One website request: what was asked, its timeline and notes, who it is
+ * assigned to, and the moves its status allows (WEBSITE_REQUEST_TRANSITIONS,
+ * enforced again by set_order_request_status()). Convert to Order is offered
+ * only when confirmed. 19: every action needs its own capability (view / work /
+ * assign / reject / convert); the database checks each one again.
  */
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -20,6 +22,7 @@ import {
   WEBSITE_REQUEST_TRANSITIONS,
   type AdminUser,
   type WebsiteRequest,
+  type WebsiteRequestAssignee,
   type WebsiteRequestEvent,
   type WebsiteRequestNote,
 } from "@/lib/types";
@@ -44,6 +47,8 @@ const eventText = (e: WebsiteRequestEvent): string => {
       return "Note added";
     case "note_edited":
       return "Note edited";
+    case "assigned":
+      return e.assignedToName ? `Assigned to ${e.assignedToName}` : "Unassigned";
   }
 };
 
@@ -56,6 +61,21 @@ export function RequestDetail({ request, profile, staff, onClose, onChanged }: P
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [converting, setConverting] = useState(false);
+  const [assignees, setAssignees] = useState<WebsiteRequestAssignee[]>([]);
+  // The picker shows the current assignee until the user picks someone else.
+  const [assignDraft, setAssignDraft] = useState<string | null>(null);
+  const assignTo = assignDraft ?? request.assignedTo ?? "";
+
+  // 19: who the request can be assigned to - only fetched for people allowed to assign.
+  const canAssign = perms.assignWebsiteRequests && request.status !== "converted" && request.status !== "rejected";
+  useEffect(() => {
+    if (!canAssign) return;
+    let cancelled = false;
+    getDb().orderRequests.assignees()
+      .then((list) => { if (!cancelled) setAssignees(list); })
+      .catch((e) => { if (!cancelled) setError(describeDbError(e)); });
+    return () => { cancelled = true; };
+  }, [canAssign]);
 
   const loadActivity = useCallback(async () => {
     const activity = await getDb().orderRequests.activity(request.id);
@@ -79,11 +99,33 @@ export function RequestDetail({ request, profile, staff, onClose, onChanged }: P
     return () => {
       cancelled = true;
     };
-  }, [request.id, request.status, request.convertedOrderId]);
+  }, [request.id, request.status, request.convertedOrderId, request.assignedTo]);
 
+  // 19: each action needs its own capability; the database checks every one again.
   const allowed = WEBSITE_REQUEST_TRANSITIONS[request.status];
-  const canAct = perms.handleWebsiteRequests;
+  const showContacted = perms.workWebsiteRequests && allowed.includes("contacted");
+  const showConfirmed = perms.workWebsiteRequests && allowed.includes("confirmed");
+  const showReject = perms.rejectWebsiteRequests && allowed.includes("rejected");
+  const showConvert = perms.convertWebsiteRequests && request.status === "confirmed";
+  const assigneeName = request.assignedTo
+    ? staff.find((s) => s.id === request.assignedTo)?.name ?? assignees.find((a) => a.id === request.assignedTo)?.name ?? request.assignedTo
+    : null;
   const digits = request.phone.replace(/\D/g, "");
+
+  const assign = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await getDb().orderRequests.assign(request.id, assignTo || null);
+      setAssignDraft(null);
+      await onChanged();
+      await loadActivity();
+    } catch (e) {
+      setError(describeDbError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const move = async (to: "contacted" | "confirmed" | "rejected", why?: string) => {
     setBusy(true);
@@ -193,25 +235,49 @@ export function RequestDetail({ request, profile, staff, onClose, onChanged }: P
             </div>
           )}
 
-          {canAct && (allowed.length > 0 || request.status === "confirmed") && (
+          <section className="space-y-2" data-testid="request-assignment">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Assigned to</p>
+            <p className="font-bold text-slate-900">{assigneeName ?? "Unassigned"}</p>
+            {canAssign && (
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="sr-only" htmlFor="request-assignee">Assign to</label>
+                <select
+                  id="request-assignee"
+                  value={assignTo}
+                  onChange={(e) => setAssignDraft(e.target.value)}
+                  className="rounded-md border border-slate-200 p-1.5"
+                >
+                  <option value="">Unassigned</option>
+                  {assignees.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name} ({a.role})</option>
+                  ))}
+                </select>
+                <Button size="sm" variant="secondary" disabled={busy || assignTo === (request.assignedTo ?? "")} onClick={assign}>
+                  {request.assignedTo ? "Reassign" : "Assign"}
+                </Button>
+              </div>
+            )}
+          </section>
+
+          {(showContacted || showConfirmed || showConvert || showReject) && (
             <section className="space-y-3">
               <div className="flex flex-wrap gap-2">
-                {allowed.includes("contacted") && (
+                {showContacted && (
                   <Button size="sm" variant="secondary" disabled={busy} onClick={() => move("contacted")}>
                     <Phone className="mr-1.5 h-3.5 w-3.5" /> Mark Contacted
                   </Button>
                 )}
-                {allowed.includes("confirmed") && (
+                {showConfirmed && (
                   <Button size="sm" variant="secondary" disabled={busy} onClick={() => move("confirmed")}>
                     <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" /> Mark Confirmed
                   </Button>
                 )}
-                {request.status === "confirmed" && perms.createOrders && (
+                {showConvert && (
                   <Button size="sm" disabled={busy} onClick={() => setConverting(true)}>
                     <ArrowRightCircle className="mr-1.5 h-3.5 w-3.5" /> Convert to Order
                   </Button>
                 )}
-                {allowed.includes("rejected") && !rejecting && (
+                {showReject && !rejecting && (
                   <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRejecting(true)} className="text-red-600">
                     <XCircle className="mr-1.5 h-3.5 w-3.5" /> Reject
                   </Button>
@@ -259,7 +325,7 @@ export function RequestDetail({ request, profile, staff, onClose, onChanged }: P
             notes={notes}
             profile={profile}
             staff={staff}
-            canWrite={canAct}
+            canWrite={perms.workWebsiteRequests}
             onChanged={loadActivity}
           />
         </div>

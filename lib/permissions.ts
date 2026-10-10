@@ -105,10 +105,19 @@ export function derivePermissions(profile: AdminProfile | null | undefined) {
     markCommissionsPaid: can("mark_commissions_paid"),
 
     /**
-     * 18: website requests - read, work and convert (can_access_order_request()).
-     * Super Admin always; Managers through their preset; never Marketing Officers by default.
+     * 18/19: website requests. Each capability is granted explicitly (never by role);
+     * Super Admin has all. Reading is can_access_order_request(): view_website_requests,
+     * plus view_all_website_requests or being the request's assignee.
      */
-    handleWebsiteRequests: can("manage_website_requests"),
+    viewWebsiteRequests: can("view_website_requests"),
+    /** Every request; without it a delegate sees only the requests assigned to them. */
+    viewAllWebsiteRequests: can("view_website_requests") && can("view_all_website_requests"),
+    /** Notes, and the contacted / confirmed moves. */
+    workWebsiteRequests: can("view_website_requests") && can("manage_website_requests"),
+    assignWebsiteRequests: can("view_website_requests") && can("assign_website_requests"),
+    rejectWebsiteRequests: can("view_website_requests") && can("reject_website_requests"),
+    /** The order itself is still create_order() (create_orders; add_customers for a new customer). */
+    convertWebsiteRequests: can("view_website_requests") && can("convert_website_requests") && can("create_orders"),
 
     manageUsers: can("manage_users"),
     changeSettings: can("change_settings"),
