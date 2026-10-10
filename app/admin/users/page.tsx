@@ -330,24 +330,10 @@ export default function UsersPage() {
       const db = getDb();
 
       if (editingUser) {
-        const oldPermissions = editingUser.permissions || [];
-
         // users.update writes the profile fields and then replaces the whole
-        // permission set through set_user_permissions() in one call.
+        // permission set through set_user_permissions() in one call. The
+        // database records each permission actually granted or revoked (19b).
         await db.users.update(editingUser.id, savedData);
-
-        await db.logs.write({
-          category: 'SECURITY',
-          severity: 'INFO',
-          message: `User privileges updated: ${savedData.name} (${savedData.role})`,
-          targetId: editingUser.id,
-          metadata: {
-            oldValue: oldPermissions,
-            newValue: savedData.permissions,
-            field: 'permissions',
-            source: 'Privilege Settings',
-          },
-        });
       } else {
         const created = await db.users.create({ ...savedData, avatar: "" });
 
