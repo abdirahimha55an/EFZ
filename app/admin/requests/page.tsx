@@ -13,7 +13,7 @@
  * changed requests (Realtime + 30 s poll); see RequestSignal.
  */
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { AlertCircle, Inbox, Loader2, Search } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,7 +43,6 @@ export default function WebsiteRequestsPage() {
 }
 
 function WebsiteRequestsInbox() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const openId = searchParams.get("id");
   const { version, refresh } = useRequestSignal();
@@ -121,7 +120,9 @@ function WebsiteRequestsInbox() {
   }, [requests, tab, query, sort]);
 
   const selected = openId ? requests.find((r) => r.id === openId) ?? null : null;
-  const openRequest = (id: string | null) => router.replace(id ? `/admin/requests?id=${id}` : "/admin/requests", { scroll: false });
+  // Native history (Next.js keeps useSearchParams in sync with it). router.replace("/admin/requests") is a no-op after a
+  // fresh "?id=" load: this page is prerendered, so the router's current URL is already "/admin/requests".
+  const openRequest = (id: string | null) => window.history.replaceState(null, "", id ? `/admin/requests?id=${id}` : "/admin/requests");
 
   const afterChange = useCallback(async () => {
     await load();
