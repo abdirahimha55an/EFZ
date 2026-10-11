@@ -169,12 +169,13 @@ export default function FinancialPage() {
         comparisonText={model.comparison ? `${model.comparison.label.toLowerCase()} (${model.comparison.text})` : null}
       />
 
+      {/* Summary first (Outstanding receivables stays in the KPIs); detailed receivables management below the analysis. */}
       <FinanceKpis m={model} />
-      <ReceivablesSection m={model} orderRows={orderRows} status={receivableStatus} onStatus={setReceivableStatus}
-        onRecordPayment={canRecordPayment(perms) ? setPaymentOrderId : undefined} />
       <CollectionsSection m={model} />
       <CashFlowSection m={model} />
       <ProfitabilitySection m={model} />
+      <ReceivablesSection m={model} orderRows={orderRows} status={receivableStatus} onStatus={setReceivableStatus}
+        onRecordPayment={canRecordPayment(perms) ? setPaymentOrderId : undefined} />
       <FinancialChecksSection m={model} />
 
       {/* The same Record Payment workflow as Customer Database (record_payment() + audit line). */}
