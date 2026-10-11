@@ -40,7 +40,7 @@ export type SalesLine = {
   unitCostCents: number | null;
 };
 
-export type SalesPayment = { amountCents: number; date: string; method: string };
+export type SalesPayment = { id: string; amountCents: number; date: string; method: string };
 
 export type SalesOrder = {
   id: string;
@@ -128,6 +128,7 @@ export function toSalesOrder(order: Order): SalesOrder {
     stockMode: order.stockMode === "at_delivery" ? "at_delivery" : "at_creation",
     lines: (order.items ?? []).map((item) => toSalesLine(order, item)),
     payments: (order.payments ?? []).map((p) => ({
+      id: String(p.id ?? ""),
       amountCents: toCents(p.amount),
       date: p.paymentDate,
       method: (p.paymentMethod ?? "").trim(),

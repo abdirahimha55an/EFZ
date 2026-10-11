@@ -39,6 +39,7 @@ import { type CommissionEvent, expectedForOrder, footballIdsOf, money, summarize
 import { OrderCommissionPanel } from "@/components/admin/OrderCommissionPanel";
 import { CustomersToCollect, collectionRows } from "@/components/admin/CustomersToCollect";
 import { RecordPaymentDialog, canRecordPayment } from "@/components/admin/RecordPaymentDialog";
+import { invoiceHref, offersInvoice, receiptHref, toDocOrder } from "@/lib/finance/documents";
 
 const emptyCustomerForm = { name: "", email: "", phone: "", notes: "" };
 
@@ -744,6 +745,12 @@ export default function CustomersPage() {
                             Record Payment
                           </button>
                         )}
+                        {offersInvoice(toDocOrder(order)) && (
+                          <a href={invoiceHref(order.id)} target="_blank" rel="noopener" data-testid="customer-invoice"
+                            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-700 hover:bg-slate-50">
+                            Invoice
+                          </a>
+                        )}
                         {perms.viewCommissions && (
                           <button
                             type="button"
@@ -830,7 +837,12 @@ export default function CustomersPage() {
                                   <p className="font-bold text-slate-900">{payment.paymentDate}</p>
                                   <p className="text-slate-500">{payment.paymentMethod || 'Cash'}</p>
                                 </div>
-                                <span className="font-bold text-brand-blue">${Number(payment.amount || 0).toFixed(2)}</span>
+                                <span className="flex items-center gap-2">
+                                  {order.status !== "cancelled" && Number(payment.amount || 0) > 0 && payment.id && (
+                                    <a href={receiptHref(order.id, String(payment.id))} target="_blank" rel="noopener" data-testid="customer-receipt" className="text-[9px] font-bold uppercase text-slate-500 hover:text-brand-blue">Receipt</a>
+                                  )}
+                                  <span className="font-bold text-brand-blue">${Number(payment.amount || 0).toFixed(2)}</span>
+                                </span>
                               </div>
                             )) : (
                               <p className="text-slate-400">No payment history recorded.</p>

@@ -24,6 +24,7 @@ import {
   autoGranularity, bucketLabel, bucketOf, comparisonRange, eachDay, formatRange, inRange, resolvePeriod,
   type DateRange, type Granularity, type Period, type PeriodPreset,
 } from "@/lib/analytics/period";
+import { offersInvoice } from "./documents";
 import { METHOD_NOT_RECORDED, outstandingBalances, outstandingByAge, paymentsReceived, type Balance, type Collections } from "./facts";
 
 export type FinanceInput = {
@@ -169,6 +170,8 @@ export type ReceivableOrderRow = {
   collectedCents: number;
   outstandingCents: number;
   status: ReceivableStatus;
+  /** A credit order: an invoice is offered (lib/finance/documents). */
+  invoice: boolean;
 };
 
 /**
@@ -187,6 +190,7 @@ export function receivableOrders(ds: Dataset, f: SalesFilters, status: Receivabl
     rows.push({
       orderId: order.id, customerId: order.customerId, customerName: linked?.name || order.customerName, date: order.date,
       totalCents: order.totalCents, collectedCents: order.amountPaidCents, outstandingCents: order.outstandingCents, status: s,
+      invoice: offersInvoice(order),
     });
   }
   return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.orderId < b.orderId ? -1 : 1));
@@ -217,7 +221,7 @@ export function receivablesByCustomer(rows: ReceivableOrderRow[]): ReceivableCus
   return [...map.values()].sort((a, b) => b.outstandingCents - a.outstandingCents || a.customerName.localeCompare(b.customerName));
 }
 
-export type PaymentRow = { key: string; date: string; orderId: string; customerName: string; method: string; amountCents: number };
+export type PaymentRow = { key: string; paymentId: string; date: string; orderId: string; customerName: string; method: string; amountCents: number };
 
 /** Every payment dated in the period on matching orders, newest first. */
 export function paymentHistory(ds: Dataset, f: SalesFilters, range: DateRange): PaymentRow[] {
@@ -226,7 +230,7 @@ export function paymentHistory(ds: Dataset, f: SalesFilters, range: DateRange): 
   for (const { order } of select(ds, scope, null)) {
     order.payments.forEach((p, i) => {
       if (!inRange(p.date, range)) return;
-      rows.push({ key: `${order.id}#${i}`, date: p.date, orderId: order.id, customerName: order.customerName, method: p.method || METHOD_NOT_RECORDED, amountCents: p.amountCents });
+      rows.push({ key: `${order.id}#${i}`, paymentId: p.id, date: p.date, orderId: order.id, customerName: order.customerName, method: p.method || METHOD_NOT_RECORDED, amountCents: p.amountCents });
     });
   }
   return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.key < b.key ? -1 : 1));

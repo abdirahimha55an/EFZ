@@ -15,6 +15,7 @@ import {
 } from "@/lib/finance/model";
 import { ChartCard, DataTable, MethodNote, SectionCard, num, pct, usd, type Column } from "@/components/analytics/primitives";
 import { AgingChart, CashFlowChart, ProductProfitChart } from "./lazyCharts";
+import { invoiceHref, receiptHref } from "@/lib/finance/documents";
 
 /** A small (i) with the definition, shown on hover / focus / long-press. */
 export function InfoTip({ text }: { text: string }) {
@@ -78,6 +79,8 @@ export function FinanceKpis({ m }: { m: FinanceModel }) {
 const STATUS_STYLE: Record<ReceivableOrderRow["status"], string> = {
   paid: "bg-green-100 text-green-700", partial: "bg-amber-100 text-amber-700", unpaid: "bg-red-100 text-red-700",
 };
+const docLink = "text-[11px] font-semibold text-brand-blue hover:underline";
+
 const StatusPill = ({ s }: { s: ReceivableOrderRow["status"] }) => <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase", STATUS_STYLE[s])}>{s}</span>;
 
 function orderColumns(onRecordPayment?: (orderId: string) => void): Column<ReceivableOrderRow>[] {
@@ -89,6 +92,9 @@ function orderColumns(onRecordPayment?: (orderId: string) => void): Column<Recei
     { key: "collected", header: "Collected", align: "right", render: (r) => usd(r.collectedCents) },
     { key: "outstanding", header: "Outstanding", align: "right", render: (r) => <span className="font-semibold">{usd(r.outstandingCents)}</span> },
     { key: "status", header: "Status", render: (r) => <StatusPill s={r.status} /> },
+    { key: "invoice", header: "Invoice", render: (r) => r.invoice
+      ? <a href={invoiceHref(r.orderId)} target="_blank" rel="noopener" data-testid="fin-invoice" className={docLink}>Invoice</a>
+      : r.totalCents > 0 ? <span className="text-[11px] text-slate-400" title="Paid in full at the sale: receipts only">Paid at sale</span> : <span className="text-slate-300">—</span> },
   ];
   if (onRecordPayment) {
     cols.push({ key: "action", header: "", render: (r) => r.outstandingCents > 0 ? (
@@ -207,6 +213,7 @@ const paymentColumns: Column<PaymentRow>[] = [
   { key: "order", header: "Order", render: (r) => <span className="font-mono text-[11px]">{r.orderId}</span> },
   { key: "method", header: "Method", render: (r) => r.method },
   { key: "amount", header: "Amount", align: "right", render: (r) => <span className="font-semibold">{usd(r.amountCents)}</span> },
+  { key: "receipt", header: "Receipt", render: (r) => r.paymentId ? <a href={receiptHref(r.orderId, r.paymentId)} target="_blank" rel="noopener" data-testid="fin-receipt" className={docLink}>Receipt</a> : null },
 ];
 
 export function CollectionsSection({ m }: { m: FinanceModel }) {
