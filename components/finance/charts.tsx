@@ -16,10 +16,10 @@ const usdShort = (v: unknown) => { const n = Number(v ?? 0); return Math.abs(n) 
 const axis = { stroke: C.axis, fontSize: 10, tickLine: false, axisLine: false } as const;
 const tooltipStyle = { contentStyle: { fontSize: 11, borderRadius: 8, borderColor: "#E2E8F0" }, labelStyle: { fontWeight: 700, color: "#0F172A" } };
 const H = 260;
-const NAMES: Record<string, string> = { cash: "Cash received (actual)", booked: "Booked sales", cumulative: "Cumulative cash" };
+const NAMES: Record<string, string> = { cash: "Cash received", revenue: "Delivered revenue", cumulative: "Cumulative cash" };
 
-export function CashFlowChart({ data, showBooked = true }: { data: CashFlowPoint[]; showBooked?: boolean }) {
-  const rows = data.map((p) => ({ label: p.label, cash: fromCents(p.cashInCents), booked: fromCents(p.bookedCents), cumulative: fromCents(p.cumulativeCashCents) }));
+export function CashFlowChart({ data, showRevenue = true }: { data: CashFlowPoint[]; showRevenue?: boolean }) {
+  const rows = data.map((p) => ({ label: p.label, cash: fromCents(p.cashInCents), revenue: fromCents(p.deliveredCents), cumulative: fromCents(p.cumulativeCashCents) }));
   return (
     <ResponsiveContainer width="100%" height={H}>
       <ComposedChart data={rows} margin={{ top: 8, right: 4, left: -8, bottom: 0 }}>
@@ -29,7 +29,7 @@ export function CashFlowChart({ data, showBooked = true }: { data: CashFlowPoint
         <Tooltip {...tooltipStyle} formatter={(v, n) => [usd(v), NAMES[String(n)] ?? String(n)]} />
         <Legend wrapperStyle={{ fontSize: 11 }} formatter={(v) => NAMES[String(v)] ?? String(v)} />
         <Bar dataKey="cash" fill={C.cash} radius={[3, 3, 0, 0]} maxBarSize={18} />
-        {showBooked && <Line dataKey="booked" stroke={C.booked} strokeWidth={1.5} dot={false} type="monotone" />}
+        {showRevenue && <Line dataKey="revenue" stroke={C.booked} strokeWidth={1.5} dot={false} type="monotone" />}
         <Line dataKey="cumulative" stroke={C.cumulative} strokeWidth={1.5} strokeDasharray="4 3" dot={false} type="monotone" />
       </ComposedChart>
     </ResponsiveContainer>

@@ -36,6 +36,8 @@ export type SalesLine = {
    * this user; never treated as zero.
    */
   costCents: number | null;
+  /** order_items.historical_unit_cost (frozen at sale). Null when cost is withheld. */
+  unitCostCents: number | null;
 };
 
 export type SalesPayment = { amountCents: number; date: string; method: string };
@@ -108,6 +110,7 @@ function toSalesLine(order: Order, item: Order["items"][number]): SalesLine {
     unitPriceCents: toCents(item.actualUnitPrice ?? item.price ?? 0),
     listPriceCents: toCents(item.standardUnitPrice ?? 0),
     costCents: item.lineCost === null || item.lineCost === undefined ? null : toCents(item.lineCost),
+    unitCostCents: item.historicalUnitCost === null || item.historicalUnitCost === undefined ? null : toCents(item.historicalUnitCost),
   };
 }
 

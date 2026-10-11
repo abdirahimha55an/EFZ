@@ -3,14 +3,18 @@
  * (lib/analytics/dataset), so the Financial page, its tests and any later
  * export cannot disagree. Builds on lib/finance/facts.
  *
- * Bases (never mixed in one figure):
- *  - Booked: lines of non-cancelled orders dated (order_date) in the period,
- *    quantity x the actual unit price.
+ * Bases (never mixed in one figure). Orders: non-cancelled, dated by
+ * order_date in the period (the same sales date as Sales & Analytics).
+ *  - Delivered revenue: delivered balls x the actual unit price. Revenue is
+ *    counted once, when delivered; a later payment is cash, not new revenue.
+ *  - Pending order value: balls still to deliver x the actual unit price.
+ *    Delivered revenue + pending order value = the orders' booked value.
  *  - Cash received: payments dated (payment_date) in the period.
  *  - Balances: orders.outstanding_balance / amount_paid as the database keeps
- *    them, as of now (not period-bound).
- *  - Cost and profit: order_items.line_cost, the unit cost frozen when the line
- *    was sold. Never today's product cost. Null when cost is withheld.
+ *    them, as of now (not period-bound). Never subtracted from revenue.
+ *  - Cost and gross profit: on delivered balls, at the unit cost frozen when
+ *    the line was sold (order_items.historical_unit_cost). Never today's
+ *    product cost. Null when cost is withheld.
  *  - EFZ records money coming in only (no expenses), so "cash flow" here is
  *    inflow; nothing is invented for outflows.
  */
@@ -32,6 +36,12 @@ export type FinanceInput = {
 };
 
 export const lineRevenueCents = (l: SalesLine) => l.unitPriceCents * l.quantity;
+/** Delivered revenue of a line: delivered balls x the actual unit price. */
+export const lineDeliveredCents = (l: SalesLine) => l.unitPriceCents * l.delivered;
+/** Pending order value of a line: balls still to deliver x the actual unit price. */
+export const linePendingCents = (l: SalesLine) => l.unitPriceCents * l.remaining;
+/** Frozen cost of the delivered balls; null when cost is withheld. */
+export const lineDeliveredCostCents = (l: SalesLine) => (l.unitCostCents === null ? null : l.unitCostCents * l.delivered);
 
 /**
  * False as soon as any line lacks cost (the database withheld it from this
@@ -39,17 +49,22 @@ export const lineRevenueCents = (l: SalesLine) => l.unitPriceCents * l.quantity;
  * claimed to be hidden.
  */
 export function costVisible(ds: Dataset): boolean {
-  for (const o of ds.orders) for (const l of o.lines) if (l.costCents === null) return false;
+  for (const o of ds.orders) for (const l of o.lines) if (l.costCents === null || l.unitCostCents === null) return false;
   return true;
 }
 
 export type PeriodFigures = {
   orders: number;
+  /** Booked value of the period's orders (delivered + pending). */
   bookedCents: number;
+  deliveredRevenueCents: number;
+  pendingValueCents: number;
   cash: Collections;
-  /** Null when cost is withheld. */
+  /** Frozen cost of the delivered balls. Null when cost is withheld. */
   costCents: number | null;
+  /** Delivered revenue - its frozen cost. Null when cost is withheld. */
   grossProfitCents: number | null;
+  /** Gross profit / delivered revenue. */
   marginPct: number | null;
   /** Paid so far (any date) on the orders booked in the period; null with a product filter (payments are per order). */
   paidOnPeriodOrdersCents: number | null;
@@ -57,25 +72,30 @@ export type PeriodFigures = {
 };
 
 export function periodFigures(ds: Dataset, f: SalesFilters, range: DateRange): PeriodFigures {
-  let booked = 0, cost = 0, costKnown = true, paid = 0, orders = 0;
+  let booked = 0, delivered = 0, pending = 0, cost = 0, costKnown = true, paid = 0, orders = 0;
   for (const { order, lines } of select(ds, f, range)) {
     orders += 1;
     for (const l of lines) {
       booked += lineRevenueCents(l);
-      if (l.costCents === null) costKnown = false;
-      else cost += l.costCents;
+      delivered += lineDeliveredCents(l);
+      pending += linePendingCents(l);
+      const c = lineDeliveredCostCents(l);
+      if (c === null) costKnown = false;
+      else cost += c;
     }
     paid += order.amountPaidCents;
   }
   const productFiltered = f.productKey !== null;
-  const gp = costKnown ? booked - cost : null;
+  const gp = costKnown ? delivered - cost : null;
   return {
     orders,
     bookedCents: booked,
+    deliveredRevenueCents: delivered,
+    pendingValueCents: pending,
     cash: paymentsReceived(ds, f, range),
     costCents: costKnown ? cost : null,
     grossProfitCents: gp,
-    marginPct: gp !== null && booked > 0 ? (gp / booked) * 100 : null,
+    marginPct: gp !== null && delivered > 0 ? (gp / delivered) * 100 : null,
     paidOnPeriodOrdersCents: productFiltered ? null : paid,
     paidOnPeriodOrdersPct: productFiltered || booked <= 0 ? null : (paid / booked) * 100,
   };
@@ -126,6 +146,77 @@ export function receivables(ds: Dataset, f: SalesFilters, today: string): Receiv
   };
 }
 
+export type ReceivableStatus = "paid" | "partial" | "unpaid";
+export type ReceivableFilter = "all" | ReceivableStatus;
+
+/**
+ * The order's payment status exactly as Customer Database showed it
+ * (lib/financial getOrderPaymentStatus): from the order total and the
+ * database-maintained amount paid.
+ */
+export function receivableStatus(o: Pick<SalesOrder, "totalCents" | "amountPaidCents">): ReceivableStatus {
+  if (o.totalCents <= 0) return "paid";
+  if (o.amountPaidCents <= 0) return "unpaid";
+  return o.amountPaidCents >= o.totalCents ? "paid" : "partial";
+}
+
+export type ReceivableOrderRow = {
+  orderId: string;
+  customerId: string | null;
+  customerName: string;
+  date: string;
+  totalCents: number;
+  collectedCents: number;
+  outstandingCents: number;
+  status: ReceivableStatus;
+};
+
+/**
+ * Receivables by order (the view moved from Customer Database): every
+ * non-cancelled order matching the page filters (not the period: balances are
+ * as of now; not the product: payments belong to whole orders), newest first.
+ * "all" keeps every such order, as Customer Database did; the other filters
+ * keep that payment status only.
+ */
+export function receivableOrders(ds: Dataset, f: SalesFilters, status: ReceivableFilter): ReceivableOrderRow[] {
+  const rows: ReceivableOrderRow[] = [];
+  for (const { order } of select(ds, { ...f, productKey: null }, null)) {
+    const s = receivableStatus(order);
+    if (status !== "all" && s !== status) continue;
+    const linked = order.customerId ? ds.customers.find((c) => c.id === order.customerId) : undefined;
+    rows.push({
+      orderId: order.id, customerId: order.customerId, customerName: linked?.name || order.customerName, date: order.date,
+      totalCents: order.totalCents, collectedCents: order.amountPaidCents, outstandingCents: order.outstandingCents, status: s,
+    });
+  }
+  return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.orderId < b.orderId ? -1 : 1));
+}
+
+export type ReceivableCustomerRow = {
+  key: string;
+  customerId: string | null;
+  customerName: string;
+  orders: number;
+  ordersWithBalance: number;
+  outstandingCents: number;
+  rows: ReceivableOrderRow[];
+};
+
+/** The same order rows grouped by customer (an unlinked order is its own row), largest balance first. */
+export function receivablesByCustomer(rows: ReceivableOrderRow[]): ReceivableCustomerRow[] {
+  const map = new Map<string, ReceivableCustomerRow>();
+  for (const r of rows) {
+    const key = r.customerId ?? `__order__${r.orderId}`;
+    const g = map.get(key) ?? { key, customerId: r.customerId, customerName: r.customerName, orders: 0, ordersWithBalance: 0, outstandingCents: 0, rows: [] };
+    g.orders += 1;
+    if (r.outstandingCents > 0) g.ordersWithBalance += 1;
+    g.outstandingCents += r.outstandingCents;
+    g.rows.push(r);
+    map.set(key, g);
+  }
+  return [...map.values()].sort((a, b) => b.outstandingCents - a.outstandingCents || a.customerName.localeCompare(b.customerName));
+}
+
 export type PaymentRow = { key: string; date: string; orderId: string; customerName: string; method: string; amountCents: number };
 
 /** Every payment dated in the period on matching orders, newest first. */
@@ -141,18 +232,18 @@ export function paymentHistory(ds: Dataset, f: SalesFilters, range: DateRange): 
   return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.key < b.key ? -1 : 1));
 }
 
-export type CashFlowPoint = { bucket: string; label: string; cashInCents: number; bookedCents: number; cumulativeCashCents: number };
+export type CashFlowPoint = { bucket: string; label: string; cashInCents: number; bookedCents: number; deliveredCents: number; cumulativeCashCents: number };
 
 export function cashFlowSeries(ds: Dataset, f: SalesFilters, range: DateRange): { granularity: Granularity; points: CashFlowPoint[] } {
   const granularity = autoGranularity(range);
   const map = new Map<string, CashFlowPoint>();
   for (const d of eachDay(range)) {
     const b = bucketOf(d, granularity);
-    if (!map.has(b)) map.set(b, { bucket: b, label: bucketLabel(b, granularity), cashInCents: 0, bookedCents: 0, cumulativeCashCents: 0 });
+    if (!map.has(b)) map.set(b, { bucket: b, label: bucketLabel(b, granularity), cashInCents: 0, bookedCents: 0, deliveredCents: 0, cumulativeCashCents: 0 });
   }
   for (const { order, lines } of select(ds, f, range)) {
     const p = map.get(bucketOf(order.date, granularity));
-    if (p) for (const l of lines) p.bookedCents += lineRevenueCents(l);
+    if (p) for (const l of lines) { p.bookedCents += lineRevenueCents(l); p.deliveredCents += lineDeliveredCents(l); }
   }
   for (const { order } of select(ds, { ...f, productKey: null }, null)) {
     for (const pay of order.payments) {
@@ -181,19 +272,24 @@ export type ProductProfitRow = {
   belowCostLines: number;
 };
 
-/** Profit by product on lines booked in the period; null when cost is withheld. */
+/**
+ * Profit by product on the DELIVERED balls of orders dated in the period, at
+ * the frozen unit cost; null when cost is withheld. Products with nothing
+ * delivered yet are left out. The flags look at the whole line as sold.
+ */
 export function productProfitability(ds: Dataset, f: SalesFilters, range: DateRange): ProductProfitRow[] | null {
   const map = new Map<string, ProductProfitRow>();
   for (const { lines } of select(ds, f, range)) {
     for (const l of lines) {
-      if (l.costCents === null) return null;
+      const deliveredCost = lineDeliveredCostCents(l);
+      if (deliveredCost === null || l.costCents === null) return null;
+      if (l.delivered <= 0) continue;
       const r = map.get(l.productKey) ?? { productKey: l.productKey, productName: l.productName, units: 0, revenueCents: 0, costCents: 0, profitCents: 0, marginPct: null, zeroCostLines: 0, belowCostLines: 0 };
-      const rev = lineRevenueCents(l);
-      r.units += l.quantity;
-      r.revenueCents += rev;
-      r.costCents += l.costCents;
+      r.units += l.delivered;
+      r.revenueCents += lineDeliveredCents(l);
+      r.costCents += deliveredCost;
       if (l.costCents === 0 && l.quantity > 0) r.zeroCostLines += 1;
-      if (rev < l.costCents) r.belowCostLines += 1;
+      if (lineRevenueCents(l) < l.costCents) r.belowCostLines += 1;
       map.set(l.productKey, r);
     }
   }
@@ -211,6 +307,35 @@ export type ReconciliationCheck = {
   orderIds: string[];
   /** Null when the check cannot run for this user (cost withheld). */
   available: boolean;
+  /** What the finding means and what to do about it. */
+  action: string;
+};
+
+/** The collapsed header of Financial Checks & Exceptions. */
+export function checksSummary(checks: ReconciliationCheck[]): { errors: number; warnings: number; unavailable: number; findings: number } {
+  const on = checks.filter((c) => c.available && c.count > 0);
+  return {
+    errors: on.filter((c) => c.severity === "FAIL").length,
+    warnings: on.filter((c) => c.severity === "WARN").length,
+    unavailable: checks.filter((c) => !c.available).length,
+    findings: on.length,
+  };
+}
+
+const ACTIONS: Record<string, string> = {
+  total: "The order total no longer equals its line items. Do not edit the order; report it for a database check (Diagnostics).",
+  cost: "The order cost no longer equals its lines' frozen costs. Report it for a database check; profit for this order is unreliable.",
+  profit: "Gross profit is not total minus cost. Report it for a database check.",
+  paid: "The amount paid does not match the recorded payments. Do not re-enter a payment; report it for a database check.",
+  balance: "The outstanding balance is not total minus paid. Do not record a payment against it until it is checked.",
+  status: "The payment status does not match the payments. Report it for a database check.",
+  overpaid: "Payments exceed the order total. Confirm with the customer whether this is a refund or credit, then report it.",
+  noLines: "The order has no products. Check the order; it may need to be cancelled.",
+  deliveredBalance: "Fully delivered but not fully paid: follow up with the customer and record the payment when it arrives.",
+  cancelledPaid: "A cancelled order still holds payments, which are left out of Cash received. Decide whether to refund or move the money.",
+  noProduct: "A line refers to a product that no longer exists. Historical figures stand; no action unless the product was deleted by mistake.",
+  zeroCost: "A line was sold with no recorded cost, so its profit is overstated. Record the product cost for future sales.",
+  belowCost: "A line was sold below its recorded cost (approved below-cost sale or pricing error). Review the price.",
 };
 
 const paymentsCents = (o: SalesOrder) => sum(o.payments.map((p) => p.amountCents));
@@ -252,9 +377,10 @@ export function reconciliation(ds: Dataset): ReconciliationCheck[] {
     { key: "belowCost", label: "Orders with a line sold below its recorded cost", severity: "WARN", needsCost: true, test: (o) => o.lines.some((l) => l.costCents !== null && lineRevenueCents(l) < l.costCents) },
   ];
   return checks.map((c) => {
-    if (c.needsCost && !withCost) return { key: c.key, label: c.label, severity: c.severity, count: 0, orderIds: [], available: false };
+    const action = ACTIONS[c.key] ?? "";
+    if (c.needsCost && !withCost) return { key: c.key, label: c.label, severity: c.severity, count: 0, orderIds: [], available: false, action };
     const ids = ds.orders.filter(c.test).map((o) => o.id);
-    return { key: c.key, label: c.label, severity: c.severity, count: ids.length, orderIds: ids, available: true };
+    return { key: c.key, label: c.label, severity: c.severity, count: ids.length, orderIds: ids, available: true, action };
   });
 }
 

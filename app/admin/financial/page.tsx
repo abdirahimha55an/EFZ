@@ -20,10 +20,10 @@ import { efzToday, formatEfzTime } from "@/lib/dates";
 import { NO_FILTERS, buildDataset, productKeyOf, type SalesFilters } from "@/lib/analytics/dataset";
 import { monthStart, type PeriodPreset } from "@/lib/analytics/period";
 import { officersOnOrders } from "@/lib/analytics/officers";
-import { buildFinanceModel } from "@/lib/finance/model";
+import { buildFinanceModel, receivableOrders, type ReceivableFilter } from "@/lib/finance/model";
 import { Controls, type Option } from "@/components/analytics/Controls";
-import { BasisLegend } from "@/components/analytics/primitives";
-import { CashFlowSection, CollectionsSection, FinanceKpis, ProfitabilitySection, ReceivablesSection, ReconciliationSection } from "@/components/finance/FinanceSections";
+import { CashFlowSection, CollectionsSection, FinanceKpis, FinancialChecksSection, ProfitabilitySection, ReceivablesSection } from "@/components/finance/FinanceSections";
+import { RecordPaymentDialog, canRecordPayment } from "@/components/admin/RecordPaymentDialog";
 
 type Loaded = { orders: Order[]; products: Product[]; customers: Customer[]; today: string; loadedAt: string };
 
@@ -38,7 +38,19 @@ export default function FinancialPage() {
   const [preset, setPreset] = useState<PeriodPreset>("month");
   const [custom, setCustom] = useState(() => { const t = efzToday(); return { from: monthStart(t), to: t }; });
   const [compare, setCompare] = useState(true);
-  const [filters, setFilters] = useState<SalesFilters>(NO_FILTERS);
+  // Customer Database links here with ?customer=<id>#receivables (read once, client side;
+  // the page shows its loading state before any filter is rendered).
+  const [customerFromLink] = useState<string | null>(() => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("customer")));
+  const [filters, setFilters] = useState<SalesFilters>(() => (customerFromLink ? { ...NO_FILTERS, customerId: customerFromLink } : NO_FILTERS));
+  const [receivableStatus, setReceivableStatus] = useState<ReceivableFilter>("all");
+  const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
+  const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  useEffect(() => {
+    if (!notification) return;
+    const t = setTimeout(() => setNotification(null), 3000);
+    return () => clearTimeout(t);
+  }, [notification]);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +91,16 @@ export default function FinancialPage() {
     () => (ds && data ? buildFinanceModel({ ds, filters: effectiveFilters, preset, custom, compare, today: data.today }) : null),
     [ds, data, effectiveFilters, preset, custom, compare]
   );
+
+  const orderRows = useMemo(() => (ds ? receivableOrders(ds, effectiveFilters, receivableStatus) : []), [ds, effectiveFilters, receivableStatus]);
+  const paymentOrder = paymentOrderId && data ? data.orders.find((o) => o.id === paymentOrderId) ?? null : null;
+
+  // Arriving from a customer's profile: bring the receivables into view once.
+  useEffect(() => {
+    if (status === "ready" && customerFromLink && window.location.hash === "#receivables") {
+      document.getElementById("receivables")?.scrollIntoView({ block: "start" });
+    }
+  }, [status, customerFromLink]);
 
   const options = useMemo(() => {
     if (!ds) return { products: [] as Option[], customers: [] as Option[], officers: [] as Option[] };
@@ -122,7 +144,7 @@ export default function FinancialPage() {
   }
 
   return (
-    <div className="space-y-5 pb-12" data-testid="financial-page">
+    <div className="space-y-6 pb-12" data-testid="financial-page">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Financial Management</h1>
@@ -146,14 +168,30 @@ export default function FinancialPage() {
         periodText={model.periodText}
         comparisonText={model.comparison ? `${model.comparison.label.toLowerCase()} (${model.comparison.text})` : null}
       />
-      <BasisLegend />
 
       <FinanceKpis m={model} />
-      <ReceivablesSection m={model} />
+      <ReceivablesSection m={model} orderRows={orderRows} status={receivableStatus} onStatus={setReceivableStatus}
+        onRecordPayment={canRecordPayment(perms) ? setPaymentOrderId : undefined} />
       <CollectionsSection m={model} />
       <CashFlowSection m={model} />
       <ProfitabilitySection m={model} />
-      <ReconciliationSection m={model} />
+      <FinancialChecksSection m={model} />
+
+      {/* The same Record Payment workflow as Customer Database (record_payment() + audit line). */}
+      {paymentOrder && (
+        <RecordPaymentDialog
+          order={paymentOrder}
+          canBackdate={perms.backdate}
+          onClose={() => setPaymentOrderId(null)}
+          onRecorded={() => setReloadKey((k) => k + 1)}
+          notify={(type, message) => setNotification({ type, message })}
+        />
+      )}
+      {notification && (
+        <div className="fixed bottom-6 right-6 z-[130] rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-semibold shadow-lg" role="status">
+          <span className={notification.type === "error" ? "text-red-600" : "text-green-600"}>{notification.message}</span>
+        </div>
+      )}
     </div>
   );
 }

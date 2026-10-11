@@ -35,10 +35,10 @@ import type { CustomerFinancialsRow } from "@/lib/supabase/database.types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { getOrderPaymentStatus } from "@/lib/financial";
-import { efzToday } from "@/lib/dates";
 import { type CommissionEvent, expectedForOrder, footballIdsOf, money, summarize } from "@/lib/commission";
 import { OrderCommissionPanel } from "@/components/admin/OrderCommissionPanel";
 import { CustomersToCollect, collectionRows } from "@/components/admin/CustomersToCollect";
+import { RecordPaymentDialog, canRecordPayment } from "@/components/admin/RecordPaymentDialog";
 
 const emptyCustomerForm = { name: "", email: "", phone: "", notes: "" };
 
@@ -64,15 +64,9 @@ export default function CustomersPage() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
-  const [receivableFilter, setReceivableFilter] = useState<'all' | 'unpaid' | 'partial' | 'paid'>('all');
+  // Record Payment uses the shared dialog (components/admin/RecordPaymentDialog).
+  // The full receivables dashboard lives in Financial Management (Phase 14).
   const [paymentModalOrderId, setPaymentModalOrderId] = useState<string | null>(null);
-  const [paymentForm, setPaymentForm] = useState({
-    amount: "",
-    paymentDate: efzToday(),
-    paymentMethod: "Cash",
-    reference: "",
-    note: "",
-  });
   const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
 
   // Contact fields only. Ownership is not part of this form (see handleRegister).
@@ -442,60 +436,6 @@ export default function CustomersPage() {
     };
   };
 
-  const recordPayment = async (order: Order) => {
-    const outstanding = Math.max(0, Number(order.outstandingBalance ?? 0));
-    const amountValue = Number(paymentForm.amount);
-
-    // Checked here for an instant answer; record_payment() checks it again and
-    // is the one that actually decides.
-    if (!paymentForm.amount || Number.isNaN(amountValue) || amountValue <= 0 || amountValue > outstanding) {
-      showNotification('error', 'Payment amount must be greater than zero and cannot exceed the current outstanding balance.');
-      return;
-    }
-
-    try {
-      setIsSaving(true);
-      const db = getDb();
-
-      // Only a Super Admin may date a payment before today; everyone else's is
-      // dated today (Mogadishu) by the database.
-      const today = efzToday();
-      if (perms.backdate && paymentForm.paymentDate > today) {
-        showNotification('error', 'A payment cannot be dated in the future.');
-        return;
-      }
-      const paymentDate = perms.backdate && paymentForm.paymentDate && paymentForm.paymentDate !== today
-        ? paymentForm.paymentDate
-        : undefined;
-
-      await db.orders.addPayment({
-        orderId: order.id,
-        amount: amountValue,
-        paymentDate,
-        paymentMethod: paymentForm.paymentMethod,
-        reference: paymentForm.reference,
-        notes: paymentForm.note,
-      });
-
-      await db.logs.write({
-        category: 'FINANCIAL',
-        severity: 'INFO',
-        message: `Payment of $${amountValue} recorded against order ${order.id}`,
-        targetId: order.id,
-        metadata: { amount: amountValue, method: paymentForm.paymentMethod, reference: paymentForm.reference },
-      });
-
-      await loadAll();
-      setPaymentForm({ amount: '', paymentDate: efzToday(), paymentMethod: 'Cash', reference: '', note: '' });
-      setPaymentModalOrderId(null);
-      showNotification('success', 'Payment recorded successfully.');
-    } catch (error) {
-      showNotification('error', describeDbError(error));
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
   const filteredCustomers = customers.filter(c => {
     if (perms.viewOwnCustomersOnly) {
       if (String(c.marketingOfficerId || c.registeredBy) !== String(profile.id)) return false;
@@ -511,29 +451,6 @@ export default function CustomersPage() {
 
   const selectedCustomer = selectedCustomerId ? customers.find(c => c.id === selectedCustomerId) ?? null : null;
   const selectedCustomerSummary = selectedCustomer ? getCustomerFinancialSummaryData(selectedCustomer) : null;
-
-  // Cancelled orders are not receivables, and record_payment() refuses them.
-  const receivables = orders
-    .filter(order => order.status !== 'cancelled')
-    .map(order => {
-      const customer = customers.find(c => c.id === order.customerId || c.name === order.customer || c.phone === order.phone) ?? null;
-      // amount_paid and outstanding_balance are maintained by the payment
-      // trigger, so there is nothing left to re-derive from the payment rows.
-      const total = Number(order.total || 0);
-      const collected = Number(order.amountPaid ?? 0);
-      const outstanding = Number(order.outstandingBalance ?? Math.max(0, total - collected));
-      const paymentStatus = getOrderPaymentStatus(order);
-      return { customer, order, total, collected, outstanding, paymentStatus };
-    })
-    .filter(row => row.outstanding > 0 || receivableFilter === 'all' || row.paymentStatus === receivableFilter)
-    .filter(row => receivableFilter === 'all' ? true : row.paymentStatus === receivableFilter)
-    .sort((a, b) => new Date(b.order.date).getTime() - new Date(a.order.date).getTime());
-
-  const receivablesSummary = {
-    totalRevenueGenerated: receivables.reduce((sum, row) => sum + row.total, 0),
-    totalCollected: receivables.reduce((sum, row) => sum + row.collected, 0),
-    totalOutstanding: receivables.reduce((sum, row) => sum + row.outstanding, 0),
-  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -764,9 +681,18 @@ export default function CustomersPage() {
               <h2 className="text-lg font-bold text-slate-900 tracking-tight">{selectedCustomer.name} — Financial View</h2>
               <p className="text-[10px] text-slate-400 uppercase tracking-widest">Customer → Orders → Payments</p>
             </div>
-            <button type="button" onClick={() => setSelectedCustomerId(null)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-bold uppercase text-slate-600">
-              Close
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Receivables and payment history across customers live in Financial Management. */}
+              {perms.viewReports && (
+                <a href={`/admin/financial?customer=${encodeURIComponent(selectedCustomer.id)}#receivables`} data-testid="customer-open-financial"
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[10px] font-bold uppercase text-slate-700 hover:bg-slate-50">
+                  Receivables in Financial Management
+                </a>
+              )}
+              <button type="button" onClick={() => setSelectedCustomerId(null)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-bold uppercase text-slate-600">
+                Close
+              </button>
+            </div>
           </div>
           <CardContent className="p-4 space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -806,6 +732,18 @@ export default function CustomersPage() {
                         <h3 className="text-lg font-bold text-slate-900">{order.id}</h3>
                       </div>
                       <div className="flex items-center gap-2">
+                        {/* Same shared Record Payment workflow as Financial Management; record_payment()
+                            needs create_orders or edit_orders and refuses cancelled orders. */}
+                        {canRecordPayment(perms) && order.status !== 'cancelled' && Number(order.outstandingBalance ?? outstanding) > 0 && (
+                          <button
+                            type="button"
+                            data-testid="customer-record-payment"
+                            onClick={() => setPaymentModalOrderId(order.id)}
+                            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-700 hover:bg-blue-50 hover:text-blue-700"
+                          >
+                            Record Payment
+                          </button>
+                        )}
                         {perms.viewCommissions && (
                           <button
                             type="button"
@@ -918,99 +856,10 @@ export default function CustomersPage() {
           <CardContent className="p-4">
             <CustomersToCollect
               rows={toCollect}
-              onRecordPayment={(perms.createOrders || perms.editOrders) ? (orderId) => setPaymentModalOrderId(orderId) : undefined}
+              onRecordPayment={canRecordPayment(perms) ? (orderId) => setPaymentModalOrderId(orderId) : undefined}
             />
           </CardContent>
         </Card>
-      )}
-
-      {!perms.isMarketingOfficer && (
-      <Card className="border-none shadow-xl shadow-slate-100 overflow-hidden">
-        <div className="p-4 border-b bg-white flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-bold text-slate-900 tracking-tight">Outstanding / Receivables</h2>
-            <p className="text-[10px] text-slate-400 uppercase tracking-widest">Revenue Generated vs Cash Collected</p>
-          </div>
-          <div className="flex gap-2">
-            {(['all', 'unpaid', 'partial', 'paid'] as const).map(filter => (
-              <button
-                key={filter}
-                type="button"
-                onClick={() => setReceivableFilter(filter)}
-                className={cn(
-                  "h-8 rounded-lg px-3 text-[10px] font-bold uppercase tracking-wide",
-                  receivableFilter === filter ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'
-                )}
-              >
-                {filter}
-              </button>
-            ))}
-          </div>
-        </div>
-        <CardContent className="p-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Total Revenue Generated</p>
-              <h3 className="mt-2 text-2xl font-bold text-slate-900">${receivablesSummary.totalRevenueGenerated.toFixed(0)}</h3>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Total Collected</p>
-              <h3 className="mt-2 text-2xl font-bold text-brand-blue">${receivablesSummary.totalCollected.toFixed(0)}</h3>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Total Outstanding</p>
-              <h3 className="mt-2 text-2xl font-bold text-slate-900">${receivablesSummary.totalOutstanding.toFixed(0)}</h3>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-[9px] uppercase tracking-widest text-slate-400">
-                <tr>
-                  <th className="px-4 py-3">Customer</th>
-                  <th className="px-4 py-3">Order</th>
-                  <th className="px-4 py-3">Order Date</th>
-                  <th className="px-4 py-3 text-right">Order Total</th>
-                  <th className="px-4 py-3 text-right">Amount Collected</th>
-                  <th className="px-4 py-3 text-right">Outstanding</th>
-                  <th className="px-4 py-3 text-center">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {receivables.map(({ customer, order, total, collected, outstanding, paymentStatus }) => (
-                  <tr key={order.id} className="hover:bg-slate-50/80">
-                    <td className="px-4 py-3 font-bold text-slate-900">{customer?.name ?? order.customer}</td>
-                    <td className="px-4 py-3">{order.id}</td>
-                    <td className="px-4 py-3 text-slate-600">{order.date}</td>
-                    <td className="px-4 py-3 text-right font-bold text-slate-900">${total.toFixed(0)}</td>
-                    <td className="px-4 py-3 text-right font-bold text-brand-blue">${collected.toFixed(0)}</td>
-                    <td className="px-4 py-3 text-right font-bold text-slate-900">${outstanding.toFixed(0)}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={cn(
-                        "inline-flex rounded-full px-2 py-1 text-[9px] font-bold uppercase",
-                        paymentStatus === 'paid' ? 'bg-green-100 text-green-700' : paymentStatus === 'partial' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'
-                      )}>{paymentStatus}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {/* record_payment(): create_orders or edit_orders, and something left to pay. */}
-                      {(perms.createOrders || perms.editOrders) && outstanding > 0 && (
-                        <button type="button" onClick={() => setPaymentModalOrderId(order.id)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[9px] font-bold uppercase tracking-wide text-slate-700 hover:bg-blue-50 hover:text-blue-700">
-                          Record Payment
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {receivables.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-10 text-center text-slate-400">No receivables match this filter.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
       )}
 
       {commissionOrder && (
@@ -1030,77 +879,14 @@ export default function CustomersPage() {
       {paymentModalOrderId && (() => {
         const order = orders.find(item => item.id === paymentModalOrderId);
         if (!order) return null;
-        const total = Number(order.total || 0);
-        const collected = Number(order.amountPaid ?? order.payments?.reduce((sum, payment) => sum + Number(payment.amount || 0), 0) ?? 0);
-        const outstanding = Math.max(0, total - collected);
-
         return (
-          <div className="fixed inset-0 z-[120] bg-slate-900/60 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Record payment</p>
-                  <h3 className="text-xl font-bold text-slate-900">{order.customer}</h3>
-                </div>
-                <button type="button" onClick={() => setPaymentModalOrderId(null)} className="rounded-full border border-slate-200 p-2 text-slate-500">
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 text-xs text-slate-600 mb-4">
-                <div className="rounded-xl bg-slate-50 p-3"><span className="block text-[9px] uppercase tracking-widest text-slate-400">Order ID</span><strong className="text-slate-900">{order.id}</strong></div>
-                <div className="rounded-xl bg-slate-50 p-3"><span className="block text-[9px] uppercase tracking-widest text-slate-400">Order Type</span><strong className="text-slate-900 uppercase">{order.orderType || 'regular'}</strong></div>
-                <div className="rounded-xl bg-slate-50 p-3"><span className="block text-[9px] uppercase tracking-widest text-slate-400">Order Total</span><strong className="text-slate-900">${total.toFixed(2)}</strong></div>
-                <div className="rounded-xl bg-slate-50 p-3"><span className="block text-[9px] uppercase tracking-widest text-slate-400">Outstanding</span><strong className="text-slate-900">${outstanding.toFixed(2)}</strong></div>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Payment Amount</label>
-                  <Input value={paymentForm.amount} onChange={e => setPaymentForm({ ...paymentForm, amount: e.target.value })} type="number" min="0" step="0.01" placeholder="0.00" className="h-11 rounded-xl" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Payment Date</label>
-                    {perms.backdate ? (
-                      <>
-                        <Input value={paymentForm.paymentDate} max={efzToday()} onChange={e => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })} type="date" className="h-11 rounded-xl" />
-                        {paymentForm.paymentDate < efzToday() && (
-                          <p className="mt-1 text-[10px] font-bold text-amber-600">Backdated payment - recorded in the audit log.</p>
-                        )}
-                      </>
-                    ) : (
-                      <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600" title="Only a Super Admin can record an earlier payment date">
-                        Today ({efzToday()})
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Payment Method</label>
-                    <select value={paymentForm.paymentMethod} onChange={e => setPaymentForm({ ...paymentForm, paymentMethod: e.target.value })} className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm">
-                      <option>Cash</option>
-                      <option>EVC</option>
-                      <option>eDahab</option>
-                      <option>Bank</option>
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Reference / Note</label>
-                  <Input value={paymentForm.reference} onChange={e => setPaymentForm({ ...paymentForm, reference: e.target.value })} placeholder="INV-001" className="h-11 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Note</label>
-                  <Input value={paymentForm.note} onChange={e => setPaymentForm({ ...paymentForm, note: e.target.value })} placeholder="Optional note" className="h-11 rounded-xl" />
-                </div>
-              </div>
-
-              <div className="mt-6 flex gap-3">
-                <Button type="button" variant="outline" onClick={() => setPaymentModalOrderId(null)} className="flex-1 h-11 rounded-xl">Cancel</Button>
-                <Button type="button" disabled={isSaving} onClick={() => recordPayment(order)} className="flex-1 h-11 rounded-xl bg-slate-900 text-white">{isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Record Payment</Button>
-              </div>
-            </div>
-          </div>
+          <RecordPaymentDialog
+            order={order}
+            canBackdate={perms.backdate}
+            onClose={() => setPaymentModalOrderId(null)}
+            onRecorded={loadAll}
+            notify={showNotification}
+          />
         );
       })()}
 
