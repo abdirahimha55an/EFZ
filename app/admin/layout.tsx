@@ -36,7 +36,8 @@ import {
   Sun,
   Moon,
   Wallet,
-  Inbox
+  Inbox,
+  Landmark
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -69,6 +70,8 @@ const SIDEBAR_LINKS = [
   // 18: requests from the public order page. Super Admin and Managers (manage_website_requests).
   { name: "Website Requests", href: "/admin/requests", icon: Inbox, permission: 'manage_website_requests' as Permission },
   { name: "Sales & Analytics", href: "/admin/analytics", icon: BarChart3, permission: 'view_reports' as Permission },
+  // 14: cash, receivables, profitability and reconciliation (read only; cost only via can_view_cost).
+  { name: "Financial Management", href: "/admin/financial", icon: Landmark, permission: 'view_reports' as Permission },
   { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
   { name: "Customer Database", href: "/admin/customers", icon: UserCheck, permission: 'view_customers' as Permission },
   // A Marketing Officer's own commission events (read only). Shown to officers only.

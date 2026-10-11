@@ -30,6 +30,12 @@ export type SalesLine = {
   remaining: number;
   unitPriceCents: number;
   listPriceCents: number;
+  /**
+   * order_items.line_cost: quantity x the unit cost frozen when the line was
+   * sold (historical_unit_cost). Null when the database withholds cost from
+   * this user; never treated as zero.
+   */
+  costCents: number | null;
 };
 
 export type SalesPayment = { amountCents: number; date: string; method: string };
@@ -47,6 +53,10 @@ export type SalesOrder = {
   stockMode: "at_creation" | "at_delivery";
   lines: SalesLine[];
   payments: SalesPayment[];
+  /** orders.total as stored (database-maintained from the line items). */
+  totalCents: number;
+  /** orders.payment_status as stored. */
+  paymentStatus: Order["paymentStatus"];
   /** Database-maintained (record_payment / triggers); never recomputed here. */
   outstandingCents: number;
   amountPaidCents: number;
@@ -97,6 +107,7 @@ function toSalesLine(order: Order, item: Order["items"][number]): SalesLine {
     remaining,
     unitPriceCents: toCents(item.actualUnitPrice ?? item.price ?? 0),
     listPriceCents: toCents(item.standardUnitPrice ?? 0),
+    costCents: item.lineCost === null || item.lineCost === undefined ? null : toCents(item.lineCost),
   };
 }
 
@@ -118,6 +129,8 @@ export function toSalesOrder(order: Order): SalesOrder {
       date: p.paymentDate,
       method: (p.paymentMethod ?? "").trim(),
     })),
+    totalCents: toCents(order.total),
+    paymentStatus: order.paymentStatus,
     outstandingCents: toCents(order.outstandingBalance),
     amountPaidCents: toCents(order.amountPaid),
     grossProfitCents: order.grossProfit === null || order.grossProfit === undefined ? null : toCents(order.grossProfit),
