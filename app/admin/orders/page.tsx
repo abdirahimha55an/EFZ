@@ -75,6 +75,8 @@ export default function OrdersPage() {
     customerId: "",
     orderType: "regular" as "regular" | "trial",
     amountPaid: 0,
+    /** Required, fixed for the life of the order: paid in full now, or pay later (invoice). */
+    paymentTerms: "" as "" | "paid_at_sale" | "credit",
     notes: "",
     /** Super Admin only; today (Mogadishu) for everyone else. */
     orderDate: efzToday(),
@@ -447,17 +449,44 @@ export default function OrdersPage() {
     }
 
     const paymentAmount = Math.max(0, Number(formData.amountPaid || 0));
+    if (!formData.paymentTerms) {
+      showNotification('error', 'Choose the payment terms: paid in full now, or credit (pay later, with an invoice).');
+      return;
+    }
+    // Same rules as create_order_with_terms() (migration 20), which has the final say.
+    const amountCents = Math.round(paymentAmount * 100), totalCents = Math.round(subtotal * 100);
+    if (Math.abs(paymentAmount * 100 - amountCents) > 1e-6) {
+      showNotification('error', 'The amount paid must be in whole cents.');
+      return;
+    }
+    if (formData.paymentTerms === 'paid_at_sale' && amountCents !== totalCents) {
+      showNotification('error', `Paid at sale means the full order total ($${subtotal.toFixed(2)}) is paid now. Enter that amount, or choose credit.`);
+      return;
+    }
+    if (formData.paymentTerms === 'credit' && totalCents > 0 && amountCents >= totalCents) {
+      showNotification('error', 'The full amount is being paid now, so this is a paid-at-sale order, not credit.');
+      return;
+    }
+    if (formData.paymentTerms === 'credit' && totalCents === 0 && amountCents > 0) {
+      showNotification('error', 'The order total is $0.00, so no payment can be recorded.');
+      return;
+    }
 
     try {
       setIsSaving(true);
       const db = getDb();
 
       // One transaction: the order (always pending, officer taken from the
-      // customer) and its lines with the list price and frozen cost snapshot.
+      // customer), its lines with the list price and frozen cost snapshot, and
+      // the initial payment (dated today, Mogadishu; its own audit line). The
+      // database checks the payment against the terms and the order total it
+      // computed; if anything is refused, nothing is written.
       // Stock leaves the shelf only when balls are delivered; the database
       // refuses balls already promised to other open orders.
       const created = await db.orders.create({
         customerId: customer.id,
+        paymentTerms: formData.paymentTerms,
+        initialPayment: amountCents / 100,
         customerName: customer.name,
         phone: customer.phone,
         orderType: formData.orderType,
@@ -471,26 +500,6 @@ export default function OrdersPage() {
         })),
       });
 
-      // A separate call, because the payment is its own audited event. It is
-      // dated today (Mogadishu) by the database. If it fails the order still
-      // stands - just unpaid - and the message says so.
-      if (paymentAmount > 0) {
-        try {
-          await db.orders.addPayment({
-            orderId: created.id,
-            amount: paymentAmount,
-            notes: 'Initial payment',
-          });
-        } catch (paymentError) {
-          await refresh();
-          setIsModalOpen(false);
-          showNotification(
-            'error',
-            `Order ${created.id} was created, but the initial payment failed: ${describe(paymentError)}. Record it from the Customer Database.`
-          );
-          return;
-        }
-      }
 
       await db.logs.write({
         category: 'ORDER',
@@ -1044,6 +1053,21 @@ export default function OrdersPage() {
                   )}
 
                   <div className="space-y-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-700 ml-1">Payment terms</label>
+                      <select
+                        required
+                        data-testid="order-payment-terms"
+                        value={formData.paymentTerms}
+                        onChange={e => setFormData({ ...formData, paymentTerms: e.target.value as "" | "paid_at_sale" | "credit" })}
+                        className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs"
+                      >
+                        <option value="">Choose…</option>
+                        <option value="paid_at_sale">Paid in full now (receipt)</option>
+                        <option value="credit">Credit: pay later (invoice)</option>
+                      </select>
+                      <p className="ml-1 text-[10px] text-slate-500">Fixed once the order is created.</p>
+                    </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-700 ml-1">Amount Paid</label>
                       <Input

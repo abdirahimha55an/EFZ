@@ -7,16 +7,18 @@
  *
  * Read only. The order comes from order_details, so RLS decides what this user
  * may see (a Marketing Officer only their own customers' orders). Access: staff
- * who can open orders, customers or reports. Cost is never shown. Printing is
- * recorded in the audit trail BEFORE the print dialog opens (Phase 12 rule).
+ * who can open orders, customers or reports. Cost is never shown. Each print
+ * REQUEST is recorded in the audit trail BEFORE the print dialog opens (Phase 12
+ * rule); whether the user then actually printed is not known or recorded.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2, Printer, Shield } from "lucide-react";
 import type { AdminProfile, AdminSettings, Order } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { formatYmd } from "@/lib/analytics/period";
+import { efzToday } from "@/lib/dates";
 import { usd } from "@/components/analytics/primitives";
 import { buildInvoice, buildReceipt, toDocOrder, type InvoiceDoc, type ReceiptDoc } from "@/lib/finance/documents";
 
@@ -35,6 +37,25 @@ export default function DocumentPage() {
   const [doc, setDoc] = useState<InvoiceDoc | ReceiptDoc | null>(null);
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [printError, setPrintError] = useState<string | null>(null);
+  const docRef = useRef<HTMLElement | null>(null);
+
+  // The print stylesheet hides the document unless data-print-ok is set, which
+  // happens only after the audit request succeeded (so browser Print / Ctrl+P
+  // alone prints nothing). It is cleared only when the browser reports that
+  // printing ended (afterprint, or the print media query turning off), never
+  // as soon as the print call returns: on browsers where that call does not
+  // block (e.g. iOS Safari) the document would be hidden and print blank.
+  useEffect(() => {
+    const clear = () => docRef.current?.removeAttribute("data-print-ok");
+    const mq = window.matchMedia?.("print");
+    const onMedia = (e: MediaQueryListEvent) => { if (!e.matches) clear(); };
+    window.addEventListener("afterprint", clear);
+    mq?.addEventListener?.("change", onMedia);
+    return () => {
+      window.removeEventListener("afterprint", clear);
+      mq?.removeEventListener?.("change", onMedia);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,7 +69,8 @@ export default function DocumentPage() {
         const [order, s]: [Order | null, AdminSettings] = await Promise.all([db.orders.get(req.orderId), db.settings.get()]);
         if (!order) throw new Error("Order not found, or not available to your account.");
         const o = toDocOrder(order);
-        const built = req.type === "invoice" ? buildInvoice(o) : buildReceipt(o, req.paymentId as string);
+        const asOf = efzToday();
+        const built = req.type === "invoice" ? buildInvoice(o, asOf) : buildReceipt(o, req.paymentId as string, asOf);
         if ("error" in built) throw new Error(built.error);
         if (cancelled) return;
         setDoc(built); setSettings(s); setState("ready");
@@ -68,14 +90,17 @@ export default function DocumentPage() {
       await getDb().logs.write({
         category: "FINANCIAL",
         severity: "INFO",
-        message: `${"payment" in doc ? "Receipt" : "Invoice"} ${doc.number} printed for order ${doc.order.id}`,
+        message: `${"payment" in doc ? "Receipt" : "Invoice"} ${doc.number} print requested for order ${doc.order.id}`,
         targetId: doc.order.id,
-        metadata: { document: doc.number, order: doc.order.id },
+        metadata: { document: doc.number, order: doc.order.id, event: "print_requested" },
       });
     } catch (error) {
-      setPrintError(`Not printed: it could not be recorded in the audit trail (${describeDbError(error)}).`);
+      setPrintError(`Not printed: the print request could not be recorded in the audit trail (${describeDbError(error)}).`);
       return;
     }
+    docRef.current?.setAttribute("data-print-ok", "1");
+    // Unlocked only now that the request is in the audit trail. Opening the
+    // dialog is all we know; whether anything was printed is not recorded.
     window.print();
   };
 
@@ -95,7 +120,7 @@ export default function DocumentPage() {
   const o = doc.order;
   return (
     <div className="space-y-4">
-      <style>{`@media print { body * { visibility: hidden !important; } #efz-document, #efz-document * { visibility: visible !important; } #efz-document { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none !important; border: 0 !important; } }`}</style>
+      <style>{`@media print { body * { visibility: hidden !important; } #efz-document, #efz-document * { visibility: visible !important; } #efz-document:not([data-print-ok]) { display: none !important; } #efz-document { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none !important; border: 0 !important; } }`}</style>
       <div className="flex items-center justify-between gap-2 print:hidden">
         <p className="text-xs text-slate-500">Use Print and choose &quot;Save as PDF&quot; to download.</p>
         <button type="button" onClick={print} data-testid="document-print" className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-slate-800">
@@ -104,7 +129,7 @@ export default function DocumentPage() {
       </div>
       {printError && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-800">{printError}</p>}
 
-      <article id="efz-document" data-testid={isReceipt ? "receipt" : "invoice"} className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white p-8 text-slate-800 shadow-sm">
+      <article ref={docRef} id="efz-document" data-testid={isReceipt ? "receipt" : "invoice"} className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white p-8 text-slate-800 shadow-sm">
         <header className="flex items-start justify-between gap-6 border-b border-slate-200 pb-5">
           <div>
             <p className="text-lg font-bold text-slate-900">{settings.businessName}</p>
@@ -128,7 +153,7 @@ export default function DocumentPage() {
               <>
                 <dt className="text-slate-400">Payment date</dt><dd>{formatYmd((doc as ReceiptDoc).payment.date)}</dd>
                 <dt className="text-slate-400">Order</dt><dd className="font-mono">{o.id}</dd>
-                <dt className="text-slate-400">Invoice</dt><dd className="font-mono">{(doc as ReceiptDoc).invoiceNumber ?? "— (paid at sale)"}</dd>
+                <dt className="text-slate-400">Invoice</dt><dd className="font-mono" data-testid="receipt-invoice">{(doc as ReceiptDoc).invoiceNumber ?? ((doc as ReceiptDoc).paidAtSale ? "— (paid at sale)" : "—")}</dd>
               </>
             ) : (
               <>
@@ -149,9 +174,10 @@ export default function DocumentPage() {
                 <dt className="text-slate-500">Payment method</dt><dd className="text-right">{r.payment.method || "Not recorded"}</dd>
                 {r.payment.reference && (<><dt className="text-slate-500">Reference</dt><dd className="text-right">{r.payment.reference}</dd></>)}
                 <dt className="text-slate-500">Order total</dt><dd className="text-right">{usd(o.totalCents)}</dd>
-                <dt className="text-slate-500">Paid to date (including this payment)</dt><dd className="text-right" data-testid="receipt-paid-to-date">{usd(r.paidToDateCents)}</dd>
-                <dt className="font-semibold text-slate-700">Balance after this payment</dt><dd className="text-right font-bold" data-testid="receipt-balance">{usd(r.balanceAfterCents)}</dd>
+                <dt className="text-slate-500">Paid to date, including this payment*</dt><dd className="text-right" data-testid="receipt-paid-to-date">{usd(r.paidToDateCents)}</dd>
+                <dt className="font-semibold text-slate-700">Balance after this payment*</dt><dd className="text-right font-bold" data-testid="receipt-balance">{usd(r.balanceAfterCents)}</dd>
               </dl>
+              <p className="mt-3 text-[10px] text-slate-500" data-testid="receipt-reconstructed">* Reconstructed on {formatYmd(r.asOf)} from the payment records and the current order total; not a snapshot taken when the payment was received.</p>
             </section>
           );
         })() : (() => {
@@ -169,7 +195,7 @@ export default function DocumentPage() {
               <dl className="ml-auto mt-4 grid w-72 grid-cols-2 gap-y-1 text-xs">
                 <dt className="font-semibold">Invoice total</dt><dd className="text-right font-semibold tabular-nums" data-testid="invoice-total">{usd(inv.totalCents)}</dd>
                 <dt className="text-slate-500">Payments received</dt><dd className="text-right tabular-nums" data-testid="invoice-paid">{usd(inv.paidCents)}</dd>
-                <dt className="border-t border-slate-200 pt-1 font-bold">Balance due</dt><dd className="border-t border-slate-200 pt-1 text-right font-bold tabular-nums" data-testid="invoice-outstanding">{usd(inv.outstandingCents)}</dd>
+                <dt className="border-t border-slate-200 pt-1 font-bold">Balance due as of {formatYmd(inv.asOf)}</dt><dd className="border-t border-slate-200 pt-1 text-right font-bold tabular-nums" data-testid="invoice-outstanding">{usd(inv.outstandingCents)}</dd>
               </dl>
               {inv.payments.length > 0 && (
                 <div className="mt-6">

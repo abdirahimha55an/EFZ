@@ -172,6 +172,8 @@ export type ReceivableOrderRow = {
   status: ReceivableStatus;
   /** A credit order: an invoice is offered (lib/finance/documents). */
   invoice: boolean;
+  /** Stored payment terms; null = not recorded (awaiting review). */
+  terms: "paid_at_sale" | "credit" | null;
 };
 
 /**
@@ -191,6 +193,7 @@ export function receivableOrders(ds: Dataset, f: SalesFilters, status: Receivabl
       orderId: order.id, customerId: order.customerId, customerName: linked?.name || order.customerName, date: order.date,
       totalCents: order.totalCents, collectedCents: order.amountPaidCents, outstandingCents: order.outstandingCents, status: s,
       invoice: offersInvoice(order),
+      terms: order.paymentTerms,
     });
   }
   return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.orderId < b.orderId ? -1 : 1));
@@ -338,6 +341,8 @@ const ACTIONS: Record<string, string> = {
   deliveredBalance: "Fully delivered but not fully paid: follow up with the customer and record the payment when it arrives.",
   cancelledPaid: "A cancelled order still holds payments, which are left out of Cash received. Decide whether to refund or move the money.",
   noProduct: "A line refers to a product that no longer exists. Historical figures stand; no action unless the product was deleted by mistake.",
+  termsMissing: "No invoice can be issued until a Super Admin records whether it was paid at sale or on credit (set_order_payment_terms, with the evidence). Receipts are unaffected.",
+  paidAtSaleBalance: "Recorded as paid at sale, but money is still owed (for example the initial payment failed). Collect it; the terms stay as recorded.",
   zeroCost: "A line was sold with no recorded cost, so its profit is overstated. Record the product cost for future sales.",
   belowCost: "A line was sold below its recorded cost (approved below-cost sale or pricing error). Review the price.",
 };
@@ -377,6 +382,8 @@ export function reconciliation(ds: Dataset): ReconciliationCheck[] {
     { key: "deliveredBalance", label: "Delivered orders with an outstanding balance", severity: "WARN", needsCost: false, test: (o) => o.status === "delivered" && o.outstandingCents > 0 },
     { key: "cancelledPaid", label: "Cancelled orders holding payments (not in Cash received)", severity: "WARN", needsCost: false, test: (o) => !isSale(o) && o.payments.length > 0 },
     { key: "noProduct", label: "Orders with a line whose product no longer exists", severity: "WARN", needsCost: false, test: (o) => o.lines.some((l) => l.productId === null) },
+    { key: "termsMissing", label: "Orders with no recorded payment terms (awaiting review)", severity: "WARN", needsCost: false, test: (o) => isSale(o) && o.paymentTerms === null },
+    { key: "paidAtSaleBalance", label: "Paid-at-sale orders that still have a balance", severity: "WARN", needsCost: false, test: (o) => isSale(o) && o.paymentTerms === "paid_at_sale" && o.outstandingCents > 0 },
     { key: "zeroCost", label: "Orders with a line at no recorded cost (profit overstated)", severity: "WARN", needsCost: true, test: (o) => o.lines.some((l) => l.costCents === 0) },
     { key: "belowCost", label: "Orders with a line sold below its recorded cost", severity: "WARN", needsCost: true, test: (o) => o.lines.some((l) => l.costCents !== null && lineRevenueCents(l) < l.costCents) },
   ];

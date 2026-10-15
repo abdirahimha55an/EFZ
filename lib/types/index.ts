@@ -131,6 +131,9 @@ export type PaymentRecord = {
   createdAt?: string;
 };
 
+/** Fixed when the order is created (migration 20); null = not recorded (legacy / converted, awaiting review). */
+export type PaymentTerms = "paid_at_sale" | "credit";
+
 export type Order = {
   id: string;
   customer: string;
@@ -165,6 +168,8 @@ export type Order = {
   paymentMethod?: string;
   createdAt?: string;
   payments?: PaymentRecord[];
+  /** From order_payment_terms. null = not recorded; undefined = could not be read. */
+  paymentTerms?: PaymentTerms | null;
   /** First confirmation (from migration 12); null for orders confirmed earlier. */
   confirmedAt?: string | null;
   /** at_creation: stock left when the order was taken (before 12); at_delivery: per delivered ball. */

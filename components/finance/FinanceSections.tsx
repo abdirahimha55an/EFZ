@@ -94,7 +94,9 @@ function orderColumns(onRecordPayment?: (orderId: string) => void): Column<Recei
     { key: "status", header: "Status", render: (r) => <StatusPill s={r.status} /> },
     { key: "invoice", header: "Invoice", render: (r) => r.invoice
       ? <a href={invoiceHref(r.orderId)} target="_blank" rel="noopener" data-testid="fin-invoice" className={docLink}>Invoice</a>
-      : r.totalCents > 0 ? <span className="text-[11px] text-slate-400" title="Paid in full at the sale: receipts only">Paid at sale</span> : <span className="text-slate-300">—</span> },
+      : r.totalCents <= 0 ? <span className="text-slate-300">—</span>
+      : r.terms === "paid_at_sale" ? <span className="text-[11px] text-slate-400" title="Paid in full at the sale: receipts only">Paid at sale</span>
+      : <span className="text-[11px] text-amber-700" title="Payment terms not recorded: a Super Admin must review this order before an invoice can be issued">Terms not recorded</span> },
   ];
   if (onRecordPayment) {
     cols.push({ key: "action", header: "", render: (r) => r.outstandingCents > 0 ? (

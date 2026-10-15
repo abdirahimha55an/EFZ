@@ -750,6 +750,8 @@ export type Database = {
       public_products: View<PublicProductRow>;
       staff_products: View<StaffProductRow>;
       order_details: View<OrderDetailsRow>;
+      /** Migration 20: fixed payment terms, same visibility as order_details. */
+      order_payment_terms: View<{ id: string; payment_terms: "paid_at_sale" | "credit" | null }>;
       inventory_status: View<InventoryStatusRow>;
       customer_financials: View<CustomerFinancialsRow>;
       officer_commission_summary: View<OfficerCommissionSummaryRow>;
@@ -763,6 +765,10 @@ export type Database = {
     };
     Functions: {
       create_order: { Args: { payload: Json }; Returns: string };
+      /** Migration 20: create_order() + fixed payment terms, one transaction. */
+      create_order_with_terms: { Args: { payload: Json; p_payment_terms: "paid_at_sale" | "credit" }; Returns: string };
+      /** Migration 20: Super Admin review of an order without terms (once, audited). */
+      set_order_payment_terms: { Args: { p_order_id: string; p_payment_terms: "paid_at_sale" | "credit"; p_reason: string }; Returns: undefined };
       record_payment: {
         Args: {
           p_order_id: string;

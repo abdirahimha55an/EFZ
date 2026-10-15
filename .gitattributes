@@ -5,3 +5,7 @@ supabase/18*.sql            text eol=lf
 supabase/rollback/18*.sql   text eol=lf
 supabase/production/m18/**  text eol=lf
 supabase/staging/staging_checks_18.sql  text eol=lf
+# Migration 20 (payment terms): same rule, the applied file is pinned by sha256.
+supabase/20*.sql            text eol=lf
+supabase/rollback/20*.sql   text eol=lf
+supabase/checks/20*.sql     text eol=lf

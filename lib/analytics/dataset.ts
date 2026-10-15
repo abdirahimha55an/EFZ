@@ -59,6 +59,8 @@ export type SalesOrder = {
   totalCents: number;
   /** orders.payment_status as stored. */
   paymentStatus: Order["paymentStatus"];
+  /** orders.payment_terms (migration 20); null = not recorded or not readable. */
+  paymentTerms: "paid_at_sale" | "credit" | null;
   /** Database-maintained (record_payment / triggers); never recomputed here. */
   outstandingCents: number;
   amountPaidCents: number;
@@ -135,6 +137,7 @@ export function toSalesOrder(order: Order): SalesOrder {
     })),
     totalCents: toCents(order.total),
     paymentStatus: order.paymentStatus,
+    paymentTerms: order.paymentTerms ?? null,
     outstandingCents: toCents(order.outstandingBalance),
     amountPaidCents: toCents(order.amountPaid),
     grossProfitCents: order.grossProfit === null || order.grossProfit === undefined ? null : toCents(order.grossProfit),

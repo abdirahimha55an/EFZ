@@ -21,6 +21,7 @@ import type {
   Notification,
   Order,
   OrderStatus,
+  PaymentTerms,
   Product,
   StockMovement,
   SystemIssue,
@@ -253,6 +254,15 @@ const STAFF_PRODUCT_COLUMNS = "id, name, description, category, size, durability
  */
 export type CreateOrderInput = {
   customerId: string;
+  /** Required: fixed for the life of the order (migration 20). */
+  paymentTerms: PaymentTerms;
+  /**
+   * Received now, recorded in the same transaction (dated today). paid_at_sale:
+   * must equal the order total; credit: below it (0 for a $0 order).
+   */
+  initialPayment?: number;
+  /** Method of the initial payment; the database defaults to Cash. */
+  paymentMethod?: string;
   customerName?: string;
   phone?: string;
   orderType?: "regular" | "trial";
@@ -756,6 +766,28 @@ export function createDb(client: EfzSupabaseClient) {
   // -------------------------------------------------------------------------
   // Orders
   // -------------------------------------------------------------------------
+  /**
+   * Adds orders.payment_terms from the order_payment_terms view (same visibility
+   * as order_details). If the view does not exist yet (app deployed before
+   * migration 20), terms stay undefined: no invoice is offered, nothing breaks.
+   */
+  async function withPaymentTerms(list: Order[]): Promise<Order[]> {
+    if (list.length === 0) return list;
+    const terms = new Map<string, PaymentTerms | null>();
+    const ids = list.map((o) => o.id);
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data, error } = await client.from("order_payment_terms").select("id, payment_terms").in("id", ids.slice(i, i + 200));
+      if (error) {
+        if (error.code === "42P01" || error.code === "PGRST205") return list; // view not deployed yet
+        throw new EfzDbError("orders.paymentTerms", error);
+      }
+      for (const r of (data ?? []) as { id: string; payment_terms: string | null }[]) {
+        terms.set(r.id, r.payment_terms === "paid_at_sale" || r.payment_terms === "credit" ? r.payment_terms : null);
+      }
+    }
+    return list.map((o) => ({ ...o, paymentTerms: terms.get(o.id) ?? null }));
+  }
+
   const orders = {
     /** Orders with items and payments already nested, ready for the UI. */
     async list(
@@ -783,7 +815,7 @@ export function createDb(client: EfzSupabaseClient) {
       if (options.to) query = query.lte("order_date", options.to);
       if (options.limit) query = query.limit(options.limit);
 
-      return unwrapList("orders.list", await query).map(toOrder);
+      return withPaymentTerms(unwrapList("orders.list", await query).map(toOrder));
     },
 
     /**
@@ -805,7 +837,7 @@ export function createDb(client: EfzSupabaseClient) {
             .range(offset, offset + PAGE - 1)
         ).map(toOrder);
         rows.push(...page);
-        if (page.length < PAGE) return rows;
+        if (page.length < PAGE) return withPaymentTerms(rows);
       }
     },
 
@@ -817,17 +849,20 @@ export function createDb(client: EfzSupabaseClient) {
         .maybeSingle();
 
       if (error) throw new EfzDbError("orders.get", error);
-      return data ? toOrder(data) : null;
+      return data ? (await withPaymentTerms([toOrder(data)]))[0] : null;
     },
 
     /**
-     * Creates the order, its items and the stock deductions atomically.
-     * Throws if any product is short on stock, or any rule in create_order()
-     * refuses it - nothing is written in that case.
+     * Creates the order, its items and the initial payment atomically
+     * (create_order_with_terms). Throws if any product is short on stock, the
+     * payment does not fit the terms, or any rule in create_order() or
+     * record_payment() refuses it - nothing is written in that case.
      */
     async create(input: CreateOrderInput): Promise<Order> {
-      const { data, error } = await client.rpc("create_order", {
-        payload: input as unknown as Json,
+      const { paymentTerms, ...payload } = input;
+      const { data, error } = await client.rpc("create_order_with_terms", {
+        payload: payload as unknown as Json,
+        p_payment_terms: paymentTerms,
       });
       if (error) throw new EfzDbError("orders.create", error);
 
