@@ -57,6 +57,14 @@ export default function DocumentPage() {
     };
   }, []);
 
+  // The tab title becomes the default file name when saving as PDF: the document number and the business, not the site's marketing title.
+  useEffect(() => {
+    if (!doc || !settings) return;
+    const previous = document.title;
+    document.title = `${doc.number} - ${settings.businessName}`;
+    return () => { document.title = previous; };
+  }, [doc, settings]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -120,7 +128,10 @@ export default function DocumentPage() {
   const o = doc.order;
   return (
     <div className="space-y-4">
-      <style>{`@media print { body * { visibility: hidden !important; } #efz-document, #efz-document * { visibility: visible !important; } #efz-document:not([data-print-ok]) { display: none !important; } #efz-document { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none !important; border: 0 !important; } }`}</style>
+      {/* @page margin 0 removes the space browsers use for their own header/footer (page title, address, date, page numbers),
+          so the page address (including localhost and the /admin route) can never be printed or saved into the PDF; the margin
+          the document needs is its own padding. */}
+      <style>{`@page { margin: 0; } @media print { body * { visibility: hidden !important; } #efz-document, #efz-document * { visibility: visible !important; } #efz-document:not([data-print-ok]) { display: none !important; } #efz-document { position: absolute; left: 0; top: 0; width: 100%; max-width: none !important; margin: 0 !important; box-sizing: border-box; padding: 16mm 15mm !important; box-shadow: none !important; border: 0 !important; border-radius: 0 !important; } #efz-document header, #efz-document section, #efz-document tr, #efz-document footer { break-inside: avoid; } }`}</style>
       <div className="flex items-center justify-between gap-2 print:hidden">
         <p className="text-xs text-slate-500">Use Print and choose &quot;Save as PDF&quot; to download.</p>
         <button type="button" onClick={print} data-testid="document-print" className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-slate-800">
@@ -211,8 +222,9 @@ export default function DocumentPage() {
           );
         })()}
 
-        <footer className="mt-8 border-t border-slate-200 pt-3 text-[10px] text-slate-400">
-          {isReceipt ? "Thank you for your payment." : "Amounts in US dollars at the agreed price per item."} {settings.shortName || settings.businessName}
+        <footer className="mt-8 border-t border-slate-200 pt-3 text-center text-[10px] text-slate-500" data-testid="document-footer">
+          <p className="text-xs font-semibold text-slate-700">{settings.businessName}</p>
+          <p className="mt-0.5">{isReceipt ? "Thank you for your payment." : "Thank you for your business. Amounts are in US dollars at the agreed price per item."}</p>
         </footer>
       </article>
     </div>
