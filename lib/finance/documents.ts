@@ -73,7 +73,7 @@ export function toDocOrder(order: Order): DocOrder {
   };
 }
 
-/** Printable documents open in a new tab (app/admin/documents). */
+/** Printable documents open in the same tab (app/admin/documents), which has a Back control. */
 export const invoiceHref = (orderId: string) => `/admin/documents?type=invoice&order=${encodeURIComponent(orderId)}`;
 export const receiptHref = (orderId: string, paymentId: string) => `/admin/documents?type=receipt&order=${encodeURIComponent(orderId)}&payment=${encodeURIComponent(paymentId)}`;
 

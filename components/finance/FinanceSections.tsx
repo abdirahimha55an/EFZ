@@ -93,7 +93,7 @@ function orderColumns(onRecordPayment?: (orderId: string) => void): Column<Recei
     { key: "outstanding", header: "Outstanding", align: "right", render: (r) => <span className="font-semibold">{usd(r.outstandingCents)}</span> },
     { key: "status", header: "Status", render: (r) => <StatusPill s={r.status} /> },
     { key: "invoice", header: "Invoice", render: (r) => r.invoice
-      ? <a href={invoiceHref(r.orderId)} target="_blank" rel="noopener" data-testid="fin-invoice" className={docLink}>Invoice</a>
+      ? <a href={invoiceHref(r.orderId)} data-testid="fin-invoice" className={docLink}>Invoice</a>
       : r.totalCents <= 0 ? <span className="text-slate-300">—</span>
       : r.terms === "paid_at_sale" ? <span className="text-[11px] text-slate-400" title="Paid in full at the sale: receipts only">Paid at sale</span>
       : <span className="text-[11px] text-amber-700" title="Payment terms not recorded: a Super Admin must review this order before an invoice can be issued">Terms not recorded</span> },
@@ -215,7 +215,7 @@ const paymentColumns: Column<PaymentRow>[] = [
   { key: "order", header: "Order", render: (r) => <span className="font-mono text-[11px]">{r.orderId}</span> },
   { key: "method", header: "Method", render: (r) => r.method },
   { key: "amount", header: "Amount", align: "right", render: (r) => <span className="font-semibold">{usd(r.amountCents)}</span> },
-  { key: "receipt", header: "Receipt", render: (r) => r.paymentId ? <a href={receiptHref(r.orderId, r.paymentId)} target="_blank" rel="noopener" data-testid="fin-receipt" className={docLink}>Receipt</a> : null },
+  { key: "receipt", header: "Receipt", render: (r) => r.paymentId ? <a href={receiptHref(r.orderId, r.paymentId)} data-testid="fin-receipt" className={docLink}>Receipt</a> : null },
 ];
 
 export function CollectionsSection({ m }: { m: FinanceModel }) {

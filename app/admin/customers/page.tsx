@@ -746,7 +746,7 @@ export default function CustomersPage() {
                           </button>
                         )}
                         {offersInvoice(toDocOrder(order)) && (
-                          <a href={invoiceHref(order.id)} target="_blank" rel="noopener" data-testid="customer-invoice"
+                          <a href={invoiceHref(order.id)} data-testid="customer-invoice"
                             className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-700 hover:bg-slate-50">
                             Invoice
                           </a>
@@ -839,7 +839,7 @@ export default function CustomersPage() {
                                 </div>
                                 <span className="flex items-center gap-2">
                                   {order.status !== "cancelled" && Number(payment.amount || 0) > 0 && payment.id && (
-                                    <a href={receiptHref(order.id, String(payment.id))} target="_blank" rel="noopener" data-testid="customer-receipt" className="text-[9px] font-bold uppercase text-slate-500 hover:text-brand-blue">Receipt</a>
+                                    <a href={receiptHref(order.id, String(payment.id))} data-testid="customer-receipt" className="text-[9px] font-bold uppercase text-slate-500 hover:text-brand-blue">Receipt</a>
                                   )}
                                   <span className="font-bold text-brand-blue">${Number(payment.amount || 0).toFixed(2)}</span>
                                 </span>

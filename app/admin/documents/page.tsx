@@ -13,7 +13,8 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Loader2, Printer, Shield } from "lucide-react";
+import { AlertCircle, ArrowLeft, Loader2, Printer, Shield } from "lucide-react";
+import { useRouter } from "next/navigation";
 import type { AdminProfile, AdminSettings, Order } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
@@ -38,6 +39,13 @@ export default function DocumentPage() {
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [printError, setPrintError] = useState<string | null>(null);
   const docRef = useRef<HTMLElement | null>(null);
+  const router = useRouter();
+  // Documents open in the same tab; Back returns to the page that linked here (order list, customer or finance view), or the orders page when the document was opened directly (no same-site referrer).
+  const goBack = () => {
+    let fromApp = false;
+    try { fromApp = !!document.referrer && new URL(document.referrer).origin === window.location.origin; } catch { /* no usable referrer */ }
+    if (fromApp) router.back(); else router.push("/admin/orders");
+  };
 
   // The print stylesheet hides the document unless data-print-ok is set, which
   // happens only after the audit request succeeded (so browser Print / Ctrl+P
@@ -133,7 +141,12 @@ export default function DocumentPage() {
           the document needs is its own padding. */}
       <style>{`@page { margin: 0; } @media print { body * { visibility: hidden !important; } #efz-document, #efz-document * { visibility: visible !important; } #efz-document:not([data-print-ok]) { display: none !important; } #efz-document { position: absolute; left: 0; top: 0; width: 100%; max-width: none !important; margin: 0 !important; box-sizing: border-box; padding: 16mm 15mm !important; box-shadow: none !important; border: 0 !important; border-radius: 0 !important; } #efz-document header, #efz-document section, #efz-document tr, #efz-document footer { break-inside: avoid; } }`}</style>
       <div className="flex items-center justify-between gap-2 print:hidden">
-        <p className="text-xs text-slate-500">Use Print and choose &quot;Save as PDF&quot; to download.</p>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={goBack} data-testid="document-back" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+            <ArrowLeft className="h-3.5 w-3.5" /> Back
+          </button>
+          <p className="text-xs text-slate-500">Use Print and choose &quot;Save as PDF&quot; to download.</p>
+        </div>
         <button type="button" onClick={print} data-testid="document-print" className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-slate-800">
           <Printer className="h-3.5 w-3.5" /> Print / Save as PDF
         </button>
