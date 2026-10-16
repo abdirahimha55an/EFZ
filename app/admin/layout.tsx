@@ -32,6 +32,7 @@ import {
   Database,
   Download,
   History,
+  ClipboardCheck,
   Clock,
   Sun,
   Moon,
@@ -83,6 +84,8 @@ const SYSTEM_LINKS = [
   { name: "Diagnostics", href: "/admin/diagnostics", icon: ShieldCheck, permission: 'view_diagnostics' as Permission },
   { name: "Audit Trail", href: "/admin/audit", icon: History, permission: 'view_audit_trail' as Permission },
   { name: "System Management", href: "/admin/system", icon: SettingsIcon, permission: 'manage_system' as Permission },
+  // Legacy orders without recorded payment terms: Super Admin only (the page and the database both enforce it).
+  { name: "Payment Terms Review", href: "/admin/terms-review", icon: ClipboardCheck, permission: 'manage_system' as Permission, superAdminOnly: true },
 ];
 
 /** How often an open admin tab re-derives its alerts (also when the tab regains focus). */
@@ -788,6 +791,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <p className="px-3 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em] mb-3">System & Security</p>
             {SYSTEM_LINKS.map((link) => {
               if (link.permission && !hasPermission(link.permission)) return null;
+              if ('superAdminOnly' in link && link.superAdminOnly && !perms.isSuperAdmin) return null;
               const Icon = link.icon;
               const isActive = pathname === link.href;
               

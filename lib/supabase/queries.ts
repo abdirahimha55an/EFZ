@@ -872,6 +872,21 @@ export function createDb(client: EfzSupabaseClient) {
     },
 
     /**
+     * Super Admin review of a legacy (terms not recorded) order: set_order_payment_terms().
+     * The database refuses anyone but a Super Admin, an order that already has terms,
+     * and a missing/too short reason; it writes the one audit line. Nothing else changes.
+     */
+    async setPaymentTerms(id: string, terms: PaymentTerms, reason: string): Promise<void> {
+      const { error } = await client.rpc("set_order_payment_terms", { p_order_id: id, p_payment_terms: terms, p_reason: reason });
+      if (error) throw new EfzDbError("orders.setPaymentTerms", error);
+    },
+
+    /** Orders the database shows without recorded terms (read through the same view as everything else). */
+    async listWithoutTerms(): Promise<Order[]> {
+      return (await orders.listAll()).filter((o) => o.paymentTerms === null && o.status !== "cancelled");
+    },
+
+    /**
      * Moves an order through the fulfilment pipeline (update_order_status()).
      * Overrides - leaving delivered, reactivating a cancelled order - and
      * cancelling an order with payments or paid commission need a Super Admin
