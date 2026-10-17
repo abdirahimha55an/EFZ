@@ -18,6 +18,9 @@ drop function if exists public.set_payment_method(text, text, text, boolean, tex
 drop function if exists public.list_payment_methods();
 drop function if exists public.finance_audit(text, text, jsonb);
 drop function if exists public._require_finance_admin();
+drop function if exists public.checkouts_to_reconcile(integer, integer);
+drop function if exists public.set_checkout_provider_ref(uuid, text, text);
+drop function if exists public.checkout_for_provider(uuid);
 drop function if exists public.expire_stale_checkouts();
 drop function if exists public.finalize_customer_checkout(uuid, text, text, text, numeric, text, text, boolean);
 drop function if exists public.my_finance();

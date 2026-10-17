@@ -125,10 +125,10 @@ declare t text;
 begin
   foreach t in array array['payment_methods', 'customer_checkouts', 'payment_checkout_events', 'credit_policy', 'customer_credit_accounts', 'customer_credit_orders'] loop
     execute format('alter table public.%I enable row level security', t);
-    execute format('revoke all on public.%I from public, anon, authenticated', t);
+    execute format('revoke all on public.%I from public, anon, authenticated, service_role', t);   -- the SECURITY DEFINER functions are the only door; not even service_role (and its default TRUNCATE) touches these tables directly
   end loop;
 end $$;
-revoke all on sequence public.payment_checkout_events_id_seq from public, anon, authenticated;
+revoke all on sequence public.payment_checkout_events_id_seq from public, anon, authenticated, service_role;
 
 -- Checkouts, events and credit orders are append-or-advance records: nothing is ever deleted.
 create or replace function public.guard_no_delete_finance()
@@ -806,6 +806,73 @@ end;
 $fn$;
 revoke all on function public.finalize_customer_checkout(uuid, text, text, text, numeric, text, text, boolean) from public, anon, authenticated;
 grant execute on function public.finalize_customer_checkout(uuid, text, text, text, numeric, text, text, boolean) to service_role;
+
+-- Provider plumbing (service_role only): what the server needs in order to talk to a payment provider about ONE checkout. None of this is
+-- readable or callable by a customer, a staff user or anonymous; the provider result still becomes real only through finalize_customer_checkout().
+create or replace function public.checkout_for_provider(p_checkout_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $fn$
+declare
+  c public.customer_checkouts%rowtype;
+  m public.payment_methods%rowtype;
+begin
+  select * into c from public.customer_checkouts where id = p_checkout_id;
+  if not found then return null; end if;
+  select * into m from public.payment_methods where code = c.method_code;
+  return jsonb_build_object('checkoutId', c.id, 'customerId', c.customer_id, 'methodCode', c.method_code, 'methodKind', m.kind, 'methodEnabled', coalesce(m.enabled, false),
+                            'status', c.status, 'amount', c.amount, 'currency', 'USD', 'orderId', c.order_id, 'providerRef', c.provider_ref, 'createdAt', c.created_at);
+end;
+$fn$;
+revoke all on function public.checkout_for_provider(uuid) from public, anon, authenticated;
+grant execute on function public.checkout_for_provider(uuid) to service_role;
+
+-- Records the provider's own reference for a checkout (an invoice id, an order id) and marks the checkout as waiting for the provider.
+-- Only an unpaid, unsettled checkout of an ENABLED provider method can take a reference, and only one reference ever.
+create or replace function public.set_checkout_provider_ref(p_checkout_id uuid, p_method_code text, p_ref text)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = public
+as $fn$
+declare
+  c public.customer_checkouts%rowtype;
+  m public.payment_methods%rowtype;
+begin
+  if p_ref is null or char_length(btrim(p_ref)) not between 1 and 200 then raise exception 'A provider reference is required' using errcode = '22023'; end if;
+  select * into c from public.customer_checkouts where id = p_checkout_id for update;
+  if not found or c.method_code is distinct from p_method_code then raise exception 'Unknown checkout for that method' using errcode = '22023'; end if;
+  select * into m from public.payment_methods where code = p_method_code;
+  if not found or not m.enabled or m.kind <> 'provider' then raise exception 'That payment method is not an enabled provider method' using errcode = '22023'; end if;
+  if c.status not in ('created', 'pending') then raise exception 'The checkout is already %', c.status using errcode = '22023'; end if;
+  if c.provider_ref is not null and c.provider_ref <> p_ref then raise exception 'The checkout already has a different provider reference' using errcode = '22023'; end if;
+  update public.customer_checkouts set provider_ref = p_ref, status = 'pending', updated_at = now() where id = c.id;
+  insert into public.payment_checkout_events (checkout_id, method_code, provider_event_id, kind, amount, provider_ref, payload_hash, outcome)
+  values (c.id, p_method_code, 'start:' || p_ref, 'pending', null, p_ref, null, 'pending') on conflict (method_code, provider_event_id) do nothing;
+end;
+$fn$;
+revoke all on function public.set_checkout_provider_ref(uuid, text, text) from public, anon, authenticated;
+grant execute on function public.set_checkout_provider_ref(uuid, text, text) to service_role;
+
+-- The checkouts a reconciliation job should ask the provider about: waiting on a provider for at least p_older_than_seconds.
+create or replace function public.checkouts_to_reconcile(p_older_than_seconds integer default 30, p_limit integer default 50)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $fn$
+  select coalesce(jsonb_agg(jsonb_build_object('checkoutId', x.id, 'methodCode', x.method_code, 'providerRef', x.provider_ref, 'amount', x.amount) order by x.updated_at), '[]'::jsonb)
+    from (select c.id, c.method_code, c.provider_ref, c.amount, c.updated_at from public.customer_checkouts c
+           where c.status = 'pending' and c.provider_ref is not null and c.updated_at <= now() - make_interval(secs => greatest(coalesce(p_older_than_seconds, 30), 0))
+           order by c.updated_at limit least(greatest(coalesce(p_limit, 50), 1), 200)) x;
+$fn$;
+revoke all on function public.checkouts_to_reconcile(integer, integer) from public, anon, authenticated;
+grant execute on function public.checkouts_to_reconcile(integer, integer) to service_role;
 
 -- Checkouts that were never paid are closed after their window (service_role, run on a schedule or by hand).
 create or replace function public.expire_stale_checkouts()

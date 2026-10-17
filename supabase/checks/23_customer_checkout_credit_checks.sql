@@ -104,7 +104,9 @@ begin
     pg_temp.denied(pg_temp.q(ca, 'authenticated', 'select public.finalize_customer_checkout(gen_random_uuid(), ''x'', ''e1'', ''succeeded'', 1, ''r'', ''h'', false) as v'))
     and pg_temp.denied(pg_temp.q(sa_u, 'authenticated', 'select public.finalize_customer_checkout(gen_random_uuid(), ''x'', ''e1'', ''succeeded'', 1, ''r'', ''h'', false) as v'))
     and pg_temp.denied(pg_temp.q(null, 'anon', 'select public.finalize_customer_checkout(gen_random_uuid(), ''x'', ''e1'', ''succeeded'', 1, ''r'', ''h'', false) as v'))
-    and pg_temp.denied(pg_temp.q(ca, 'authenticated', 'select public.expire_stale_checkouts() as v')));
+    and pg_temp.denied(pg_temp.q(ca, 'authenticated', 'select public.expire_stale_checkouts() as v'))
+    and (select bool_and(pg_temp.denied(pg_temp.q(u, r, sql))) from (values (ca, 'authenticated'), (sa_u, 'authenticated'), (null::uuid, 'anon')) c(u, r),
+         (values ('select public.checkout_for_provider(gen_random_uuid()) as v'), ('select public.set_checkout_provider_ref(gen_random_uuid(), ''x'', ''ref'') as v'), ('select public.checkouts_to_reconcile(0, 10) as v')) f(sql)));
   perform pg_temp.chk('A4 the internal helpers cannot be called by any client role',
     (select bool_and(pg_temp.denied(pg_temp.q(u, r, sql)))
        from (values (ca, 'authenticated'), (sa_u, 'authenticated'), (null::uuid, 'anon')) c(u, r),
@@ -118,6 +120,11 @@ begin
     and pg_temp.denied(pg_temp.q(mgr_u, 'authenticated', 'select public.credit_overview() as v'))
     and pg_temp.denied(pg_temp.q(mgr_u, 'authenticated', 'select public.list_checkouts_for_review() as v'))
     and pg_temp.denied(pg_temp.q(ca, 'authenticated', 'select public.credit_overview() as v')));
+  perform pg_temp.chk('A7 no client role and not even service_role holds ANY privilege (SELECT, INSERT, UPDATE, DELETE, TRUNCATE) on the six tables; only the definer functions touch them',
+    (select count(*) from (values ('payment_methods'), ('customer_checkouts'), ('payment_checkout_events'), ('credit_policy'), ('customer_credit_accounts'), ('customer_credit_orders')) x(tb),
+                          (values ('anon'), ('authenticated'), ('service_role')) r(rl),
+                          (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) p(pv)
+       where has_table_privilege(r.rl, 'public.' || x.tb, p.pv)) = 0);
   perform pg_temp.chk('A6 no table of this migration has a column for a PIN, password, secret or card number',
     (select count(*) from information_schema.columns where table_schema = 'public' and table_name in ('payment_methods', 'customer_checkouts', 'payment_checkout_events', 'credit_policy', 'customer_credit_accounts', 'customer_credit_orders')
         and column_name ~* '(pin|passw|secret|card|cvv|token|otp)') = 0);
@@ -433,6 +440,45 @@ begin
     not pg_temp.err(t) and (select override_used from public.customer_credit_accounts where customer_id = v_b) = true
     and exists (select 1 from public.system_logs where metadata ->> 'event' = 'customer_credit_set' and target_id = v_b and metadata ->> 'overrideReason' is not null), t);
   perform pg_temp.chk('E28 staff overview lists approved customers with eligibility, outstanding and credit account (Super Admin only)', jsonb_array_length(pg_temp.jv(pg_temp.q(sa_u, 'authenticated', 'select public.credit_overview() as v'))) >= 3);
+
+  -- ---------------------------------------------------------------- H. provider plumbing (service_role only)
+  v_co := pg_temp.jv(pg_temp.q(cc, 'authenticated', format('select public.customer_start_checkout(%L::jsonb) as v', jsonb_build_object('methodCode', 'test_pay', 'deliveryLocation', 'Hodan', 'submissionKey', 'e1000000-0000-4000-8000-000000000009',
+        'lines', jsonb_build_array(jsonb_build_object('productId', 'p23-plain', 'quantity', 1)))::text)));
+  v_id2 := (v_co ->> 'checkoutId')::uuid;
+  t := pg_temp.q(null, 'service_role', format('select public.checkout_for_provider(%L) as v', v_id2));
+  perform pg_temp.chk('H1 the server can read what it needs about one checkout (method, kind, amount, status) and nothing about the customer beyond an id',
+    (pg_temp.jv(t) ->> 'methodKind') = 'provider' and (pg_temp.jv(t) ->> 'amount')::numeric = 10.00 and (pg_temp.jv(t) ->> 'status') = 'created' and (pg_temp.jv(t) ->> 'currency') = 'USD'
+    and not (pg_temp.jv(t)::text ~* '(phone|email|name|password|pin)') and pg_temp.jv(pg_temp.q(null, 'service_role', 'select public.checkout_for_provider(gen_random_uuid()) as v')) = 'null'::jsonb, t);
+  t := pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''test_pay'', ''INV-777'') as v', v_id2));
+  perform pg_temp.chk('H2 a provider reference moves a created checkout to pending and logs the start; the same reference again is harmless',
+    not pg_temp.err(t) and (select status || '|' || provider_ref from public.customer_checkouts where id = v_id2) = 'pending|INV-777'
+    and (select count(*) from public.payment_checkout_events where checkout_id = v_id2 and provider_event_id = 'start:INV-777') = 1
+    and not pg_temp.err(pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''test_pay'', ''INV-777'') as v', v_id2))), t);
+  perform pg_temp.chk('H3 a checkout takes only ONE provider reference, only for its own method, and a reference cannot be empty',
+    pg_temp.err(pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''test_pay'', ''INV-OTHER'') as v', v_id2)))
+    and pg_temp.err(pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''stg_test'', ''INV-777'') as v', v_id2)))
+    and pg_temp.err(pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''test_pay'', '''') as v', v_id2)))
+    and pg_temp.err(pg_temp.q(null, 'service_role', 'select public.set_checkout_provider_ref(gen_random_uuid(), ''test_pay'', ''X'') as v')));
+  v_co2 := pg_temp.jv(pg_temp.q(cc, 'authenticated', format('select public.customer_start_checkout(%L::jsonb) as v', jsonb_build_object('methodCode', 'test_pay', 'deliveryLocation', 'Hodan', 'submissionKey', 'e1000000-0000-4000-8000-00000000000a',
+        'lines', jsonb_build_array(jsonb_build_object('productId', 'p23-plain', 'quantity', 2)))::text)));
+  perform pg_temp.chk('H4 one provider reference can belong to only one checkout of a method (a replayed reference cannot be attached to another checkout)',
+    pg_temp.err(pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''test_pay'', ''INV-777'') as v', (v_co2 ->> 'checkoutId')::uuid)))
+    and (select status from public.customer_checkouts where id = (v_co2 ->> 'checkoutId')::uuid) = 'created');
+  perform pg_temp.chk('H5 a provider reference cannot be attached to a settled checkout or to a disabled method',
+    pg_temp.err(pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''test_pay'', ''INV-888'') as v', (select id from public.customer_checkouts where status = 'cancelled' and provider_ref is null limit 1)))));
+  update public.payment_methods set enabled = false where code = 'test_pay';
+  perform pg_temp.chk('H5b ... and a disabled method cannot start a provider payment', pg_temp.err(pg_temp.q(null, 'service_role', format('select public.set_checkout_provider_ref(%L, ''test_pay'', ''INV-999'') as v', (v_co2 ->> 'checkoutId')::uuid))));
+  update public.payment_methods set enabled = true where code = 'test_pay';
+  t := pg_temp.q(null, 'service_role', 'select public.checkouts_to_reconcile(0, 50) as v');
+  perform pg_temp.chk('H6 the reconciliation list holds exactly the pending checkouts that have a provider reference', jsonb_array_length(pg_temp.jv(t)) = (select count(*) from public.customer_checkouts where status = 'pending' and provider_ref is not null)
+    and exists (select 1 from jsonb_array_elements(pg_temp.jv(t)) x where x ->> 'providerRef' = 'INV-777'), t);
+  perform pg_temp.chk('H7 a recently started checkout is not listed until it is older than the requested age', not exists (select 1 from jsonb_array_elements(pg_temp.jv(pg_temp.q(null, 'service_role', 'select public.checkouts_to_reconcile(3600, 50) as v'))) x where x ->> 'providerRef' = 'INV-777'));
+  -- a verified success on the reference-bearing checkout still goes through finalize and creates exactly one order
+  select count(*) into v_n2 from public.orders;
+  t := pg_temp.q(null, 'service_role', format('select public.finalize_customer_checkout(%L, ''test_pay'', ''evt-h1'', ''succeeded'', 10.00, ''INV-777'', ''h'', false) as v', v_id2));
+  perform pg_temp.chk('H8 a verified success for the checkout that carries a provider reference creates one order and is no longer listed for reconciliation',
+    (pg_temp.jv(t) ->> 'status') = 'paid' and (select count(*) from public.orders) = v_n2 + 1
+    and not exists (select 1 from jsonb_array_elements(pg_temp.jv(pg_temp.q(null, 'service_role', 'select public.checkouts_to_reconcile(0, 50) as v'))) x where x ->> 'providerRef' = 'INV-777'), t);
 
   -- ---------------------------------------------------------------- F. isolation between customers
   j := pg_temp.jv(pg_temp.q(cb, 'authenticated', 'select public.my_finance() as v'));
