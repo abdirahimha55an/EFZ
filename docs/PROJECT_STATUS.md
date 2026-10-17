@@ -129,7 +129,7 @@ Test changes this milestone:
 
 Expo app skeleton per `docs/ANDROID_APP_PLAN.md` once the Edge Function is deployed to Staging. Before Production: the owner decisions above, a Production backup + rehearsal as for earlier migrations, and Super Admin granting `manage_customer_accounts` to the right staff.
 
-## Milestone 5 (2026-10-17): checkout, payments and credit (Migration 23 on Staging) and Migration 24 (draft)
+## Milestone 5 (2026-10-17): checkout, payments and credit (Migrations 23 and 24 on Staging)
 
 Everything here is on this branch only. **Production is untouched; nothing is pushed, merged or released.** The app is **not production-ready**.
 
@@ -140,8 +140,8 @@ Everything here is on this branch only. **Production is untouched; nothing is pu
 * Credit: policy OFF and empty by default; Super Admin-only administration; per-customer limit and terms; atomic reservation; partial repayments through the existing payment function. See `docs/CREDIT_POLICY.md`.
 * Staging state, re-read on 2026-10-17 after all of this work: credit policy OFF, no thresholds, `evc_plus`, `edahab`, `stg_test` all disabled.
 
-### Migration 24: credit policy refinement, **DRAFT, applied nowhere**
-Adds minimum days as an approved customer, a maximum total outstanding per customer and an overdue rule; separates unmet *requirements* (overridable with a recorded reason) from account *standing* (never overridable); lets an authorized override account actually buy (M23 did not); adds `credit_history`. Needs: your approval, a fresh Staging backup, and the apply and verify windows.
+### Migration 24: credit policy refinement, **APPLIED to Staging 2026-10-17 17:03Z (not Production)**
+Adds minimum days as an approved customer, a maximum total outstanding per customer and an overdue rule; separates unmet *requirements* (overridable with a recorded reason) from account *standing* (never overridable); lets an authorized override account actually buy (M23 did not); adds `credit_history`. Staging apply: backup `C:\EFZ-backups\staging\20261017-165739Z` (24 checksums OK, BRACKET OK, enum snapshot, restore verified exit 0, 61/61 data fingerprints identical), rehearsed first on the restored copy of that data (apply, 81/33/97/62 suites, concurrency 9/9, rollback with identical function fingerprint and baseline, re-apply), then applied in the guarded window `C:\EFZ-checks\P21\staging\APPLY24_20261017-170303Z`: no drift, Staging fingerprint after == the tested post-M24 state (3 redefined, 1 replaced, 1 added, nothing else), baseline +1 function only, **credit policy still OFF and empty, all three payment methods still disabled**, suites on the actual Staging database 81 / 33 / 97 / 62 with 0 failures, validate_financials integrity 14 PASS / 4 WARN / 0 FAIL. The rollback was NOT run on Staging (only on the local copy). Mutation and concurrency tests are local by design (they commit or alter objects); Staging got the rolled-back suites. Post-apply probe on Staging: 23 of 23 (policy state, authorization of Manager / Officer / Customer Service / anonymous, customer responses have no field named cost, margin, profit, commission, officer or supplier at any depth, direct table reads by a customer return nothing). Hub browser test on the live M24 Staging: 34 of 34 (9 use invented customers).
 
 ### Verified results (local disposable PostgreSQL clones unless marked Staging)
 | Check | Result |
@@ -165,14 +165,13 @@ All screenshots and layout checks of the customer app were made in the **web bui
 
 ### Remaining limitations and risks
 1. No real payment provider is connected; EVC Plus (WaafiPay) credential format and eDahab agent code are unconfirmed; no sandbox is documented for either.
-2. Migration 24 is unapplied; the Hub changes tolerate a database without it (the original six arguments are sent when the new settings are at their defaults; History shows a plain error).
+2. The Hub and app changes tolerate a database without Migration 24; Production (still at Migration 20) has none of milestones 4 and 5 yet.
 3. Credit policy values and the decisions in `docs/CREDIT_POLICY.md` belong to EFZ; nothing is activated.
 4. Disputes, late fees and reminders are not modelled; provider reversals are flagged for staff and never change records automatically.
-5. Customer-facing responses are built without cost or margin columns, but this milestone's suites contain no dedicated assertion that a customer response never includes them (an earlier Staging probe, `probe_cost.mjs`, looked at this); add one before release. Real product photography is still needed for the catalogue.
+5. The no-cost-exposure check exists only as the external Staging probe `post_apply_probe.mjs`; fold it into a repository test before release. Real product photography is still needed for the catalogue.
 6. The owner's Staging test logins in `.env.e2e` should be rotated or removed after testing, as that file says.
 
 ### Exact approvals and decisions needed
-* Approve (or change) Migration 24, then a new Staging backup and the apply and verify windows.
 * Decide the credit policy values and rules in `docs/CREDIT_POLICY.md`.
 * Start merchant onboarding with WaafiPay and eDahab (next actions are in `docs/PAYMENT_PROVIDERS.md`); never send secrets in chat.
 
