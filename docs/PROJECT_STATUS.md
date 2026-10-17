@@ -129,6 +129,53 @@ Test changes this milestone:
 
 Expo app skeleton per `docs/ANDROID_APP_PLAN.md` once the Edge Function is deployed to Staging. Before Production: the owner decisions above, a Production backup + rehearsal as for earlier migrations, and Super Admin granting `manage_customer_accounts` to the right staff.
 
+## Milestone 5 (2026-10-17): checkout, payments and credit (Migration 23 on Staging) and Migration 24 (draft)
+
+Everything here is on this branch only. **Production is untouched; nothing is pushed, merged or released.** The app is **not production-ready**.
+
+### Migration 23: applied to Staging `adjjamiqwboawqedaapi` only
+* Backup `20261017-151604Z` restore-verified before the apply. Applied and verified in owner-run windows; existing objects unchanged (fingerprints), validation 14 pass / 4 warn / 0 fail.
+* Direct checkout (paid online or on credit) as server-side functions that reuse the existing orders, order lines and payments tables, triggers, stock model, invoices and receipts. No parallel ledger. `create_order` and `record_payment` are unchanged and still staff-only.
+* Payments Edge Function (`payments`) with a WaafiPay adapter (EVC Plus) and an eDahab adapter, callbacks as triggers only, server-side status query, idempotent finalization. `staging-test-payment` provides the labelled simulated payment (Staging only). **No real provider is connected** (see `docs/PAYMENT_PROVIDERS.md`; the WaafiPay credential format is unconfirmed).
+* Credit: policy OFF and empty by default; Super Admin-only administration; per-customer limit and terms; atomic reservation; partial repayments through the existing payment function. See `docs/CREDIT_POLICY.md`.
+* Staging state, re-read on 2026-10-17 after all of this work: credit policy OFF, no thresholds, `evc_plus`, `edahab`, `stg_test` all disabled.
+
+### Migration 24: credit policy refinement, **DRAFT, applied nowhere**
+Adds minimum days as an approved customer, a maximum total outstanding per customer and an overdue rule; separates unmet *requirements* (overridable with a recorded reason) from account *standing* (never overridable); lets an authorized override account actually buy (M23 did not); adds `credit_history`. Needs: your approval, a fresh Staging backup, and the apply and verify windows.
+
+### Verified results (local disposable PostgreSQL clones unless marked Staging)
+| Check | Result |
+|---|---|
+| M21 / M22 / M23 suites on M23+M24 | 81 / 33 / 97 checks, 0 failures |
+| M24 suite (`supabase/checks/24_credit_policy_checks.sql`) | 62 checks, 0 failures |
+| M24 concurrency (`24_credit_concurrency.mjs`, real parallel sessions) | 9 of 9 |
+| M24 mutation tests | 36 of 36 caught (35 migration changes + 1 lock removal); one further mutation was dropped as equivalent |
+| M23 mutation tests (earlier) | 25 caught |
+| Rollback (`rollback/24_credit_policy_refinement_rollback.sql`) | schema fingerprint identical to pre-M24 (functions, columns, constraints, triggers, policies, ACLs, indexes); rerunnable; M23 suite 97/97 afterwards; M24 re-applies cleanly |
+| Payments functions tests | 29 pass |
+| Hub unit tests (`npm run test:hub`) | 28 pass; `tsc` clean; ESLint clean on changed files |
+| Staging end-to-end journey (real Staging DB + deployed functions, simulated payments) | 55 of 55 |
+| Hub browser test against Staging (Playwright, Chromium) | 34 of 34, of which 9 are **mock-backed** (Staging has no M24, so the Hub's RPC answers were replaced in the browser; this proves the Hub UI and the arguments it sends, not the database) |
+| Customer app | `tsc` clean, ESLint 0 errors (15 warnings), Jest 129 pass, Android export OK, secret scan clean (only the guard's own rejection strings match) |
+
+Hub browser coverage: Super Admin sees the page and the new fields, validation, History fails gracefully before M24; Manager, Officer and Customer Service do not see the link, are shown "Access Restricted" at the URL, and every credit administration function refuses them at the API; anonymous callers are refused; no request went to Production. Scripts: `C:\EFZ-checks\P21\hubbrowser`.
+
+### What is browser-tested and what is not
+All screenshots and layout checks of the customer app were made in the **web build in a browser**. **No native Android device or emulator was available**, so nothing here is tested natively (fonts, keyboard behaviour, safe areas, performance, deep links). A real-device pass is still required.
+
+### Remaining limitations and risks
+1. No real payment provider is connected; EVC Plus (WaafiPay) credential format and eDahab agent code are unconfirmed; no sandbox is documented for either.
+2. Migration 24 is unapplied; the Hub changes tolerate a database without it (the original six arguments are sent when the new settings are at their defaults; History shows a plain error).
+3. Credit policy values and the decisions in `docs/CREDIT_POLICY.md` belong to EFZ; nothing is activated.
+4. Disputes, late fees and reminders are not modelled; provider reversals are flagged for staff and never change records automatically.
+5. Customer-facing responses are built without cost or margin columns, but this milestone's suites contain no dedicated assertion that a customer response never includes them (an earlier Staging probe, `probe_cost.mjs`, looked at this); add one before release. Real product photography is still needed for the catalogue.
+6. The owner's Staging test logins in `.env.e2e` should be rotated or removed after testing, as that file says.
+
+### Exact approvals and decisions needed
+* Approve (or change) Migration 24, then a new Staging backup and the apply and verify windows.
+* Decide the credit policy values and rules in `docs/CREDIT_POLICY.md`.
+* Start merchant onboarding with WaafiPay and eDahab (next actions are in `docs/PAYMENT_PROVIDERS.md`); never send secrets in chat.
+
 ## How to run the checks
 
 ```bash

@@ -54,3 +54,44 @@ Then a Super Admin adds the methods in **Hub > Customer Payments & Credit** with
 ## Simulated payments
 
 Until the above exists, the only payment that completes is the **Staging test method** (`stg_test`): its checkouts can be finalized only by the `staging-test-payment` function, which answers 404 unless the project is Staging, and its label says "test only". It is never real money and is never created in Production.
+
+## Merchant onboarding: what the public sources actually say (checked 2026-10-17)
+
+Nothing below is an assumption about a process; where a public page is silent, it says "not published". The two providers publish very little, so the real requirements will come from them directly.
+
+### EVC Plus through WaafiPay
+
+| Question | What is published | Source |
+|---|---|---|
+| How to become a merchant | A contact form ("Start Accepting Payments" goes to `/contact`), a Merchant Portal and a Sign In link. No steps listed. Support email `support@waafipay.net`; address Salaam Tower, Djibouti. | waafipay.com |
+| Required documents | Not published | waafipay.com |
+| Credentials | docs.waafipay.com says that after registration you receive "an API key and a client ID". It does **not** mention `merchantUid`, `storeId` or `hppKey`, which are what the hosted-payment-page request format used by our adapter needs. | docs.waafipay.com |
+| How access is obtained | docs.waafipay.com says to register in person at the "WAAFI HQ Offices (Telesom, Zaad, Golis, WAAFI SAB)". | docs.waafipay.com |
+| Sandbox / test | Not documented. The home page links a "Demo POS" at `checkout.waafipay.net` and does not say what it is. | waafipay.com |
+| Callbacks | "Webhooks" is a menu entry with no content. Signing is not documented. | waafipay.com, docs.waafipay.com |
+| Fees, limits, settlement | Not published | |
+| EVC Plus | Listed under "Local Wallet Payments" | waafipay.com |
+
+**Open discrepancy to resolve with WaafiPay:** our adapter follows the hosted-payment-page request format (`HPP_PURCHASE`, `HPP_GETTRANINFO` with `merchantUid`, `storeId`, `hppKey`) that WaafiPay's integration examples and third-party plugins use. The official docs page we could read describes a different credential pair (API key + client ID). Before any live use, WaafiPay must confirm in writing which API EFZ's merchant account uses and give the matching credentials; if it is the API-key flow, the adapter (`supabase/functions/payments/adapters/waafipay.ts`) needs a rewrite and its tests will be re-done against the confirmed format. Until then it must be treated as **unverified**.
+
+### eDahab
+
+| Question | What is published | Source |
+|---|---|---|
+| How to get access | "Register for an eDahab account and request API access." | docs.edahab.net |
+| Required documents, approval process | Not published | |
+| Credentials | A key and a secret from the eDahab dashboard. The docs page does not mention an agent code, which our adapter currently expects (`EDAHAB_AGENT_CODE`). Confirm whether it exists. | docs.edahab.net |
+| Capabilities listed | Merchant Integration (connect e-commerce or point-of-sale systems to mobile money) and Notification / Webhooks ("real-time updates on payment statuses"). No setup details. | docs.edahab.net |
+| Sandbox / test, IP whitelisting, fees, limits | Not published | |
+| Company | eDahab is Somtel's wallet (Dahabshiil group). Somtel's page says an eDahab API for local and global e-commerce has been released to developers. | somtelnetwork.net/eDahab |
+
+For comparison only: Telesom's ZAAD business accounts are opened in person at a sales outlet with a business licence and personal ID. That is ZAAD, not eDahab, and is **not** evidence of eDahab's requirements.
+
+### The exact next action for the owner
+
+1. Contact **WaafiPay** (`support@waafipay.net` or the contact form, or visit WAAFI HQ) as EFZ, and ask for: a merchant account for EVC Plus; **which API EFZ's account uses and its credentials** (the discrepancy above); a **test/sandbox** account and URL; the published **fee schedule and settlement terms**; whether payments carry a **signature or hash on the callback**; the exact status values for declined, cancelled and timed-out payments; and the documents EFZ must bring (a business licence and owner ID are typical in this market, but only WaafiPay can say).
+2. Contact **eDahab / Somtel** and ask for: an eDahab merchant account and API access; whether an **agent code** exists; a **test method**; fees and limits; webhook setup and signing; any IP whitelisting.
+3. Do **not** send me any key, secret, PIN or password in chat. When the credentials exist, put them into the Staging project yourself with `supabase secrets set` (names listed above) or tell me when they are set, and I will run the sandbox tests on Staging only.
+4. Decide the refund and reversal process (today a reversal is flagged for staff and never changes the books by itself).
+
+Until both providers answer, the only payment that works is the clearly labelled Staging test method.
