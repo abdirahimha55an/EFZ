@@ -156,12 +156,18 @@ export function RequestDetail({ request, profile, staff, onClose, onChanged }: P
 
           <section>
             <p className="mb-2 text-[9px] font-bold uppercase tracking-widest text-slate-400">Requested products</p>
+            {request.app && (
+              <p className="mb-2 rounded-lg bg-blue-50 px-2 py-1 text-[11px] text-blue-800" data-testid="request-from-app">
+                Placed in the customer app by an approved account. Verified customer: <span className="font-mono">{request.app.customerId}</span>. The customer already confirmed their identity with EFZ; confirm prices and designs before converting.
+              </p>
+            )}
             <table className="w-full text-left">
               <tbody className="divide-y divide-slate-100">
                 {request.lines.map((l) => (
                   <tr key={l.lineNo}>
                     <td className="py-2 font-bold text-slate-900">
                       {l.productName || "—"}
+                      {!!l.designName && <span className="ml-1 rounded bg-blue-50 px-1 text-[10px] font-bold text-blue-700" data-testid="request-design">design: {l.designName}</span>}
                       {!l.productId && <span className="ml-1 text-[10px] font-normal text-red-600">(product no longer exists)</span>}
                       {l.legacy && <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] font-bold uppercase text-slate-500">legacy</span>}
                     </td>

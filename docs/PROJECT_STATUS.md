@@ -107,9 +107,17 @@ Test changes this milestone:
 - Database suite: now **81 checks** (new A8: a customer-marked user confirming its email *later* does not claim a staff profile). While adding it I found that the earlier A7 was vacuous (the staff profile it used was already linked, so even a broken trigger passed); A7 and A8 now target UNLINKED staff profiles. 81/81 on a fresh local copy of the Staging backup. The mutation suite now has 10 mutations (new M10: confirmation trigger not customer-aware); **10/10 caught**, and A7 now fails under the old-trigger mutation.
 - The 81-check file differs from the 80-check file that was run on Staging on 2026-10-17 07:43Z (Migration 21 itself is unchanged). Re-running it on Staging needs one more owner password window; not done.
 
+### Milestone 4 (2026-10-17): Migration 22, Expo app, Edge Function on Staging
+
+- **Migration 22** (product_designs, customer_order_requests + lines, submit_customer_order_request, my_order_requests, customer_designs, request_account_deletion) is **applied to Staging**. Fingerprint check passed (only my_customer_account/require_approved_customer changed; 15 objects added). Staging suites after apply: **81/81 (M21) and 33/33 (M22)**; validate_financials integrity 14 pass / 4 warn (existing Staging data) / 0 fail. Evidence: C:EFZ-checksP21stagingAPPLY22_*. Not on Production.
+- **register-customer Edge Function deployed to Staging only** (REGISTRATION_HINT_SALT created, value never shown). Smoke: valid 202, repeat 202 identical, bad phone 422, short password 422, GET 405. API gating test (publishable key only): registered account signs in, is pending, catalog/designs/orders/order-requests/order submit all refused (403), orders and profiles not readable, direct public sign-up refused (422), wrong password refused. Rate limit: 8 accepted then 429. Email verification is OFF (needs custom SMTP).
+- **Expo app** (C:UsersAbdirahimDesktopefz-customer-app, local git only): sign-in, registration, gate screens, catalog, designs, cart, order requests, order history, account + deletion request. tsc clean, Jest 61/61, ESLint 0 errors, Android bundle export OK, secret scan OK. **Not tested on an emulator/device** (no JDK/Android SDK on this PC).
+- **Hub**: request inbox shows an "request from app" badge, designs, preselects the verified customer (test:hub 20/20).
+- Not done: push notifications, deletion processing UI/retention policy, email verification, design management UI, Hub browser test for the badge, Play Store requirements.
+
 ### Next blockers
 
-1. Owner: install the CLI, `supabase login`, run `deploy-staging.ps1` (preflight, then `-Deploy`, then `-Smoke`).
+1. (done 2026-10-17) CLI login, deploy and smoke on Staging.
 2. Owner: decide email verification (needs custom SMTP and two template edits) and the open business decisions (commission ownership, website catalog visibility).
 3. Owner: Expo/EAS account and an Android emulator or device.
 4. Then: Expo skeleton steps 1-2 (scaffold with the guarded environment, sign-in/registration against the Staging function).

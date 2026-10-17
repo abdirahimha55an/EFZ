@@ -1081,6 +1081,29 @@ export function createDb(client: EfzSupabaseClient) {
     },
   };
 
+  /**
+   * 22: marks requests placed through the customer app and adds the design of each line. Staff see these rows exactly when they can see the
+   * request (RLS). Before migration 22 the tables do not exist: the requests are returned unchanged.
+   */
+  async function withAppInfo(requests: WebsiteRequest[]): Promise<WebsiteRequest[]> {
+    if (requests.length === 0) return requests;
+    const links = await client.from("customer_order_requests" as never).select("request_id, customer_id").limit(5000);
+    const linkError = (links as { error: { code?: string } | null }).error;
+    if (linkError) {
+      if (linkError.code === "42P01" || linkError.code === "PGRST205") return requests;
+      throw new EfzDbError("orderRequests.appInfo", linkError as PostgrestError);
+    }
+    const linkRows = ((links as { data: { request_id: string; customer_id: string }[] | null }).data ?? []);
+    if (linkRows.length === 0) return requests;
+    const lineRes = await client.from("customer_order_request_lines" as never).select("request_id, line_no, design_name").limit(20000);
+    const lineRows = ((lineRes as { data: { request_id: string; line_no: number; design_name: string }[] | null }).data ?? []);
+    const customerOf = new Map(linkRows.map((l) => [l.request_id, l.customer_id]));
+    const designOf = new Map(lineRows.map((l) => [`${l.request_id}#${l.line_no}`, l.design_name]));
+    return requests.map((r) => customerOf.has(r.id)
+      ? { ...r, app: { customerId: customerOf.get(r.id) as string }, lines: r.lines.map((l) => ({ ...l, designName: designOf.get(`${r.id}#${l.lineNo}`) ?? "" })) }
+      : r);
+  }
+
   const orderRequests = {
     /**
      * Called from the public order form; works for signed-out visitors. One
@@ -1118,7 +1141,8 @@ export function createDb(client: EfzSupabaseClient) {
         list.push(line);
         byRequest.set(line.request_id, list);
       }
-      return rows.map((row) => toWebsiteRequest(row, byRequest.get(row.id) ?? []));
+      const requests = rows.map((row) => toWebsiteRequest(row, byRequest.get(row.id) ?? []));
+      return withAppInfo(requests);
     },
 
     /** Requests still in status new (for the personal alert feed): id, time and line count. */

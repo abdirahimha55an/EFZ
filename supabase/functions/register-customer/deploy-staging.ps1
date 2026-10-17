@@ -26,7 +26,8 @@ if (-not $cli) { Fail 'Supabase CLI not found. Install it (for example: npm i -g
 Ok ("CLI " + (& supabase --version))
 
 # signed in + access to the Staging project (lists project refs only; the token is never read or printed)
-$projects = & supabase projects list 2>&1 | Out-String
+$ErrorActionPreference = 'Continue'   # the CLI writes harmless notes to stderr; Windows PowerShell 5.1 would turn them into errors
+$projects = & supabase projects list --agent no --output-format text 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { Fail 'not signed in to Supabase. Run: supabase login   (interactive; do not paste any token anywhere else)' }
 if ($projects -notmatch [regex]::Escape($STAGING)) { Fail "the signed-in account cannot see project $STAGING" }
 Ok 'signed in, Staging project visible'
@@ -44,7 +45,9 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
   Ok 'handler unit tests pass'
 } else { Write-Host '  --  Node not found: unit tests not re-run' -ForegroundColor Yellow }
 
-$names = & supabase secrets list --project-ref $STAGING 2>&1 | Out-String
+$names = & supabase secrets list --project-ref $STAGING --agent no --output-format text 2>&1 | Out-String; $secretsExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($secretsExit -ne 0) { Fail 'could not list secrets (names only) on Staging' }
 $hasSalt = $names -match 'REGISTRATION_HINT_SALT'
 Write-Host ("  --  secret REGISTRATION_HINT_SALT: " + $(if ($hasSalt) { 'already set' } else { 'NOT set (-Deploy will create it)' }))
 
@@ -58,13 +61,13 @@ if ($Deploy) {
     try {
       Set-Content -LiteralPath $tmp -Value ("REGISTRATION_HINT_SALT=" + (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')) -NoNewline
       $acl = Get-Acl $tmp; $acl.SetAccessRuleProtection($true, $false); $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-      $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($env:USERNAME, 'FullControl', 'Allow'))); Set-Acl $tmp $acl
-      & supabase secrets set --env-file $tmp --project-ref $STAGING; if ($LASTEXITCODE -ne 0) { Fail 'setting the secret failed' }
+      $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule([Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', 'Allow'))); Set-Acl $tmp $acl
+      $ErrorActionPreference = 'Continue'; & supabase secrets set --env-file $tmp --project-ref $STAGING --agent no --output-format text; $ErrorActionPreference = 'Stop'; if ($LASTEXITCODE -ne 0) { Fail 'setting the secret failed' }
     } finally { if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force }; $bytes = $null }
     Ok 'REGISTRATION_HINT_SALT created (value never shown; temp file deleted)'
   }
   Push-Location $repo
-  try { & supabase functions deploy $FN --project-ref $STAGING --no-verify-jwt; if ($LASTEXITCODE -ne 0) { Fail 'deploy failed' } } finally { Pop-Location }
+  try { $ErrorActionPreference = 'Continue'; & supabase functions deploy $FN --project-ref $STAGING --no-verify-jwt --agent no --output-format text; $ErrorActionPreference = 'Stop'; if ($LASTEXITCODE -ne 0) { Fail 'deploy failed' } } finally { Pop-Location }
   Ok "deployed $FN to Staging"
 }
 

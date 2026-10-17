@@ -55,7 +55,12 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
   const [lines, setLines] = useState<Line[]>([]);
   const [nextKey, setNextKey] = useState(1);
   const [deliveryNotes, setDeliveryNotes] = useState(
-    [request.deliveryLocation, request.visitorNotes].filter(Boolean).join(" - ")
+    [
+      request.deliveryLocation,
+      request.visitorNotes,
+      // 22: designs are not an order-line field yet, so they travel in the order's notes.
+      request.lines.some((l) => l.designName) ? `Designs: ${request.lines.map((l) => `${l.productName}${l.designName ? ` (${l.designName})` : ""} x${l.quantity}`).join(", ")}` : "",
+    ].filter(Boolean).join(" - ")
   );
   const [belowCostReason, setBelowCostReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -77,6 +82,9 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
         setProducts(nextProducts);
         setCustomers(nextCustomers);
         setMatches(nextMatches);
+        // 22: a request from the customer app belongs to the staff-verified customer of that account: preselect it (staff can still change it).
+        const verified = request.app ? nextCustomers.find((c) => c.id === request.app?.customerId) : undefined;
+        if (verified) setChoice({ kind: "existing", customerId: verified.id, label: verified.name, archived: verified.status === "archived" });
         const start = request.lines.map((l, i) => {
           const p = nextProducts.find((x) => x.id === l.productId);
           return { key: i + 1, productId: p ? p.id : "", quantity: String(l.quantity), price: p ? String(p.sellingPrice) : "" };

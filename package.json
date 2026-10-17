@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:registration": "node --test supabase/functions/register-customer/handler.test.ts supabase/functions/register-customer/integration.test.ts",
-    "test:hub": "node --import ./scripts/register-test-loader.mjs --test lib/customerAccounts.test.ts"
+    "test:hub": "node --import ./scripts/register-test-loader.mjs --test lib/customerAccounts.test.ts lib/customerRequests.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

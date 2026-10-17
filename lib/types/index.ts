@@ -313,6 +313,8 @@ export type WebsiteRequestLine = {
   productName: string;
   quantity: number;
   legacy: boolean;
+  /** 22: the design the customer chose in the Android app ("" when none). */
+  designName?: string;
 };
 
 export type WebsiteRequest = {
@@ -334,6 +336,8 @@ export type WebsiteRequest = {
   statusChangedAt: string | null;
   createdAt: string;
   lines: WebsiteRequestLine[];
+  /** 22: set when the request was placed in the Android app by an approved account; customerId is the staff-VERIFIED CRM customer. */
+  app?: { customerId: string };
 };
 
 /** A staff processing note: belongs to the request, never copied to the order. */
