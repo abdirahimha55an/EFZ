@@ -75,6 +75,8 @@ const SIDEBAR_LINKS = [
   { name: "Financial Management", href: "/admin/financial", icon: Landmark, permission: 'view_reports' as Permission },
   { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
   { name: "Customer Database", href: "/admin/customers", icon: UserCheck, permission: 'view_customers' as Permission },
+  // 21: Android customer app registrations awaiting EFZ approval (manage_customer_accounts; the database enforces it).
+  { name: "Customer App Accounts", href: "/admin/customer-accounts", icon: Smartphone, permission: 'manage_customer_accounts' as Permission },
   // A Marketing Officer's own commission events (read only). Shown to officers only.
   { name: "My Commissions", href: "/admin/commissions", icon: Wallet, permission: 'view_commissions' as Permission },
   { name: "Users & Privileges", href: "/admin/users", icon: Users, permission: 'manage_users' as Permission },

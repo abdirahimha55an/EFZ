@@ -7,7 +7,8 @@ export const OFFICIAL_PERMISSIONS = [
   'view_all_customers', 'view_own_customers_only',
   'view_diagnostics', 'view_audit_trail', 'manage_system',
   'override_order_status',
-  'manage_website_requests'
+  'manage_website_requests',
+  'manage_customer_accounts'
 ] as const;
 
 export type Permission = typeof OFFICIAL_PERMISSIONS[number];
@@ -130,6 +131,24 @@ export type PaymentRecord = {
   recordedBy?: string;
   createdAt?: string;
 };
+
+/** 21: customer app accounts as the Hub shows them. The IP hint, auth user id and canonical phone are never loaded. */
+export type CustomerAccountStatus = "pending" | "approved" | "rejected" | "suspended";
+export type CustomerAccount = {
+  id: string;
+  email: string;
+  fullName: string;
+  organization: string;
+  phone: string;
+  status: CustomerAccountStatus;
+  customerId: string | null;
+  requestedAt: string;
+  reviewedByName: string;
+  reviewedAt: string | null;
+  reviewNote: string;
+};
+export type CustomerAccountMatch = { customerId: string; name: string; phoneMasked: string; status: string; linked: boolean; orders: number };
+export type CustomerAccountEvent = { id: number; event: "registered" | "approved" | "rejected" | "suspended" | "reinstated"; fromStatus: string | null; toStatus: string; actorName: string; note: string; at: string };
 
 /** Fixed when the order is created (migration 20); null = not recorded (legacy / converted, awaiting review). */
 export type PaymentTerms = "paid_at_sale" | "credit";

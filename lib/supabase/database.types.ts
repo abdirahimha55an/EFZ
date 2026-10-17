@@ -691,6 +691,41 @@ type Table<Row, Insert, Update = Updatable<Row>> = {
 
 type View<Row> = { Row: Row; Relationships: [] };
 
+/** Migration 21. Readable only by staff holding manage_customer_accounts (RLS); written only by the review functions. */
+export type CustomerAccountRow = {
+  id: string;
+  auth_user_id: string;
+  customer_id: string | null;
+  email: string;
+  full_name: string;
+  organization: string;
+  phone: string;
+  phone_canonical: string;
+  status: "pending" | "approved" | "rejected" | "suspended";
+  requested_at: string;
+  reviewed_by: string | null;
+  reviewed_by_name: string;
+  reviewed_at: string | null;
+  review_note: string;
+  ip_hash: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type CustomerAccountEventRow = {
+  id: number;
+  account_id: string;
+  event: "registered" | "approved" | "rejected" | "suspended" | "reinstated";
+  from_status: string | null;
+  to_status: string;
+  actor_id: string | null;
+  actor_name: string;
+  customer_id: string | null;
+  note: string;
+  metadata: Json;
+  created_at: string;
+};
+export type CustomerAccountMatchRow = { customer_id: string; name: string; phone_masked: string; status: string; linked: boolean; orders: number };
+
 export type ProfileUpdate = Updatable<ProfileRow>;
 export type CustomerUpdate = Updatable<CustomerRow>;
 export type ProductUpdate = Updatable<ProductRow>;
@@ -745,6 +780,9 @@ export type Database = {
       order_request_events: Table<OrderRequestEventRow, Record<string, never>, Record<string, never>>;
       // Readable by request handlers; only the Super Admin may change it (RLS).
       website_request_settings: Table<WebsiteRequestSettingsRow, Record<string, never>>;
+      // 21: customer app accounts. No client write at all (only the review functions write).
+      customer_accounts: Table<CustomerAccountRow, Record<string, never>, Record<string, never>>;
+      customer_account_events: Table<CustomerAccountEventRow, Record<string, never>, Record<string, never>>;
     };
     Views: {
       public_products: View<PublicProductRow>;
@@ -818,6 +856,15 @@ export type Database = {
       set_order_request_status: { Args: { p_request_id: string; p_to: string; p_reason?: string | null }; Returns: undefined };
       add_order_request_note: { Args: { p_request_id: string; p_body: string }; Returns: string };
       edit_order_request_note: { Args: { p_note_id: string; p_body: string }; Returns: undefined };
+      // 21: customer account review (manage_customer_accounts; every rule is enforced by the database).
+      find_customers_for_account: { Args: { p_account_id: string }; Returns: CustomerAccountMatchRow[] };
+      approve_customer_account: {
+        Args: { p_account_id: string; p_customer_id: string | null; p_create_customer: boolean; p_verified: boolean; p_note: string };
+        Returns: string;
+      };
+      reject_customer_account: { Args: { p_account_id: string; p_reason: string }; Returns: undefined };
+      suspend_customer_account: { Args: { p_account_id: string; p_reason: string }; Returns: undefined };
+      reinstate_customer_account: { Args: { p_account_id: string; p_reason: string }; Returns: undefined };
       find_customers_by_phone: { Args: { p_request_id: string; p_phone?: string | null }; Returns: CustomerMatchRow[] };
       convert_website_request: { Args: { p_request_id: string; p_payload: Json }; Returns: string };
       transfer_customer_owner: {

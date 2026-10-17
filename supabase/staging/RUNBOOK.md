@@ -48,7 +48,7 @@ in this order. If any step errors, stop and send me the message.
 | 15 | `select public.run_diagnostics();` | Refreshes `system_issues` | — | `6` — then `select id, affected_count from public.system_issues where resolved_at is null order by id;` → customers-without-officer, orders-delivered-unpaid, products-low-stock, products-negative-margin, products-out-of-stock, profiles-without-auth (1 each) |
 | 16 | `supabase/staging/staging_security_checks.sql` | Temporary results table only | — | **Every row PASS** (43) |
 | 17 | Re-run `08` then `09` | Nothing new | None | Success both times (idempotent); repeat step 14 → still identical |
-| 18 | *(dashboard)* Add a user `efz.new@example.com` **without** a profile, auto-confirmed | A new inactive profile | Synthetic | `select role, status from public.profiles where email = 'efz.new@example.com';` → `Marketing Officer`, `inactive` |
+| 18 | *(dashboard)* Add a user `efz.new@example.com` **without** a profile, auto-confirmed | A new inactive profile (**superseded by migration 21: no profile is created**) | Synthetic | `select role, status from public.profiles where email = 'efz.new@example.com';` → `Marketing Officer`, `inactive` |
 
 ### Step 8: accounts to create
 

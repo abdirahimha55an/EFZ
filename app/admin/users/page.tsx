@@ -66,6 +66,8 @@ const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = 
   { id: 'add_customers', label: 'Register New Customers', category: 'CRM' },
   { id: 'edit_customers', label: 'Edit Customer Info', category: 'CRM' },
   { id: 'delete_customers', label: 'Delete Customers', category: 'CRM' },
+  // 21: customer app accounts. Reserved - only a Super Admin can grant it (reserved_permissions()); not in any role preset.
+  { id: 'manage_customer_accounts', label: 'Review Customer App Accounts (approve, reject, suspend)', category: 'CRM' },
   
   { id: 'view_reports', label: 'View Analytics Reports', category: 'Finance' },
   { id: 'view_commissions', label: 'View Commissions', category: 'Finance' },

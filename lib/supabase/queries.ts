@@ -16,6 +16,9 @@ import type {
   AdminSettings,
   AdminUser,
   Customer,
+  CustomerAccount,
+  CustomerAccountEvent,
+  CustomerAccountMatch,
   CustomerOwnershipChange,
   CustomerTransferNotice,
   Notification,
@@ -52,6 +55,7 @@ import type {
   OrderDeliveryRow,
   OrderRequestLineRow,
   CustomerMatchRow,
+  Database,
   OrderUpdate,
   ProductSalesRow,
   PublicProductRow,
@@ -1019,6 +1023,64 @@ export function createDb(client: EfzSupabaseClient) {
   // order, inside the database, through the unchanged create_order().
   // Reads are RLS-scoped to request handlers (manage_website_requests).
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // 21: customer app accounts (Hub review). Every rule - who may review, which
+  // transitions are legal, when a phone match may be linked - lives in the
+  // database functions; this layer only calls them and shapes the rows.
+  // -------------------------------------------------------------------------
+  const ACCOUNT_COLUMNS = "id, email, full_name, organization, phone, status, customer_id, requested_at, reviewed_by_name, reviewed_at, review_note";
+  const toAccount = (r: Database["public"]["Tables"]["customer_accounts"]["Row"]): CustomerAccount => ({
+    id: r.id, email: r.email, fullName: r.full_name, organization: r.organization, phone: r.phone, status: r.status,
+    customerId: r.customer_id, requestedAt: r.requested_at, reviewedByName: r.reviewed_by_name, reviewedAt: r.reviewed_at, reviewNote: r.review_note,
+  });
+  const customerAccounts = {
+    /** Oldest pending first, then everything else newest first. RLS returns nothing without manage_customer_accounts. */
+    async list(): Promise<CustomerAccount[]> {
+      const rows = unwrapList("customerAccounts.list", await client.from("customer_accounts").select(ACCOUNT_COLUMNS).order("requested_at", { ascending: false }).limit(1000));
+      const accounts = (rows as unknown as Database["public"]["Tables"]["customer_accounts"]["Row"][]).map(toAccount);
+      const pending = accounts.filter((a) => a.status === "pending").sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+      return [...pending, ...accounts.filter((a) => a.status !== "pending")];
+    },
+    /** Possible CRM matches by phone (masked). A match is only a hint: linking is a separate, explicit act. */
+    async candidates(accountId: string): Promise<CustomerAccountMatch[]> {
+      const { data, error } = await client.rpc("find_customers_for_account", { p_account_id: accountId });
+      if (error) throw new EfzDbError("customerAccounts.candidates", error);
+      return ((data ?? []) as Database["public"]["Functions"]["find_customers_for_account"]["Returns"]).map((m) => ({
+        customerId: m.customer_id, name: m.name, phoneMasked: m.phone_masked, status: m.status, linked: m.linked, orders: Number(m.orders),
+      }));
+    },
+    async history(accountId: string): Promise<CustomerAccountEvent[]> {
+      const rows = unwrapList("customerAccounts.history", await client.from("customer_account_events").select("id, event, from_status, to_status, actor_name, note, created_at").eq("account_id", accountId).order("id", { ascending: true }));
+      return (rows as unknown as Database["public"]["Tables"]["customer_account_events"]["Row"][]).map((e) => ({
+        id: e.id, event: e.event, fromStatus: e.from_status, toStatus: e.to_status, actorName: e.actor_name, note: e.note, at: e.created_at,
+      }));
+    },
+    /** Link an EXISTING customer (needs verified = true) or create a new one. Returns the CRM customer id. */
+    async approve(input: { accountId: string; linkCustomerId: string | null; verified: boolean; note: string }): Promise<string> {
+      const { data, error } = await client.rpc("approve_customer_account", {
+        p_account_id: input.accountId,
+        p_customer_id: input.linkCustomerId,
+        p_create_customer: input.linkCustomerId === null,
+        p_verified: input.verified,
+        p_note: input.note,
+      });
+      if (error) throw new EfzDbError("customerAccounts.approve", error);
+      return data as string;
+    },
+    async reject(accountId: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("reject_customer_account", { p_account_id: accountId, p_reason: reason });
+      if (error) throw new EfzDbError("customerAccounts.reject", error);
+    },
+    async suspend(accountId: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("suspend_customer_account", { p_account_id: accountId, p_reason: reason });
+      if (error) throw new EfzDbError("customerAccounts.suspend", error);
+    },
+    async reinstate(accountId: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("reinstate_customer_account", { p_account_id: accountId, p_reason: reason });
+      if (error) throw new EfzDbError("customerAccounts.reinstate", error);
+    },
+  };
+
   const orderRequests = {
     /**
      * Called from the public order form; works for signed-out visitors. One
@@ -1791,6 +1853,7 @@ export function createDb(client: EfzSupabaseClient) {
     inventory,
     orders,
     orderRequests,
+    customerAccounts,
     commissions,
     analytics,
     logs,

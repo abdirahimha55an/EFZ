@@ -63,8 +63,10 @@ From the 2026-09-09 backup that is:
 A profile is linked only once the Auth account's email is confirmed, or when
 the account was created by an admin (dashboard "Add user" with auto-confirm,
 or an invite). An unconfirmed sign-up claims nothing. A confirmed sign-up with
-an email that matches no profile gets a new **inactive** profile, so an
-unknown account can do nothing until an admin activates it.
+an email that matches no profile gets **no profile at all** (migration 21; before
+it, an inactive staff profile was created, which a status change could have turned
+into a staff account). Staff are therefore provisioned in this order only: profile in
+**Admin → Users** first, then **Add user / Invite** with the same email.
 
 #### Production Auth settings
 
@@ -79,7 +81,10 @@ user** or **Invite** in the Supabase dashboard). So in production:
 - Email is the only provider that needs to be enabled.
 
 The database no longer depends on this for safety - an unwanted sign-up gets
-an inactive profile and no data - but there is no reason to accept them.
+no profile and no data - but there is no reason to accept them. Customer
+accounts for the Android app are NOT created by public sign-up: they are created
+server-side by the `register-customer` Edge Function (see below), so this setting
+stays off.
 
 ### 4. Configure the app
 
@@ -368,3 +373,41 @@ npx supabase gen types typescript --project-id <your-ref> > lib/supabase/databas
 
 Note that generated types do not mark trigger-maintained columns as read-only,
 so the `Derived` guard in the current file would be lost.
+
+## Customer accounts for the Android app (migration 21)
+
+Customers register, EFZ approves, and only then may an account read the private
+catalog or its own orders. Customers are never staff.
+
+- **Model.** `customer_accounts` (status pending / approved / rejected / suspended, tied
+  to a staff-verified CRM `customers` row once approved) and the append-only
+  `customer_account_events`. No client can write either table; there is no direct
+  SELECT for customers - they use `my_customer_account()`, `customer_catalog()` and
+  `my_orders()`, which re-check the account on every call (a suspension applies to the
+  very next request).
+- **Registration.** `supabase/functions/register-customer` (Deno Edge Function) creates
+  the Auth user with the Admin API (`app_metadata.efz_kind = 'customer'`, which the
+  database trigger never links to a staff profile) and then calls
+  `register_customer_account()`, which only `service_role` may execute. It is
+  rate limited (3 per phone, 10 per hashed address, 300 in total per 24 h), reveals
+  nothing about staff emails or existing accounts, and keeps Auth sign-up disabled.
+  **Not deployed by this repository's workflow**: it needs the Supabase CLI, a project
+  access token and the secrets `REGISTRATION_HINT_SALT` (SUPABASE_URL and
+  SUPABASE_SERVICE_ROLE_KEY are injected by Supabase), deployed with `--no-verify-jwt`
+  because the caller is anonymous.
+- **Review.** Staff holding `manage_customer_accounts` (reserved: only a Super Admin can
+  grant it; held by no role preset) use `find_customers_for_account()`,
+  `approve_customer_account()`, `reject_customer_account()`, `suspend_customer_account()`
+  and `reinstate_customer_account()`. Linking an existing CRM customer, or creating a
+  new one when the phone number already belongs to a customer, needs the reviewer's
+  explicit "I verified this person" flag and a note; a phone match alone never links.
+  No commission owner is ever assigned automatically.
+- **Auth trigger.** `link_auth_user_to_profile` now links only to an EXISTING profile with
+  the same email. Unknown sign-ups get no profile.
+- **Tests.** `supabase/checks/21_customer_accounts_checks.sql` (80 checks, run as the real
+  anon / authenticated / service_role roles with a simulated JWT, inside a transaction that
+  is rolled back), `supabase/checks/21_function_fingerprint.sql` (run before and after;
+  only four named functions may change), and `npm run test:registration` (handler unit
+  tests; the integration test also runs when `EFZ_TEST_PG` points at a LOCAL database that
+  has migration 21). Rollback: `supabase/rollback/21_customer_accounts_rollback.sql`
+  (refuses while any account exists).

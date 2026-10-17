@@ -110,6 +110,9 @@ export function derivePermissions(profile: AdminProfile | null | undefined) {
      */
     handleWebsiteRequests: can("manage_website_requests"),
 
+    /** 21: review customer app accounts. UI convenience only: the review functions check the permission themselves. */
+    manageCustomerAccounts: can("manage_customer_accounts"),
+
     manageUsers: can("manage_users"),
     changeSettings: can("change_settings"),
     viewDiagnostics: can("view_diagnostics"),
