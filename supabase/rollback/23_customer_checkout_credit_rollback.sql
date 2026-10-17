@@ -27,6 +27,7 @@ drop function if exists public.my_checkout_status(uuid);
 drop function if exists public.customer_start_checkout(jsonb);
 drop function if exists public.customer_credit_status();
 drop function if exists public.customer_payment_methods();
+drop function if exists public.customer_price_preview(jsonb);
 drop function if exists public._customer_credit_summary(text);
 drop function if exists public._customer_credit_eligibility(text);
 drop function if exists public._record_online_payment(text, numeric, text, text, text);

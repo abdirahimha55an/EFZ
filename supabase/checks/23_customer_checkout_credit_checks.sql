@@ -91,7 +91,8 @@ begin
        from (values (cp, 'authenticated'), (cs, 'authenticated'), (cx, 'authenticated'), (null::uuid, 'anon')) c(u, r),
             (values ('select public.customer_payment_methods() as v'), ('select public.my_finance() as v'), ('select public.customer_credit_status() as v'),
                     ('select public.my_checkout_status(gen_random_uuid()) as v'),
-                    ('select public.customer_start_checkout(''{}''::jsonb) as v'), ('select public.customer_place_credit_order(''{}''::jsonb) as v')) f(sql)));
+                    ('select public.customer_start_checkout(''{}''::jsonb) as v'), ('select public.customer_place_credit_order(''{}''::jsonb) as v'),
+                    ('select public.customer_price_preview(''[]''::jsonb) as v')) f(sql)));
   perform pg_temp.chk('A2 customers and anonymous cannot read or write any of the six new tables directly',
     (select bool_and(pg_temp.none(pg_temp.q(u, r, 'select 1 as v from public.' || tb)))
        from (values (ca, 'authenticated'), (null::uuid, 'anon')) c(u, r),
@@ -147,6 +148,11 @@ begin
   perform pg_temp.chk('C1 the total is computed by the server (5 x 12.50 + 4 x 10.00 = 102.50), ignoring any price or total the app sends', (v_co ->> 'amount')::numeric = 102.50 and (v_co ->> 'status') = 'created' and jsonb_array_length(v_co -> 'lines') = 3, t);
   perform pg_temp.chk('C2 the snapshot keeps product, design and the list price per line', (select bool_and((l ->> 'unitPrice')::numeric in (12.50, 10)) from jsonb_array_elements(v_co -> 'lines') l)
      and (select count(*) from jsonb_array_elements(v_co -> 'lines') l where l ->> 'designName' in ('Red', 'Blue')) = 2);
+  t := pg_temp.q(ca, 'authenticated', format('select public.customer_price_preview(%L::jsonb) as v', jsonb_build_array(jsonb_build_object('productId', 'p23-designs', 'designId', d1, 'quantity', 2, 'unitPrice', 0.01), jsonb_build_object('productId', 'p23-plain', 'quantity', 1))::text));
+  perform pg_temp.chk('C2b the price preview returns the SERVER total (2 x 12.50 + 10.00 = 35.00) and changes nothing', (pg_temp.jv(t) ->> 'total')::numeric = 35.00 and (select count(*) from public.customer_checkouts) = 1 and (select count(*) from public.orders where customer_id = v_a) = 0, t);
+  perform pg_temp.chk('C2c the preview refuses what a checkout would refuse (scarce stock, unknown product) with the database sentence',
+    pg_temp.err(pg_temp.q(ca, 'authenticated', format('select public.customer_price_preview(%L::jsonb) as v', jsonb_build_array(jsonb_build_object('productId', 'p23-scarce', 'quantity', 6))::text)))
+    and pg_temp.err(pg_temp.q(ca, 'authenticated', format('select public.customer_price_preview(%L::jsonb) as v', jsonb_build_array(jsonb_build_object('productId', 'nope', 'quantity', 1))::text))));
   perform pg_temp.chk('C3 starting a checkout creates NO order and NO payment', (select count(*) from public.orders where customer_id = v_a) = 0 and (select count(*) from public.payments p join public.orders o on o.id = p.order_id where o.customer_id = v_a) = 0);
   v_id := (v_co ->> 'checkoutId')::uuid;
   t := pg_temp.q(ca, 'authenticated', format('select public.customer_start_checkout(%L::jsonb) as v', jsonb_build_object('methodCode', 'test_pay', 'deliveryLocation', 'Another place', 'submissionKey', k,

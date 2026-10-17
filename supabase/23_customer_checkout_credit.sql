@@ -428,6 +428,22 @@ $fn$;
 revoke all on function public.customer_credit_status() from public, anon;
 grant execute on function public.customer_credit_status() to authenticated;
 
+-- Read-only price check of a cart (the cart screen asks before checkout): server prices, availability, and the database's own refusal sentence.
+create or replace function public.customer_price_preview(p_lines jsonb)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $fn$
+begin
+  perform public.require_approved_customer();
+  return public._customer_price_cart(p_lines);
+end;
+$fn$;
+revoke all on function public.customer_price_preview(jsonb) from public, anon;
+grant execute on function public.customer_price_preview(jsonb) to authenticated;
+
 -- Start a checkout: server-priced snapshot of the cart, no order and no payment yet. Idempotent by submissionKey.
 create or replace function public.customer_start_checkout(p_payload jsonb)
 returns jsonb
