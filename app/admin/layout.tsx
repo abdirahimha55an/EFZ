@@ -38,8 +38,7 @@ import {
   Moon,
   Wallet,
   Inbox,
-  Landmark
-} from "lucide-react";
+  Landmark, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,6 +87,8 @@ const SYSTEM_LINKS = [
   { name: "System Management", href: "/admin/system", icon: SettingsIcon, permission: 'manage_system' as Permission },
   // Legacy orders without recorded payment terms: Super Admin only (the page and the database both enforce it).
   { name: "Payment Terms Review", href: "/admin/terms-review", icon: ClipboardCheck, permission: 'manage_system' as Permission, superAdminOnly: true },
+  // 23: payment methods, credit policy and customer credit for the Android app (Super Admin only; the database enforces it).
+  { name: "Customer Payments & Credit", href: "/admin/customer-credit", icon: CreditCard, permission: 'manage_system' as Permission, superAdminOnly: true },
 ];
 
 /** How often an open admin tab re-derives its alerts (also when the tab regains focus). */

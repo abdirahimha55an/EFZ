@@ -865,6 +865,16 @@ export type Database = {
       reject_customer_account: { Args: { p_account_id: string; p_reason: string }; Returns: undefined };
       suspend_customer_account: { Args: { p_account_id: string; p_reason: string }; Returns: undefined };
       reinstate_customer_account: { Args: { p_account_id: string; p_reason: string }; Returns: undefined };
+      // 23: customer payments and credit (Super Admin only; the database refuses everyone else).
+      list_payment_methods: { Args: Record<string, never>; Returns: unknown };
+      set_payment_method: { Args: { p_code: string; p_label: string; p_kind: string; p_enabled: boolean; p_reason: string }; Returns: undefined };
+      get_credit_policy: { Args: Record<string, never>; Returns: unknown };
+      set_credit_policy: { Args: { p_enabled: boolean; p_min_purchases: number | null; p_min_value: number | null; p_require_no_unpaid: boolean; p_default_terms_days: number | null; p_reason: string }; Returns: undefined };
+      credit_overview: { Args: Record<string, never>; Returns: unknown };
+      set_customer_credit: { Args: { p_customer_id: string; p_limit: number; p_terms_days: number; p_reason: string; p_override_reason: string | null }; Returns: undefined };
+      suspend_customer_credit: { Args: { p_customer_id: string; p_reason: string }; Returns: undefined };
+      list_checkouts_for_review: { Args: Record<string, never>; Returns: unknown };
+      resolve_customer_checkout: { Args: { p_checkout_id: string; p_note: string }; Returns: undefined };
       find_customers_by_phone: { Args: { p_request_id: string; p_phone?: string | null }; Returns: CustomerMatchRow[] };
       convert_website_request: { Args: { p_request_id: string; p_payload: Json }; Returns: string };
       transfer_customer_owner: {

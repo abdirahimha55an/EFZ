@@ -11,6 +11,7 @@
  */
 
 import type { PostgrestError } from "@supabase/supabase-js";
+import type { PaymentMethodRow, CreditPolicy, CreditPolicyInput, CreditOverviewRow, ReviewCheckout } from "@/lib/customerFinance";
 
 import type {
   AdminSettings,
@@ -1033,6 +1034,54 @@ export function createDb(client: EfzSupabaseClient) {
     id: r.id, email: r.email, fullName: r.full_name, organization: r.organization, phone: r.phone, status: r.status,
     customerId: r.customer_id, requestedAt: r.requested_at, reviewedByName: r.reviewed_by_name, reviewedAt: r.reviewed_at, reviewNote: r.review_note,
   });
+  // -------------------------------------------------------------------------
+  // 23: customer payments and credit (Super Admin). Every rule lives in the audited database functions.
+  // -------------------------------------------------------------------------
+  const financeAdmin = {
+    async paymentMethods(): Promise<PaymentMethodRow[]> {
+      const { data, error } = await client.rpc("list_payment_methods");
+      if (error) throw new EfzDbError("financeAdmin.paymentMethods", error);
+      return (data as unknown as PaymentMethodRow[]) ?? [];
+    },
+    async setPaymentMethod(input: { code: string; label: string; kind: "provider" | "staging_test"; enabled: boolean; reason: string }): Promise<void> {
+      const { error } = await client.rpc("set_payment_method", { p_code: input.code, p_label: input.label, p_kind: input.kind, p_enabled: input.enabled, p_reason: input.reason });
+      if (error) throw new EfzDbError("financeAdmin.setPaymentMethod", error);
+    },
+    async creditPolicy(): Promise<CreditPolicy> {
+      const { data, error } = await client.rpc("get_credit_policy");
+      if (error) throw new EfzDbError("financeAdmin.creditPolicy", error);
+      const r = data as unknown as { enabled: boolean; min_completed_purchases: number | null; min_total_value: number | string | null; require_no_unpaid_delivered: boolean; default_terms_days: number | null; updated_at: string; note: string };
+      return { enabled: r.enabled, minCompletedPurchases: r.min_completed_purchases, minTotalValue: r.min_total_value === null ? null : Number(r.min_total_value),
+               requireNoUnpaidDelivered: r.require_no_unpaid_delivered, defaultTermsDays: r.default_terms_days, updatedAt: r.updated_at, note: r.note };
+    },
+    async setCreditPolicy(p: CreditPolicyInput, reason: string): Promise<void> {
+      const { error } = await client.rpc("set_credit_policy", { p_enabled: p.enabled, p_min_purchases: p.minCompletedPurchases, p_min_value: p.minTotalValue, p_require_no_unpaid: p.requireNoUnpaidDelivered, p_default_terms_days: p.defaultTermsDays, p_reason: reason });
+      if (error) throw new EfzDbError("financeAdmin.setCreditPolicy", error);
+    },
+    async creditOverview(): Promise<CreditOverviewRow[]> {
+      const { data, error } = await client.rpc("credit_overview");
+      if (error) throw new EfzDbError("financeAdmin.creditOverview", error);
+      return (data as unknown as CreditOverviewRow[]) ?? [];
+    },
+    async setCustomerCredit(input: { customerId: string; limit: number; termsDays: number; reason: string; overrideReason: string | null }): Promise<void> {
+      const { error } = await client.rpc("set_customer_credit", { p_customer_id: input.customerId, p_limit: input.limit, p_terms_days: input.termsDays, p_reason: input.reason, p_override_reason: input.overrideReason });
+      if (error) throw new EfzDbError("financeAdmin.setCustomerCredit", error);
+    },
+    async suspendCustomerCredit(customerId: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("suspend_customer_credit", { p_customer_id: customerId, p_reason: reason });
+      if (error) throw new EfzDbError("financeAdmin.suspendCustomerCredit", error);
+    },
+    async checkoutsForReview(): Promise<ReviewCheckout[]> {
+      const { data, error } = await client.rpc("list_checkouts_for_review");
+      if (error) throw new EfzDbError("financeAdmin.checkoutsForReview", error);
+      return (data as unknown as ReviewCheckout[]) ?? [];
+    },
+    async resolveCheckout(id: string, note: string): Promise<void> {
+      const { error } = await client.rpc("resolve_customer_checkout", { p_checkout_id: id, p_note: note });
+      if (error) throw new EfzDbError("financeAdmin.resolveCheckout", error);
+    },
+  };
+
   const customerAccounts = {
     /** Oldest pending first, then everything else newest first. RLS returns nothing without manage_customer_accounts. */
     async list(): Promise<CustomerAccount[]> {
@@ -1878,6 +1927,7 @@ export function createDb(client: EfzSupabaseClient) {
     orders,
     orderRequests,
     customerAccounts,
+    financeAdmin,
     commissions,
     analytics,
     logs,
