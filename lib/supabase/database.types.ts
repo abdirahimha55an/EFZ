@@ -869,7 +869,8 @@ export type Database = {
       list_payment_methods: { Args: Record<string, never>; Returns: unknown };
       set_payment_method: { Args: { p_code: string; p_label: string; p_kind: string; p_enabled: boolean; p_reason: string }; Returns: undefined };
       get_credit_policy: { Args: Record<string, never>; Returns: unknown };
-      set_credit_policy: { Args: { p_enabled: boolean; p_min_purchases: number | null; p_min_value: number | null; p_require_no_unpaid: boolean; p_default_terms_days: number | null; p_reason: string }; Returns: undefined };
+      set_credit_policy: { Args: { p_enabled: boolean; p_min_purchases: number | null; p_min_value: number | null; p_require_no_unpaid: boolean; p_default_terms_days: number | null; p_reason: string; p_min_approved_days?: number | null; p_max_outstanding?: number | null; p_require_no_overdue?: boolean }; Returns: undefined };
+      credit_history: { Args: { p_customer_id: string }; Returns: unknown };
       credit_overview: { Args: Record<string, never>; Returns: unknown };
       set_customer_credit: { Args: { p_customer_id: string; p_limit: number; p_terms_days: number; p_reason: string; p_override_reason: string | null }; Returns: undefined };
       suspend_customer_credit: { Args: { p_customer_id: string; p_reason: string }; Returns: undefined };

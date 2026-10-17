@@ -11,7 +11,8 @@
  */
 
 import type { PostgrestError } from "@supabase/supabase-js";
-import type { PaymentMethodRow, CreditPolicy, CreditPolicyInput, CreditOverviewRow, ReviewCheckout } from "@/lib/customerFinance";
+import type { PaymentMethodRow, CreditPolicy, CreditPolicyInput, CreditOverviewRow, CreditHistory, ReviewCheckout } from "@/lib/customerFinance";
+import { policyRpcArgs } from "@/lib/customerFinance";
 
 import type {
   AdminSettings,
@@ -1050,12 +1051,13 @@ export function createDb(client: EfzSupabaseClient) {
     async creditPolicy(): Promise<CreditPolicy> {
       const { data, error } = await client.rpc("get_credit_policy");
       if (error) throw new EfzDbError("financeAdmin.creditPolicy", error);
-      const r = data as unknown as { enabled: boolean; min_completed_purchases: number | null; min_total_value: number | string | null; require_no_unpaid_delivered: boolean; default_terms_days: number | null; updated_at: string; note: string };
+      const r = data as unknown as { enabled: boolean; min_completed_purchases: number | null; min_total_value: number | string | null; require_no_unpaid_delivered: boolean; default_terms_days: number | null; updated_at: string; note: string; min_approved_days?: number | null; max_outstanding?: number | string | null; require_no_overdue?: boolean };
       return { enabled: r.enabled, minCompletedPurchases: r.min_completed_purchases, minTotalValue: r.min_total_value === null ? null : Number(r.min_total_value),
-               requireNoUnpaidDelivered: r.require_no_unpaid_delivered, defaultTermsDays: r.default_terms_days, updatedAt: r.updated_at, note: r.note };
+               requireNoUnpaidDelivered: r.require_no_unpaid_delivered, minApprovedDays: r.min_approved_days ?? null, maxOutstanding: r.max_outstanding == null ? null : Number(r.max_outstanding),
+               requireNoOverdue: r.require_no_overdue ?? true, defaultTermsDays: r.default_terms_days, updatedAt: r.updated_at, note: r.note };
     },
     async setCreditPolicy(p: CreditPolicyInput, reason: string): Promise<void> {
-      const { error } = await client.rpc("set_credit_policy", { p_enabled: p.enabled, p_min_purchases: p.minCompletedPurchases, p_min_value: p.minTotalValue, p_require_no_unpaid: p.requireNoUnpaidDelivered, p_default_terms_days: p.defaultTermsDays, p_reason: reason });
+      const { error } = await client.rpc("set_credit_policy", policyRpcArgs(p, reason));
       if (error) throw new EfzDbError("financeAdmin.setCreditPolicy", error);
     },
     async creditOverview(): Promise<CreditOverviewRow[]> {
@@ -1066,6 +1068,11 @@ export function createDb(client: EfzSupabaseClient) {
     async setCustomerCredit(input: { customerId: string; limit: number; termsDays: number; reason: string; overrideReason: string | null }): Promise<void> {
       const { error } = await client.rpc("set_customer_credit", { p_customer_id: input.customerId, p_limit: input.limit, p_terms_days: input.termsDays, p_reason: input.reason, p_override_reason: input.overrideReason });
       if (error) throw new EfzDbError("financeAdmin.setCustomerCredit", error);
+    },
+    async creditHistory(customerId: string): Promise<CreditHistory> {
+      const { data, error } = await client.rpc("credit_history", { p_customer_id: customerId });
+      if (error) throw new EfzDbError("financeAdmin.creditHistory", error);
+      return data as unknown as CreditHistory;
     },
     async suspendCustomerCredit(customerId: string, reason: string): Promise<void> {
       const { error } = await client.rpc("suspend_customer_credit", { p_customer_id: customerId, p_reason: reason });

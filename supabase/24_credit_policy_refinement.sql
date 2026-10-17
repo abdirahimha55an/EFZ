@@ -58,7 +58,8 @@ begin
   select coalesce(sum(o.outstanding_balance), 0) into v_out from public.orders o where o.customer_id = p_customer_id and o.status <> 'cancelled';
   select min(e.created_at) into v_first from public.customer_account_events e join public.customer_accounts a on a.id = e.account_id
    where a.customer_id = p_customer_id and e.event = 'approved';
-  v_days := case when v_first is null then 0 else greatest(public.efz_today() - v_first::date, 0) end;
+  -- whole days since the first approval, counted on the same (Mogadishu) calendar as every other EFZ date
+  v_days := case when v_first is null then 0 else greatest(public.efz_today() - (v_first at time zone 'Africa/Mogadishu')::date, 0) end;
 
   if not pol.enabled then
     v_reasons := array_append(v_reasons, 'Credit purchasing is not active yet.');

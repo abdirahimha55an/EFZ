@@ -17,7 +17,7 @@ import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import {
   MIN_OVERRIDE, MIN_REASON, creditGrantProblem, money, policyProblem,
-  type CreditOverviewRow, type CreditPolicy, type PaymentMethodRow, type ReviewCheckout,
+  type CreditHistory, type CreditOverviewRow, type CreditPolicy, type PaymentMethodRow, type ReviewCheckout,
 } from "@/lib/customerFinance";
 
 type Data = { methods: PaymentMethodRow[]; policy: CreditPolicy; overview: CreditOverviewRow[]; review: ReviewCheckout[] };
@@ -130,19 +130,29 @@ function PolicyCard({ policy, busy, run }: { policy: CreditPolicy; busy: boolean
   const [value, setValue] = useState(policy.minTotalValue?.toString() ?? "");
   const [terms, setTerms] = useState(policy.defaultTermsDays?.toString() ?? "");
   const [noUnpaid, setNoUnpaid] = useState(policy.requireNoUnpaidDelivered);
+  const [days, setDays] = useState(policy.minApprovedDays?.toString() ?? "");
+  const [ceiling, setCeiling] = useState(policy.maxOutstanding?.toString() ?? "");
+  const [noOverdue, setNoOverdue] = useState(policy.requireNoOverdue);
   const [reason, setReason] = useState("");
-  const draft = { enabled, minCompletedPurchases: purchases === "" ? null : Number(purchases), minTotalValue: value === "" ? null : Number(value), requireNoUnpaidDelivered: noUnpaid, defaultTermsDays: terms === "" ? null : Number(terms) };
+  const draft = { enabled, minCompletedPurchases: purchases === "" ? null : Number(purchases), minTotalValue: value === "" ? null : Number(value), requireNoUnpaidDelivered: noUnpaid, defaultTermsDays: terms === "" ? null : Number(terms),
+                  minApprovedDays: days === "" ? null : Number(days), maxOutstanding: ceiling === "" ? null : Number(ceiling), requireNoOverdue: noOverdue };
   const issue = policyProblem(draft, reason);
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4" data-testid="policy-card">
       <h2 className="text-sm font-bold text-slate-900">Credit policy <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] ${policy.enabled ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-600"}`} data-testid="policy-state">{policy.enabled ? "ON" : "OFF"}</span></h2>
-      <p className="mb-3 text-xs text-slate-500">A customer becomes eligible after the completed purchases below: delivered, fully paid, regular orders only (never cancelled, trial, unpaid or undelivered ones). Leave a requirement empty to ignore it. EFZ has not set these values yet.</p>
+      <p className="mb-3 text-xs text-slate-500">A customer becomes eligible when EVERY requirement filled in below is met: completed purchases (delivered, fully paid, regular orders only: never cancelled, trial, unpaid or undelivered ones), their total value, and the days since the customer was first approved. Leave a requirement empty to ignore it. The rules under Account standing can pause a customer at any time and cannot be overridden. EFZ has not set any of these values yet.</p>
       <div className="flex flex-wrap items-end gap-3 text-[11px] text-slate-500">
         <label className="flex items-center gap-2"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} data-testid="policy-enabled" /> Credit purchasing on</label>
         <label>Completed purchases needed<br /><input className={`${input} w-24`} inputMode="numeric" value={purchases} onChange={(e) => setPurchases(e.target.value)} data-testid="policy-purchases" /></label>
         <label>Completed purchase value needed ($)<br /><input className={`${input} w-28`} inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} data-testid="policy-value" /></label>
         <label>Default repayment days<br /><input className={`${input} w-24`} inputMode="numeric" value={terms} onChange={(e) => setTerms(e.target.value)} data-testid="policy-terms" /></label>
-        <label className="flex items-center gap-2"><input type="checkbox" checked={noUnpaid} onChange={(e) => setNoUnpaid(e.target.checked)} /> No unpaid balance on a delivered order</label>
+        <label>Days as an approved customer<br /><input className={`${input} w-24`} inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} data-testid="policy-days" /></label>
+      </div>
+      <p className="mt-3 text-[11px] font-semibold text-slate-700">Account standing (pauses credit; never overridable)</p>
+      <div className="mt-1 flex flex-wrap items-end gap-3 text-[11px] text-slate-500">
+        <label className="flex items-center gap-2"><input type="checkbox" checked={noUnpaid} onChange={(e) => setNoUnpaid(e.target.checked)} data-testid="policy-nounpaid" /> No unpaid balance on a delivered order</label>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={noOverdue} onChange={(e) => setNoOverdue(e.target.checked)} data-testid="policy-nooverdue" /> No credit invoice past its due date</label>
+        <label>Maximum total outstanding per customer ($)<br /><input className={`${input} w-28`} inputMode="decimal" value={ceiling} onChange={(e) => setCeiling(e.target.value)} data-testid="policy-ceiling" /></label>
       </div>
       <div className="mt-3 flex flex-wrap items-end gap-2">
         <label className="text-[11px] text-slate-500">Reason for the change<br /><input className={`${input} w-72`} value={reason} onChange={(e) => setReason(e.target.value)} data-testid="policy-reason" /></label>
@@ -157,8 +167,16 @@ function CustomersCard({ rows, policyEnabled, busy, run }: { rows: CreditOvervie
   const db = getDb();
   const [open, setOpen] = useState<string | null>(null);
   const [limit, setLimit] = useState(""); const [days, setDays] = useState(""); const [reason, setReason] = useState(""); const [override, setOverride] = useState("");
+  const [hist, setHist] = useState<{ id: string; name: string; data: CreditHistory } | null>(null);
+  const [histError, setHistError] = useState<string | null>(null);
   const row = rows.find((r) => r.customerId === open) ?? null;
-  const issue = row ? creditGrantProblem({ limit: Number(limit), termsDays: Number(days), reason, overrideReason: override, eligible: row.eligibility.eligible }) : null;
+  const standing = row?.eligibility.standingReasons ?? [];
+  const unmet = row ? row.eligibility.reasons.length > 0 : false;
+  const issue = row ? creditGrantProblem({ limit: Number(limit), termsDays: Number(days), reason, overrideReason: override, eligible: !unmet, standingReasons: standing }) : null;
+  const showHistory = async (r: CreditOverviewRow) => {
+    setHistError(null);
+    try { setHist({ id: r.customerId, name: r.name, data: await getDb().financeAdmin.creditHistory(r.customerId) }); } catch (e) { setHist(null); setHistError(describeDbError(e)); }
+  };
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4" data-testid="customers-card">
       <h2 className="text-sm font-bold text-slate-900">Customers with an approved app account</h2>
@@ -171,10 +189,11 @@ function CustomersCard({ rows, policyEnabled, busy, run }: { rows: CreditOvervie
               <tr key={r.customerId} data-testid="credit-row" data-customer={r.customerId}>
                 <td className="py-2 font-semibold text-slate-800">{r.name}</td>
                 <td>{r.eligibility.completedPurchases} ({money(r.eligibility.completedValue)})</td>
-                <td title={r.eligibility.reasons.join(" ")} className={r.eligibility.eligible ? "text-emerald-700" : "text-slate-500"}>{r.eligibility.eligible ? "Yes" : "No"}</td>
+                <td title={[...r.eligibility.reasons, ...(r.eligibility.standingReasons ?? [])].join(" ")} className={r.eligibility.eligible ? "text-emerald-700" : (r.eligibility.standingReasons ?? []).length > 0 ? "text-amber-700" : "text-slate-500"} data-testid="credit-eligible">{r.eligibility.eligible ? "Yes" : (r.eligibility.standingReasons ?? []).length > 0 ? "Paused" : "No"}</td>
                 <td>{money(r.outstanding)}</td>
                 <td>{r.account ? `${r.account.status} · ${money(r.account.credit_limit)} · ${r.account.terms_days} days${r.account.override_used ? " · override" : ""}` : "none"}</td>
                 <td className="text-right">
+                  <button type="button" className={`${btn2} mr-1`} disabled={busy} data-testid="credit-history" onClick={() => void showHistory(r)}>History</button>
                   <button type="button" className={btn2} disabled={busy || !policyEnabled} data-testid="credit-edit" onClick={() => { setOpen(r.customerId); setLimit(r.account ? String(Number(r.account.credit_limit)) : ""); setDays(r.account ? String(r.account.terms_days) : ""); setReason(""); setOverride(""); }}>{r.account ? "Change" : "Authorize"}</button>
                   {r.account?.status === "approved" && <button type="button" className={`${btn2} ml-1`} disabled={busy || reason.trim().length < MIN_REASON || open !== r.customerId} title="Needs a reason in the form below" data-testid="credit-suspend"
                     onClick={() => void run(`Credit suspended for ${r.name}.`, () => db.financeAdmin.suspendCustomerCredit(r.customerId, reason))}>Suspend</button>}
@@ -186,18 +205,32 @@ function CustomersCard({ rows, policyEnabled, busy, run }: { rows: CreditOvervie
       )}
       {row && (
         <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600" data-testid="credit-form">
-          <p className="mb-2 font-semibold text-slate-800">{row.name}: {row.eligibility.eligible ? "meets the policy" : "does not meet the policy"}</p>
-          {!row.eligibility.eligible && <ul className="mb-2 list-disc pl-4">{row.eligibility.reasons.map((x) => <li key={x}>{x}</li>)}</ul>}
+          <p className="mb-2 font-semibold text-slate-800">{row.name}: {row.eligibility.eligible ? "meets the policy" : standing.length > 0 ? "account paused" : "does not meet the policy"}</p>
+          {unmet && <ul className="mb-2 list-disc pl-4" data-testid="credit-unmet">{row.eligibility.reasons.map((x) => <li key={x}>{x}</li>)}</ul>}
+          {standing.length > 0 && <ul className="mb-2 list-disc pl-4 text-amber-800" data-testid="credit-standing">{standing.map((x) => <li key={x}>{x}</li>)}<li className="list-none">Credit cannot be authorized until this is resolved; an override does not apply.</li></ul>}
           <div className="flex flex-wrap items-end gap-2">
             <label>Credit limit ($)<br /><input className={`${input} w-28`} inputMode="decimal" value={limit} onChange={(e) => setLimit(e.target.value)} data-testid="credit-limit" /></label>
             <label>Repayment days<br /><input className={`${input} w-24`} inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} data-testid="credit-days" /></label>
             <label>Reason<br /><input className={`${input} w-56`} value={reason} onChange={(e) => setReason(e.target.value)} data-testid="credit-reason" /></label>
-            {!row.eligibility.eligible && <label>Override reason (min {MIN_OVERRIDE})<br /><input className={`${input} w-64`} value={override} onChange={(e) => setOverride(e.target.value)} data-testid="credit-override" /></label>}
+            {unmet && standing.length === 0 && <label>Override reason (min {MIN_OVERRIDE})<br /><input className={`${input} w-64`} value={override} onChange={(e) => setOverride(e.target.value)} data-testid="credit-override" /></label>}
             <button type="button" className={btn} disabled={busy || !!issue} data-testid="credit-save"
-              onClick={() => void run(`Credit authorized for ${row.name}.`, async () => { await db.financeAdmin.setCustomerCredit({ customerId: row.customerId, limit: Number(limit), termsDays: Number(days), reason, overrideReason: row.eligibility.eligible ? null : override }); setOpen(null); })}>Save</button>
+              onClick={() => void run(`Credit authorized for ${row.name}.`, async () => { await db.financeAdmin.setCustomerCredit({ customerId: row.customerId, limit: Number(limit), termsDays: Number(days), reason, overrideReason: unmet ? override : null }); setOpen(null); })}>Save</button>
             <button type="button" className={btn2} onClick={() => setOpen(null)}>Close</button>
           </div>
           {issue && <p className="mt-2 text-amber-700" data-testid="credit-issue">{issue}</p>}
+        </div>
+      )}
+      {histError && <p className="mt-3 text-xs text-red-700" data-testid="history-error">{histError}</p>}
+      {hist && (
+        <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-[11px] text-slate-600" data-testid="credit-history-panel">
+          <div className="mb-2 flex items-center justify-between"><p className="font-semibold text-slate-800">Credit history: {hist.name}</p><button type="button" className={btn2} onClick={() => setHist(null)}>Close</button></div>
+          {hist.data.orders.length === 0 ? <p data-testid="history-no-orders">No credit orders yet.</p> : (
+            <table className="mb-2 w-full text-left"><thead className="text-[10px] uppercase text-slate-400"><tr><th>Order</th><th>Date</th><th>Due</th><th>Total</th><th>Paid</th><th>Balance</th><th /></tr></thead>
+              <tbody className="divide-y divide-slate-100">{hist.data.orders.map((o) => (
+                <tr key={o.orderId} data-testid="history-order"><td className="py-1 font-semibold">{o.orderId}</td><td>{o.date}</td><td>{o.dueDate}</td><td>{money(o.total)}</td><td>{money(o.paid)}</td><td>{money(o.outstanding)}</td><td className={o.overdue ? "font-semibold text-red-700" : "text-slate-400"}>{o.status === "cancelled" ? "cancelled" : o.overdue ? "OVERDUE" : Number(o.outstanding) > 0 ? "open" : "paid"}</td></tr>
+              ))}</tbody></table>
+          )}
+          {hist.data.events.length === 0 ? <p data-testid="history-no-events">No limit changes recorded.</p> : <ul className="list-disc pl-4" data-testid="history-events">{hist.data.events.map((e, i) => <li key={i}>{new Date(e.at).toLocaleString()} · {e.by}: {e.message}</li>)}</ul>}
         </div>
       )}
     </section>
