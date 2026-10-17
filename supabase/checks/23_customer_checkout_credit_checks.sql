@@ -135,7 +135,7 @@ begin
   k := 'b1000000-0000-4000-8000-000000000001';
   t := pg_temp.q(ca, 'authenticated', format('select public.customer_start_checkout(%L::jsonb) as v', jsonb_build_object('methodCode', 'test_pay', 'deliveryLocation', 'Hodan', 'submissionKey', k,
         'lines', jsonb_build_array(jsonb_build_object('productId', 'p23-plain', 'quantity', 1)))::text));
-  perform pg_temp.chk('B2 a checkout with a method EFZ has not enabled is refused and nothing is created', pg_temp.err(t) and (select count(*) from public.customer_checkouts) = 0, t);
+  perform pg_temp.chk('B2 a checkout with a method EFZ has not enabled is refused and nothing is created', pg_temp.err(t) and (select count(*) from public.customer_checkouts where customer_id = v_a) = 0, t);
   t := pg_temp.q(sa_u, 'authenticated', 'select public.set_payment_method(''test_pay'', ''Test Pay'', ''provider'', true, ''enable for T23'') as v');
   perform pg_temp.chk('B3 a Super Admin enables a method (audited)', not pg_temp.err(t) and exists (select 1 from public.system_logs where message like 'Payment method test_pay enabled%'), t);
   perform pg_temp.q(sa_u, 'authenticated', 'select public.set_payment_method(''stg_test'', ''Staging Test'', ''staging_test'', true, ''Staging test method'') as v');
@@ -156,7 +156,7 @@ begin
   perform pg_temp.chk('C2 the snapshot keeps product, design and the list price per line', (select bool_and((l ->> 'unitPrice')::numeric in (12.50, 10)) from jsonb_array_elements(v_co -> 'lines') l)
      and (select count(*) from jsonb_array_elements(v_co -> 'lines') l where l ->> 'designName' in ('Red', 'Blue')) = 2);
   t := pg_temp.q(ca, 'authenticated', format('select public.customer_price_preview(%L::jsonb) as v', jsonb_build_array(jsonb_build_object('productId', 'p23-designs', 'designId', d1, 'quantity', 2, 'unitPrice', 0.01), jsonb_build_object('productId', 'p23-plain', 'quantity', 1))::text));
-  perform pg_temp.chk('C2b the price preview returns the SERVER total (2 x 12.50 + 10.00 = 35.00) and changes nothing', (pg_temp.jv(t) ->> 'total')::numeric = 35.00 and (select count(*) from public.customer_checkouts) = 1 and (select count(*) from public.orders where customer_id = v_a) = 0, t);
+  perform pg_temp.chk('C2b the price preview returns the SERVER total (2 x 12.50 + 10.00 = 35.00) and changes nothing', (pg_temp.jv(t) ->> 'total')::numeric = 35.00 and (select count(*) from public.customer_checkouts where customer_id = v_a) = 1 and (select count(*) from public.orders where customer_id = v_a) = 0, t);
   perform pg_temp.chk('C2c the preview refuses what a checkout would refuse (scarce stock, unknown product) with the database sentence',
     pg_temp.err(pg_temp.q(ca, 'authenticated', format('select public.customer_price_preview(%L::jsonb) as v', jsonb_build_array(jsonb_build_object('productId', 'p23-scarce', 'quantity', 6))::text)))
     and pg_temp.err(pg_temp.q(ca, 'authenticated', format('select public.customer_price_preview(%L::jsonb) as v', jsonb_build_array(jsonb_build_object('productId', 'nope', 'quantity', 1))::text))));
@@ -357,7 +357,7 @@ begin
   perform pg_temp.chk('E9 multiple payments on one order do not double count it (an order paid in two instalments counts once)',
     (pg_temp.jv(pg_temp.q(cb, 'authenticated', 'select public.customer_credit_status() as v')) -> 'eligibility' ->> 'completedPurchases')::int = 1);
   perform pg_temp.chk('E10 eligibility alone grants nothing: customer A is eligible but has no credit account and cannot buy on credit ("never silently granted")',
-    (select count(*) from public.customer_credit_accounts) = 0 and (pg_temp.jv(pg_temp.q(ca, 'authenticated', 'select public.customer_credit_status() as v')) ->> 'canBuyOnCredit') = 'false'
+    (select count(*) from public.customer_credit_accounts where customer_id = v_a) = 0 and (pg_temp.jv(pg_temp.q(ca, 'authenticated', 'select public.customer_credit_status() as v')) ->> 'canBuyOnCredit') = 'false'
     and pg_temp.denied(pg_temp.q(ca, 'authenticated', format('select public.customer_place_credit_order(%L::jsonb) as v', jsonb_build_object('deliveryLocation', 'Hodan', 'submissionKey', 'f1000000-0000-4000-8000-000000000002',
         'lines', jsonb_build_array(jsonb_build_object('productId', 'p23-plain', 'quantity', 1)))::text))));
   perform pg_temp.chk('E11 an ineligible customer (B has 1 of 2 purchases) cannot be given credit without a recorded override reason (10+ characters)',

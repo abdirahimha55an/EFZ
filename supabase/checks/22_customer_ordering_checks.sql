@@ -212,7 +212,7 @@ begin
     v_ev = 1 and not pg_temp.err(t)
     and (select count(*) from public.customer_account_events e join public.customer_accounts a on a.id = e.account_id where a.email = 't22-d@example.test' and e.event = 'deletion_requested') = 1
     and (select deletion_reason from public.customer_accounts where email = 't22-d@example.test') = 'Please delete my account'
-    and (select count(*) from public.system_logs where origin = 'database' and metadata ->> 'event' = 'customer_account_deletion_requested') = 1);
+    and (select count(*) from public.system_logs where origin = 'database' and metadata ->> 'event' = 'customer_account_deletion_requested' and metadata ->> 'accountId' = (select id::text from public.customer_accounts where email = 't22-d@example.test')) = 1);
   perform pg_temp.chk('F3 a pending, rejected or suspended customer may also ask to be deleted; an unregistered sign-in and anon cannot',
     not pg_temp.err(pg_temp.q(cp, 'authenticated', 'select public.request_account_deletion('''')')) and not pg_temp.err(pg_temp.q(cs, 'authenticated', 'select public.request_account_deletion(''bye'')'))
     and pg_temp.denied(pg_temp.q(cx, 'authenticated', 'select public.request_account_deletion(''x'')')) and pg_temp.denied(pg_temp.q(null, 'anon', 'select public.request_account_deletion(''x'')')));
