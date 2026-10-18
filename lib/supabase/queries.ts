@@ -11,7 +11,7 @@
  */
 
 import type { PostgrestError } from "@supabase/supabase-js";
-import type { PaymentMethodRow, CreditPolicy, CreditPolicyInput, CreditOverviewRow, CreditHistory, ReviewCheckout } from "@/lib/customerFinance";
+import type { PaymentMethodRow, CreditPolicy, CreditPolicyInput, CreditOverviewRow, CreditHistory, CreditOperations, CreditDispute, ReviewCheckout } from "@/lib/customerFinance";
 import { policyRpcArgs } from "@/lib/customerFinance";
 
 import type {
@@ -1051,10 +1051,11 @@ export function createDb(client: EfzSupabaseClient) {
     async creditPolicy(): Promise<CreditPolicy> {
       const { data, error } = await client.rpc("get_credit_policy");
       if (error) throw new EfzDbError("financeAdmin.creditPolicy", error);
-      const r = data as unknown as { enabled: boolean; min_completed_purchases: number | null; min_total_value: number | string | null; require_no_unpaid_delivered: boolean; default_terms_days: number | null; updated_at: string; note: string; min_approved_days?: number | null; max_outstanding?: number | string | null; require_no_overdue?: boolean };
+      const r = data as unknown as { enabled: boolean; min_completed_purchases: number | null; min_total_value: number | string | null; require_no_unpaid_delivered: boolean; default_terms_days: number | null; updated_at: string; note: string; min_approved_days?: number | null; max_outstanding?: number | string | null; require_no_overdue?: boolean; purchase_window_days?: number | null; initial_credit_limit?: number | string | null; company_cap_percent?: number | string | null; cap_basis_months?: number | null; allow_requirement_override?: boolean; auto_limit_increase_enabled?: boolean; late_fees_enabled?: boolean };
       return { enabled: r.enabled, minCompletedPurchases: r.min_completed_purchases, minTotalValue: r.min_total_value === null ? null : Number(r.min_total_value),
                requireNoUnpaidDelivered: r.require_no_unpaid_delivered, minApprovedDays: r.min_approved_days ?? null, maxOutstanding: r.max_outstanding == null ? null : Number(r.max_outstanding),
-               requireNoOverdue: r.require_no_overdue ?? true, defaultTermsDays: r.default_terms_days, updatedAt: r.updated_at, note: r.note };
+               requireNoOverdue: r.require_no_overdue ?? true, purchaseWindowDays: r.purchase_window_days ?? null, initialCreditLimit: r.initial_credit_limit == null ? null : Number(r.initial_credit_limit), companyCapPercent: r.company_cap_percent == null ? null : Number(r.company_cap_percent),
+               capBasisMonths: r.cap_basis_months ?? null, allowRequirementOverride: r.allow_requirement_override ?? false, autoLimitIncreaseEnabled: r.auto_limit_increase_enabled ?? false, lateFeesEnabled: r.late_fees_enabled ?? false, defaultTermsDays: r.default_terms_days, updatedAt: r.updated_at, note: r.note };
     },
     async setCreditPolicy(p: CreditPolicyInput, reason: string): Promise<void> {
       const { error } = await client.rpc("set_credit_policy", policyRpcArgs(p, reason));
@@ -1068,6 +1069,50 @@ export function createDb(client: EfzSupabaseClient) {
     async setCustomerCredit(input: { customerId: string; limit: number; termsDays: number; reason: string; overrideReason: string | null }): Promise<void> {
       const { error } = await client.rpc("set_customer_credit", { p_customer_id: input.customerId, p_limit: input.limit, p_terms_days: input.termsDays, p_reason: input.reason, p_override_reason: input.overrideReason });
       if (error) throw new EfzDbError("financeAdmin.setCustomerCredit", error);
+    },
+    /** Migration 25. Each call fails with a plain error on a database that does not have it yet; the page treats that as "not available". */
+    async setCreditPolicyRules(r: { purchaseWindowDays: number | null; initialLimit: number | null; capPercent: number | null; capMonths: number | null; allowOverride: boolean }, reason: string): Promise<void> {
+      const { error } = await client.rpc("set_credit_policy_rules", { p_purchase_window_days: r.purchaseWindowDays, p_initial_limit: r.initialLimit, p_cap_percent: r.capPercent, p_cap_months: r.capMonths, p_allow_override: r.allowOverride, p_reason: reason });
+      if (error) throw new EfzDbError("financeAdmin.setCreditPolicyRules", error);
+    },
+    async creditOperations(): Promise<CreditOperations> {
+      const { data, error } = await client.rpc("credit_operations");
+      if (error) throw new EfzDbError("financeAdmin.creditOperations", error);
+      return data as unknown as CreditOperations;
+    },
+    async listCreditDisputes(): Promise<CreditDispute[]> {
+      const { data, error } = await client.rpc("list_credit_disputes");
+      if (error) throw new EfzDbError("financeAdmin.listCreditDisputes", error);
+      return (data as unknown as CreditDispute[]) ?? [];
+    },
+    async updateCreditDispute(id: string, assignTo: string | null, note: string): Promise<void> {
+      const { error } = await client.rpc("update_credit_dispute", { p_id: id, p_assign_to: assignTo, p_note: note });
+      if (error) throw new EfzDbError("financeAdmin.updateCreditDispute", error);
+    },
+    async resolveCreditDispute(id: string, outcome: "billing_error" | "rejected", resolution: string): Promise<void> {
+      const { error } = await client.rpc("resolve_credit_dispute", { p_id: id, p_outcome: outcome, p_resolution: resolution });
+      if (error) throw new EfzDbError("financeAdmin.resolveCreditDispute", error);
+    },
+    async voidCreditDefault(defaultId: string, disputeId: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("void_credit_default", { p_default_id: defaultId, p_dispute_id: disputeId, p_reason: reason });
+      if (error) throw new EfzDbError("financeAdmin.voidCreditDefault", error);
+    },
+    async extendCreditDueDate(orderId: string, newDue: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("extend_credit_due_date", { p_order_id: orderId, p_new_due: newDue, p_reason: reason });
+      if (error) throw new EfzDbError("financeAdmin.extendCreditDueDate", error);
+    },
+    async recordCreditRiskReview(defaultId: string, note: string): Promise<void> {
+      const { error } = await client.rpc("record_credit_risk_review", { p_default_id: defaultId, p_note: note });
+      if (error) throw new EfzDbError("financeAdmin.recordCreditRiskReview", error);
+    },
+    async increaseCustomerCreditLimit(customerId: string, newLimit: number, reason: string): Promise<void> {
+      const { error } = await client.rpc("increase_customer_credit_limit", { p_customer_id: customerId, p_new_limit: newLimit, p_reason: reason });
+      if (error) throw new EfzDbError("financeAdmin.increaseCustomerCreditLimit", error);
+    },
+    async runCreditChecks(): Promise<{ asOf: string; remindersSent: number; failed: number }> {
+      const { data, error } = await client.rpc("run_credit_checks");
+      if (error) throw new EfzDbError("financeAdmin.runCreditChecks", error);
+      return data as unknown as { asOf: string; remindersSent: number; failed: number };
     },
     async creditHistory(customerId: string): Promise<CreditHistory> {
       const { data, error } = await client.rpc("credit_history", { p_customer_id: customerId });

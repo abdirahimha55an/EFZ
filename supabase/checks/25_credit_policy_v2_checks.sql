@@ -552,6 +552,11 @@ begin
   perform pg_temp.chk('H12 voiding does not silently restore credit: the account is still revoked until a Super Admin approves it again, and a second void is refused',
     (select status from public.customer_credit_accounts where customer_id = v_e) = 'revoked' and pg_temp.err(pg_temp.q(sa_u, 'authenticated', format('select public.void_credit_default(%L, %L, ''Voiding it a second time'') as v', v_d2, v_id))));
 
+  j := pg_temp.cs(ce);
+  perform pg_temp.chk('H13 a VOIDED default no longer counts as a default (no default history, no requalification clock) while the record itself stays; the invoice itself is still unpaid and past due, so the live overdue rule keeps restricting credit until staff correct or settle the invoice',
+    (j -> 'eligibility' -> 'defaultHistory' ->> 'count') = '0' and (j -> 'default' ->> 'everDefaulted') = 'false' and (j -> 'account' ->> 'overdue') = '20.00' and (j ->> 'canBuyOnCredit') = 'false'
+    and exists (select 1 from public.customer_credit_defaults where order_id = v_o2 and voided_at is not null), j::text);
+
   -- ---------------------------------------------------------------- J. the optional per-customer ceiling on TOTAL outstanding (migration 24, kept)
   perform pg_temp.age_approval(v_h, 70);
   perform pg_temp.mkdone('ORD-T25-J1', v_h, 10); perform pg_temp.mkdone('ORD-T25-J2', v_h, 20); perform pg_temp.mkdone('ORD-T25-J3', v_h, 30);
@@ -571,6 +576,16 @@ begin
   perform pg_temp.chk('J5 paying that order brings the total back to $20: credit reopens with $5 available', (pg_temp.cs(ch) ->> 'canBuyOnCredit') = 'true' and (pg_temp.cs(ch) -> 'account' ->> 'available') = '5.00');
   perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(true, 3, null, true, 30, ''T25 test: no ceiling'', 60, null, true) as v');
   perform pg_temp.chk('J6 clearing the ceiling returns to the personal limit only ($40 minus $20 owed = $20 available)', (pg_temp.cs(ch) -> 'account' ->> 'available') = '20.00');
+
+  -- an invoice paid one day AFTER its due date, with nobody having looked at the account in between, is still a default (no grace period; the late payment is the evidence)
+  select o.id into v_o2 from public.orders o where o.customer_id = v_h and o.payment_terms = 'credit' and o.status <> 'cancelled' and o.outstanding_balance > 0 limit 1;
+  perform pg_temp.set_due(v_o2, v_today - 3);
+  perform pg_temp.q(sa_u, 'authenticated', format('select public.record_payment(%L, %s, ''Cash'', null, ''LATE'', ''paid late'') as v', v_o2, (select outstanding_balance from public.orders where id = v_o2)));
+  perform pg_temp.chk('J7 before anyone looks, no default is recorded yet (the late payment is only a payment)', not exists (select 1 from public.customer_credit_defaults where order_id = v_o2));
+  j := pg_temp.cs(ch);
+  perform pg_temp.chk('J8 the first look records it as a default although the invoice is now fully paid: defaulted on the first overdue day, the amount that was unpaid on the due date, already settled, the account revoked and credit off',
+    exists (select 1 from public.customer_credit_defaults where order_id = v_o2 and defaulted_on = v_today - 2 and due_date = v_today - 3 and amount_at_default = 20 and settled_at is not null)
+    and (select status from public.customer_credit_accounts where customer_id = v_h) = 'revoked' and (j ->> 'canBuyOnCredit') = 'false' and (j -> 'default' ->> 'everDefaulted') = 'true', j::text);
 
   -- ---------------------------------------------------------------- K. overrides (only when the policy allows them), suspension, and the master switch
   perform pg_temp.chk('K1 with overrides NOT enabled (the approved proposal) an unqualified customer cannot be authorized, with or without an override reason',
@@ -607,6 +622,13 @@ begin
   perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy_rules(90, 40, 100, 3, false, ''T25 test: overrides off again'') as v');
 
   -- ---------------------------------------------------------------- I. financial integrity, isolation and exposure
+  perform pg_temp.chk('I0 with rows PRESENT in all six new tables, customers and anonymous still read NONE of them (not their own rows either) and cannot write',
+    (select count(*) from public.customer_credit_defaults) > 0 and (select count(*) from public.customer_credit_events) > 0 and (select count(*) from public.credit_due_extensions) > 0
+    and (select count(*) from public.credit_disputes) > 0 and (select count(*) from public.credit_reminders) > 0 and (select count(*) from public.customer_notifications) > 0
+    and (select bool_and(pg_temp.none(pg_temp.q(u, r, 'select 1 as v from public.' || tb))) from (values (ce, 'authenticated'), (cc, 'authenticated'), (null::uuid, 'anon')) c(u, r),
+          (values ('customer_credit_defaults'), ('customer_credit_events'), ('credit_due_extensions'), ('credit_disputes'), ('credit_reminders'), ('customer_notifications')) x(tb))
+    and pg_temp.err(pg_temp.q(cc, 'authenticated', 'insert into public.credit_disputes (customer_id, order_id, reason) values (''x'', ''x'', ''a long enough reason'') returning 1 as v'))
+    and pg_temp.err(pg_temp.q(cc, 'authenticated', 'update public.customer_notifications set read_at = now() returning 1 as v')));
   perform pg_temp.chk('I1 every credit order of this suite is a normal order: total = sum of lines, paid + balance = total, no negative values',
     (select count(*) from public.orders o join public.customer_credit_orders cc on cc.order_id = o.id where o.total <> (select sum(line_revenue) from public.order_items where order_id = o.id) or o.amount_paid + o.outstanding_balance <> o.total or o.outstanding_balance < 0) = 0);
   perform pg_temp.chk('I2 every credit order has its order_created and credit_order_placed audit lines and a history event', (select count(*) from public.customer_credit_orders cc where not exists (select 1 from public.system_logs l where l.target_id = cc.order_id and l.metadata ->> 'event' = 'order_created')

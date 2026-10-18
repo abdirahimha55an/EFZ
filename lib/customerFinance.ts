@@ -16,6 +16,14 @@ export type CreditPolicy = {
   maxOutstanding: number | null;
   /** migration 24: a credit invoice past its due date with a balance stops credit (on by default). */
   requireNoOverdue: boolean;
+  /** migration 25 (absent before it): the approved credit policy v2 settings. */
+  purchaseWindowDays?: number | null;
+  initialCreditLimit?: number | null;
+  companyCapPercent?: number | null;
+  capBasisMonths?: number | null;
+  allowRequirementOverride?: boolean;
+  autoLimitIncreaseEnabled?: boolean;
+  lateFeesEnabled?: boolean;
   defaultTermsDays: number | null;
   updatedAt: string;
   note: string;
@@ -33,15 +41,25 @@ export type Eligibility = {
   standingReasons?: string[];
   daysApproved?: number;
   overdueAmount?: number | string;
+  openDisputes?: number;
+  defaultHistory?: { count: number; open: number; lastDefaultedOn: string | null; lastSettledOn: string | null; requalifyingFrom: string | null };
 };
 export type CreditAccount = { customer_id: string; status: "approved" | "suspended"; credit_limit: number | string; terms_days: number; reason: string; override_used: boolean; set_at: string };
 export type CreditOverviewRow = { customerId: string; name: string; eligibility: Eligibility; outstanding: number | string; account: CreditAccount | null };
 
 export type CreditHistory = {
+  defaults?: { id: string; orderId: string; dueDate: string; defaultedOn: string; amountAtDefault: number | string; settledAt: string | null; requalifiedAt: string | null; voidedAt: string | null; voidReason: string | null; reviewRequiredAt: string | null; reviewedAt: string | null; reviewNote: string | null }[];
+  disputes?: { id: string; orderId: string; status: string; reason: string; openedAt: string; resolution: string; assignedTo: string | null }[];
+  reminders?: { orderId: string; kind: string; audience: string; status: string; attempts: number; lastError: string; sentAt: string | null }[];
   account: { status: string; credit_limit: number | string; terms_days: number; reason: string; override_used: boolean; set_at: string } | null;
   events: { at: string; by: string; message: string; event: string }[];
-  orders: { orderId: string; date: string; dueDate: string; termsDays: number; limitAtTime: number | string; total: number | string; paid: number | string; outstanding: number | string; status: string; overdue: boolean }[];
+  orders: { orderId: string; date: string; dueDate: string; originalDueDate?: string; issueDate?: string; extensions?: { previousDue: string; newDue: string; by: string; reason: string; at: string }[]; termsDays: number; limitAtTime: number | string; total: number | string; paid: number | string; outstanding: number | string; status: string; overdue: boolean }[];
 };
+
+export type CompanyCap = { configured: boolean; sufficient: boolean; reason: string; windowStart?: string; windowEnd?: string; months?: number; revenue?: number | string; averageMonthly?: number | string; percent?: number | string; cap?: number | string | null; outstanding: number | string; available: number | string };
+export type CreditDefaultRow = { id: string; customerId: string; customerName: string; orderId: string; dueDate: string; defaultedOn: string; amountAtDefault: number | string; outstanding: number | string; daysOverdue: number | null; status: "open" | "settled" | "voided"; settledAt: string | null; requalifiedAt: string | null; followUpDue: boolean; reviewRequiredAt: string | null; reviewedAt: string | null; reviewNote: string | null; voidedAt: string | null };
+export type CreditOperations = { asOf: string; companyCap: CompanyCap; defaults: CreditDefaultRow[]; failedReminders: { id: number; orderId: string; kind: string; audience: string; attempts: number; lastError: string; createdAt: string }[]; openDisputes: number };
+export type CreditDispute = { id: string; customerId: string; customerName: string; orderId: string; reason: string; disputedAmount: number | string | null; status: "open" | "investigating" | "resolved_billing_error" | "resolved_rejected" | "withdrawn"; openedBy: string; openedAt: string; assignedTo: string | null; staffNotes: string; resolution: string; resolvedBy: string | null; resolvedAt: string | null; defaultId: string | null };
 
 export type ReviewCheckout = {
   id: string; customerId: string; customerName: string | null; status: "needs_review" | "reversed"; amount: number | string; method: string;
@@ -79,6 +97,34 @@ export function policyRpcArgs(p: CreditPolicyInput, reason: string) {
   const base = { p_enabled: p.enabled, p_min_purchases: p.minCompletedPurchases, p_min_value: p.minTotalValue, p_require_no_unpaid: p.requireNoUnpaidDelivered, p_default_terms_days: p.defaultTermsDays, p_reason: reason };
   if (p.minApprovedDays === null && p.maxOutstanding === null && p.requireNoOverdue) return base;
   return { ...base, p_min_approved_days: p.minApprovedDays, p_max_outstanding: p.maxOutstanding, p_require_no_overdue: p.requireNoOverdue };
+}
+
+/** An extension needs a reason, a later date, and an invoice that has not yet passed its due date (the database enforces the same). */
+export function extensionProblem(i: { currentDue: string; newDue: string; reason: string; today: string }): string | null {
+  if (i.reason.trim().length < MIN_OVERRIDE) return `Give a reason of at least ${MIN_OVERRIDE} characters.`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(i.newDue)) return "Pick the new due date.";
+  if (i.currentDue < i.today) return "The invoice is already past its due date; a default cannot be undone by an extension.";
+  if (i.newDue <= i.currentDue) return `The new due date must be later than the current one (${i.currentDue}).`;
+  return null;
+}
+/** Resolving a dispute and recording a risk review both need a documented note. */
+export function noteProblem(note: string, min = MIN_OVERRIDE): string | null { return note.trim().length < min ? `Write at least ${min} characters.` : null; }
+/** Whether the Hub should offer "void this default": only after a dispute on the same invoice was resolved as a billing error. */
+export function canVoidDefault(d: { status: string; voidedAt: string | null }, disputes: { orderId: string; status: string }[], orderId: string): boolean {
+  return d.status !== "voided" && d.voidedAt === null && disputes.some((x) => x.orderId === orderId && x.status === "resolved_billing_error");
+}
+export function capSummary(c: CompanyCap): string {
+  if (!c.configured) return "The company-wide cap is not configured.";
+  if (!c.sufficient) return `Not computable: ${c.reason}`;
+  return `Cap $${Number(c.cap).toFixed(2)} (${c.percent}% of the $${Number(c.averageMonthly).toFixed(2)} average monthly sales over ${c.months} complete months); $${Number(c.outstanding).toFixed(2)} outstanding, $${Number(c.available).toFixed(2)} available.`;
+}
+export function rulesProblem(r: { purchaseWindowDays: number | null; initialLimit: number | null; capPercent: number | null; capMonths: number | null }, reason: string): string | null {
+  if (reason.trim().length < MIN_REASON) return `Give a reason (at least ${MIN_REASON} characters).`;
+  if (r.purchaseWindowDays !== null && (!Number.isInteger(r.purchaseWindowDays) || r.purchaseWindowDays < 1)) return "The purchase-history window must be a whole number of days, at least 1.";
+  if (r.initialLimit !== null && (!(r.initialLimit > 0) || r.initialLimit > 1_000_000 || Math.round(r.initialLimit * 100) !== r.initialLimit * 100)) return "The initial limit must be more than 0, in whole cents.";
+  if (r.capPercent !== null && !(r.capPercent > 0 && r.capPercent <= 100)) return "The company-wide cap must be above 0% and at most 100%.";
+  if (r.capMonths !== null && (!Number.isInteger(r.capMonths) || r.capMonths < 1 || r.capMonths > 24)) return "The cap basis must be 1 to 24 complete calendar months.";
+  return null;
 }
 
 export const money = (n: number | string) => `$${Number(n).toFixed(2)}`;

@@ -871,6 +871,17 @@ export type Database = {
       get_credit_policy: { Args: Record<string, never>; Returns: unknown };
       set_credit_policy: { Args: { p_enabled: boolean; p_min_purchases: number | null; p_min_value: number | null; p_require_no_unpaid: boolean; p_default_terms_days: number | null; p_reason: string; p_min_approved_days?: number | null; p_max_outstanding?: number | null; p_require_no_overdue?: boolean }; Returns: undefined };
       credit_history: { Args: { p_customer_id: string }; Returns: unknown };
+      set_credit_policy_rules: { Args: { p_purchase_window_days: number | null; p_initial_limit: number | null; p_cap_percent: number | null; p_cap_months: number | null; p_allow_override: boolean; p_reason: string }; Returns: undefined };
+      credit_operations: { Args: Record<string, never>; Returns: unknown };
+      credit_company_cap: { Args: Record<string, never>; Returns: unknown };
+      list_credit_disputes: { Args: { p_status?: string | null }; Returns: unknown };
+      update_credit_dispute: { Args: { p_id: string; p_assign_to: string | null; p_note: string }; Returns: undefined };
+      resolve_credit_dispute: { Args: { p_id: string; p_outcome: string; p_resolution: string }; Returns: undefined };
+      void_credit_default: { Args: { p_default_id: string; p_dispute_id: string; p_reason: string }; Returns: undefined };
+      extend_credit_due_date: { Args: { p_order_id: string; p_new_due: string; p_reason: string }; Returns: undefined };
+      record_credit_risk_review: { Args: { p_default_id: string; p_note: string }; Returns: undefined };
+      increase_customer_credit_limit: { Args: { p_customer_id: string; p_new_limit: number; p_reason: string }; Returns: undefined };
+      run_credit_checks: { Args: Record<string, never>; Returns: unknown };
       credit_overview: { Args: Record<string, never>; Returns: unknown };
       set_customer_credit: { Args: { p_customer_id: string; p_limit: number; p_terms_days: number; p_reason: string; p_override_reason: string | null }; Returns: undefined };
       suspend_customer_credit: { Args: { p_customer_id: string; p_reason: string }; Returns: undefined };

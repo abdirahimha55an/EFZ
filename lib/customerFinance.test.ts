@@ -1,7 +1,7 @@
 // Hub pre-checks for customer payments and credit (they mirror rules the database enforces). Run: npm run test:hub
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { creditGrantProblem, money, policyProblem, policyRpcArgs } from "./customerFinance.ts";
+import { canVoidDefault, capSummary, creditGrantProblem, extensionProblem, money, noteProblem, policyProblem, policyRpcArgs, rulesProblem } from "./customerFinance.ts";
 
 const off = { enabled: false, minCompletedPurchases: null, minTotalValue: null, requireNoUnpaidDelivered: true, defaultTermsDays: null, minApprovedDays: null, maxOutstanding: null, requireNoOverdue: true };
 
@@ -48,3 +48,29 @@ test("migration 24: the original six arguments are sent alone while the new sett
   assert.equal(policyRpcArgs({ ...off, maxOutstanding: 500 }, "ceiling").p_max_outstanding, 500);
 });
 test("money is shown with two decimals", () => { assert.equal(money(5), "$5.00"); assert.equal(money("12.5"), "$12.50"); });
+
+test("migration 25: the extension form mirrors the database (reason, later date, not already overdue)", () => {
+  const ok = { currentDue: "2026-11-10", newDue: "2026-11-20", reason: "Customer travelling; agreed", today: "2026-11-01" };
+  assert.equal(extensionProblem(ok), null);
+  assert.match(extensionProblem({ ...ok, reason: "short" }) as string, /reason/);
+  assert.match(extensionProblem({ ...ok, newDue: "" }) as string, /Pick/);
+  assert.match(extensionProblem({ ...ok, newDue: "2026-11-10" }) as string, /later than/);
+  assert.match(extensionProblem({ ...ok, currentDue: "2026-10-30" }) as string, /past its due date/);
+});
+test("migration 25: notes, rules and the void rule", () => {
+  assert.ok(noteProblem("short")); assert.equal(noteProblem("a documented note"), null);
+  const r = { purchaseWindowDays: 90, initialLimit: 40, capPercent: 25, capMonths: 3 };
+  assert.equal(rulesProblem(r, "approved proposal"), null);
+  for (const bad of [{ purchaseWindowDays: 0 }, { initialLimit: 0 }, { initialLimit: 10.005 }, { capPercent: 0 }, { capPercent: 101 }, { capMonths: 0 }, { capMonths: 25 }]) assert.ok(rulesProblem({ ...r, ...bad }, "valid reason"), JSON.stringify(bad));
+  assert.ok(rulesProblem(r, "no"));
+  const d = { status: "settled", voidedAt: null };
+  assert.equal(canVoidDefault(d, [{ orderId: "o1", status: "open" }], "o1"), false);
+  assert.equal(canVoidDefault(d, [{ orderId: "o2", status: "resolved_billing_error" }], "o1"), false);
+  assert.equal(canVoidDefault(d, [{ orderId: "o1", status: "resolved_billing_error" }], "o1"), true);
+  assert.equal(canVoidDefault({ status: "voided", voidedAt: "2026-10-01" }, [{ orderId: "o1", status: "resolved_billing_error" }], "o1"), false);
+});
+test("migration 25: the company cap is explained, and an insufficient history is said plainly", () => {
+  assert.match(capSummary({ configured: false, sufficient: false, reason: "", outstanding: 0, available: 0 }), /not configured/);
+  assert.match(capSummary({ configured: true, sufficient: false, reason: "There is no sales history.", outstanding: 0, available: 0 }), /Not computable: There is no sales history/);
+  assert.match(capSummary({ configured: true, sufficient: true, reason: "", months: 3, percent: 25, averageMonthly: 200, cap: 50, outstanding: 30, available: 20 }), /Cap $50.00 (25% of the $200.00 average monthly sales over 3 complete months); $30.00 outstanding, $20.00 available/);
+});

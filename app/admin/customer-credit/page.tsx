@@ -14,13 +14,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2, CreditCard, Loader2, Shield, X } from "lucide-react";
 import { getDb, describeDbError } from "@/lib/supabase/db";
+import { DisputesCard, ExtensionForm, OperationsCard, RulesCard } from "./credit-ops";
 import { derivePermissions } from "@/lib/permissions";
 import {
   MIN_OVERRIDE, MIN_REASON, creditGrantProblem, money, policyProblem,
-  type CreditHistory, type CreditOverviewRow, type CreditPolicy, type PaymentMethodRow, type ReviewCheckout,
+  type CreditDispute, type CreditHistory, type CreditOperations, type CreditOverviewRow, type CreditPolicy, type PaymentMethodRow, type ReviewCheckout,
 } from "@/lib/customerFinance";
 
-type Data = { methods: PaymentMethodRow[]; policy: CreditPolicy; overview: CreditOverviewRow[]; review: ReviewCheckout[] };
+type Data = { methods: PaymentMethodRow[]; policy: CreditPolicy; overview: CreditOverviewRow[]; review: ReviewCheckout[]; ops: CreditOperations | null; disputes: CreditDispute[] };
 const input = "h-8 rounded-lg border border-slate-200 px-2 text-xs focus:border-slate-400 focus:outline-none";
 const btn = "rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-40";
 const btn2 = "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40";
@@ -40,7 +41,9 @@ export default function CustomerCreditPage() {
       const me = await db.auth.getProfile();
       if (!derivePermissions(me).isSuperAdmin) return { state: "denied" };
       const [methods, policy, overview, review] = await Promise.all([db.financeAdmin.paymentMethods(), db.financeAdmin.creditPolicy(), db.financeAdmin.creditOverview(), db.financeAdmin.checkoutsForReview()]);
-      return { state: "ready", data: { methods, policy, overview, review } };
+      // Migration 25 (credit policy v2). On a database that does not have it yet these two calls fail; the page then simply does not show the v2 panels.
+      const [ops, disputes] = await Promise.all([db.financeAdmin.creditOperations().catch(() => null), db.financeAdmin.listCreditDisputes().catch(() => [] as CreditDispute[])]);
+      return { state: "ready", data: { methods, policy, overview, review, ops, disputes } };
     } catch (e) { return { state: "error", message: describeDbError(e) }; }
   }, []);
   const apply = useCallback((r: Loaded) => { if (r.state === "ready") setData(r.data); if (r.state === "error") setMessage(r.message); setState(r.state); }, []);
@@ -82,7 +85,10 @@ export default function CustomerCreditPage() {
 
       <MethodsCard methods={data.methods} busy={busy} run={run} />
       <PolicyCard policy={data.policy} busy={busy} run={run} />
-      <CustomersCard rows={data.overview} policyEnabled={data.policy.enabled} busy={busy} run={run} />
+      {data.ops ? <RulesCard policy={data.policy} ops={data.ops} busy={busy} run={run} /> : <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500" data-testid="v2-missing">The credit policy v2 controls (rules, company cap, defaults, disputes) appear here once migration 25 is applied.</p>}
+      <CustomersCard rows={data.overview} policyEnabled={data.policy.enabled} busy={busy} run={run} today={data.ops?.asOf ?? new Date().toISOString().slice(0, 10)} />
+      {data.ops && <OperationsCard ops={data.ops} disputes={data.disputes} busy={busy} run={run} />}
+      {data.ops && <DisputesCard disputes={data.disputes} busy={busy} run={run} />}
       <ReviewCard rows={data.review} busy={busy} run={run} />
     </div>
   );
@@ -163,7 +169,7 @@ function PolicyCard({ policy, busy, run }: { policy: CreditPolicy; busy: boolean
   );
 }
 
-function CustomersCard({ rows, policyEnabled, busy, run }: { rows: CreditOverviewRow[]; policyEnabled: boolean; busy: boolean; run: RunFn }) {
+function CustomersCard({ rows, policyEnabled, busy, run, today }: { rows: CreditOverviewRow[]; policyEnabled: boolean; busy: boolean; run: RunFn; today: string }) {
   const db = getDb();
   const [open, setOpen] = useState<string | null>(null);
   const [limit, setLimit] = useState(""); const [days, setDays] = useState(""); const [reason, setReason] = useState(""); const [override, setOverride] = useState("");
@@ -225,15 +231,43 @@ function CustomersCard({ rows, policyEnabled, busy, run }: { rows: CreditOvervie
         <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-[11px] text-slate-600" data-testid="credit-history-panel">
           <div className="mb-2 flex items-center justify-between"><p className="font-semibold text-slate-800">Credit history: {hist.name}</p><button type="button" className={btn2} onClick={() => setHist(null)}>Close</button></div>
           {hist.data.orders.length === 0 ? <p data-testid="history-no-orders">No credit orders yet.</p> : (
-            <table className="mb-2 w-full text-left"><thead className="text-[10px] uppercase text-slate-400"><tr><th>Order</th><th>Date</th><th>Due</th><th>Total</th><th>Paid</th><th>Balance</th><th /></tr></thead>
+            <table className="mb-2 w-full text-left"><thead className="text-[10px] uppercase text-slate-400"><tr><th>Order</th><th>Issued</th><th>Due (original)</th><th>Total</th><th>Paid</th><th>Balance</th><th /></tr></thead>
               <tbody className="divide-y divide-slate-100">{hist.data.orders.map((o) => (
-                <tr key={o.orderId} data-testid="history-order"><td className="py-1 font-semibold">{o.orderId}</td><td>{o.date}</td><td>{o.dueDate}</td><td>{money(o.total)}</td><td>{money(o.paid)}</td><td>{money(o.outstanding)}</td><td className={o.overdue ? "font-semibold text-red-700" : "text-slate-400"}>{o.status === "cancelled" ? "cancelled" : o.overdue ? "OVERDUE" : Number(o.outstanding) > 0 ? "open" : "paid"}</td></tr>
+                <tr key={o.orderId} data-testid="history-order"><td className="py-1 font-semibold">{o.orderId}</td><td>{o.issueDate ?? o.date}</td><td>{o.dueDate}{o.originalDueDate && o.originalDueDate !== o.dueDate ? <span className="text-slate-400" data-testid="original-due"> ({o.originalDueDate})</span> : null}</td><td>{money(o.total)}</td><td>{money(o.paid)}</td><td>{money(o.outstanding)}</td><td className={o.overdue ? "font-semibold text-red-700" : "text-slate-400"}>{o.status === "cancelled" ? "cancelled" : o.overdue ? "OVERDUE" : Number(o.outstanding) > 0 ? "open" : "paid"}</td></tr>
               ))}</tbody></table>
           )}
+          {hist.data.orders.filter((o) => o.status !== "cancelled" && Number(o.outstanding) > 0 && !o.overdue).map((o) => (
+            <div key={"x" + o.orderId} className="mb-1" data-testid="extension-row"><span className="text-slate-500">Extend INV-{o.orderId} (before it is overdue):</span><ExtensionForm orderId={o.orderId} currentDue={o.dueDate} today={today} busy={busy} run={run} onDone={() => setHist(null)} /></div>
+          ))}
+          {(hist.data.defaults ?? []).length > 0 && (
+            <div className="mb-2" data-testid="history-defaults"><p className="font-semibold text-slate-800">Default history (kept permanently)</p>
+              <ul className="list-disc pl-4">{hist.data.defaults!.map((d) => <li key={d.id}>INV-{d.orderId}: due {d.dueDate}, defaulted {d.defaultedOn}, ${Number(d.amountAtDefault).toFixed(2)} unpaid then{d.voidedAt ? `; VOIDED (${d.voidReason})` : d.settledAt ? `; debt settled ${d.settledAt.slice(0, 10)}${d.requalifiedAt ? "; requalified" : "; not yet requalified"}` : "; still unpaid"}</li>)}</ul></div>
+          )}
+          {(hist.data.disputes ?? []).length > 0 && (
+            <div className="mb-2" data-testid="history-disputes"><p className="font-semibold text-slate-800">Disputes</p><ul className="list-disc pl-4">{hist.data.disputes!.map((d) => <li key={d.id}>INV-{d.orderId}: {d.status.replace("_", " ")}{d.resolution ? ` - ${d.resolution}` : ""}</li>)}</ul></div>
+          )}
+          {(hist.data.reminders ?? []).length > 0 && (
+            <div className="mb-2" data-testid="history-reminders"><p className="font-semibold text-slate-800">Reminders</p><ul className="list-disc pl-4">{hist.data.reminders!.map((r, i) => <li key={i}>INV-{r.orderId} {r.kind} to {r.audience}: {r.status}{r.status === "failed" ? ` (${r.attempts} attempt(s): ${r.lastError})` : ""}</li>)}</ul></div>
+          )}
+          {hist.data.account?.status === "approved" && (hist.data.defaults ?? []).filter((d) => !d.voidedAt).length === 0 && <LimitIncrease customerId={hist.id} current={Number(hist.data.account.credit_limit)} busy={busy} run={run} onDone={() => setHist(null)} />}
           {hist.data.events.length === 0 ? <p data-testid="history-no-events">No limit changes recorded.</p> : <ul className="list-disc pl-4" data-testid="history-events">{hist.data.events.map((e, i) => <li key={i}>{new Date(e.at).toLocaleString()} · {e.by}: {e.message}</li>)}</ul>}
         </div>
       )}
     </section>
+  );
+}
+
+function LimitIncrease({ customerId, current, busy, run, onDone }: { customerId: string; current: number; busy: boolean; run: RunFn; onDone: () => void }) {
+  const db = getDb();
+  const [limit, setLimit] = useState(""); const [reason, setReason] = useState("");
+  const bad = !(Number(limit) > current) || Math.round(Number(limit) * 100) !== Number(limit) * 100 || reason.trim().length < MIN_OVERRIDE;
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2" data-testid="limit-increase">
+      <span className="text-slate-500">Raise the limit (audited; never automatic; not available after a default):</span>
+      <input className={`${input} w-24`} inputMode="decimal" placeholder={`> ${current}`} value={limit} onChange={(e) => setLimit(e.target.value)} data-testid="increase-limit" />
+      <input className={`${input} w-72`} placeholder={`Reason (min ${MIN_OVERRIDE} characters)`} value={reason} onChange={(e) => setReason(e.target.value)} data-testid="increase-reason" />
+      <button type="button" className={btn2} disabled={busy || bad} data-testid="increase-save" onClick={() => void run("Credit limit raised.", async () => { await db.financeAdmin.increaseCustomerCreditLimit(customerId, Number(limit), reason); onDone(); })}>Raise</button>
+    </div>
   );
 }
 
