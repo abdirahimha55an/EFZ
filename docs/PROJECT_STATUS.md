@@ -206,6 +206,40 @@ Permanent immediate default with no grace period (revocation at the first overdu
 * Open policy decisions listed in `docs/CREDIT_POLICY.md` (requalification interpretation, minimum purchase value, per-customer ceiling, revenue basis, extension length, overrides).
 * A stray **empty folder `C:\ABDIR~1`** (created 2026-10-17 20:56 by a mistaken file write of mine, containing nothing) could not be removed by me (a safety check blocked it); please delete it with `rmdir C:\ABDIR~1` if you agree.
 
+## Milestone 7 (2026-10-18): negotiated customer pricing (Migration 26), a DRAFT applied nowhere
+
+Branch only, **local**. Migrations 25 and 26 are applied to **no** database (Staging is at M24, credit OFF, no payment method enabled). Production untouched. Nothing pushed, merged or deployed. Read `docs/CUSTOMER_PRICING.md`, `docs/MIGRATION_26.md`, `docs/STAGING_RUNBOOK.md`.
+
+### Results (final code; "local" = disposable PostgreSQL 17 clones; "Staging-backed" = real Staging read/sign-in only; "mock-backed" = browser with invented server answers)
+| Check | Result | Kind |
+|---|---|---|
+| M21 / M22 / M23 / M25 / M26 / exposure suites on M24+M25+M26 | 81 / 33 / 97 / 135 / 63 / 19, 0 failures | local |
+| M24 suite on a fresh M24 clone | 62 of 62 | local |
+| Concurrency M24 / M25 / M26 (real parallel sessions) | 9 / 13 / 11, all pass | local |
+| Rollback of M26 then M25 on a data-rich clone | financial figures identical; fingerprint identical to M24 | local |
+| Mutation tests | M25: 52 of 54 caught; M26: 44 of 45 caught; the 3 survivors are equivalent (reasons in `MIGRATION_26.md`) | local |
+| Staging-shaped rehearsal (Staging backup data + M25 + M26) | integrity unchanged, all suites pass, import dry-run produced | local |
+| Hub | `tsc` clean; **37 of 37** unit tests; production build OK with `next build --webpack` (Turbopack cannot build in the worktree because `node_modules` is a junction outside the root; unrelated to the code); ESLint: 9 errors, all in files this work did not change (`any` in backend/ and lib/storage, types, validators; empty interface in `components/ui/input.tsx`) | local |
+| Hub browser test, Customer Prices page | **19 of 19**: permissions (Super Admin and Manager see it, Officer refused) on **real Staging**; screen and exact arguments **mock-backed** (Staging has no M26) | mixed |
+| Edge function unit tests (credit-daily 6, payments 16, register-customer 14, staging-test-payment 5) | 41 of 41 | local (no network) |
+| Customer app | `tsc` clean, ESLint 0 errors (26 warnings), **151 of 151** Jest tests (9 are the pricing tests), Android export OK | local |
+| App secret scan (bundle + source) | no service-role key, no secret key, no JWT, no cost or margin field; the only hits are the app's own guard strings (`service_role`, `sb_secret_`, the project refs) | local |
+
+### Customer app journey
+Registration, email verification, approval/rejection states, the approved-only catalogue, multi-design cart, server-validated checkout, order history, invoices/receipts, notices/disputes/credit status, password recovery and account management are covered by the 151 Jest tests (mock API) and the database suites 21-26 (real SQL). Staging-backed end-to-end runs were done earlier against Staging at M24 (`docs/ANDROID_APP_PLAN.md`). **Not done: any native Android device or emulator run.** No device or emulator was available; layout was checked only in unit tests and a bundle export. Nothing in this milestone claims device testing.
+
+### Credit, reminders, payments
+Credit remains disabled by default and for every real customer. EVC Plus and eDahab remain unavailable for real payments (need provider access, server-side verification and supervised payment tests, `docs/PAYMENT_PROVIDERS.md`). The scheduler is **not operational**: the run (`credit_daily_run`), the Hub manual trigger and the `credit-daily` handler are tested locally (M25 suite, 5-simultaneous-run concurrency test, handler tests 6/6); how to schedule and verify on Staging is in `docs/CREDIT_SCHEDULER.md` and needs separate authorization.
+
+### Decisions needed (not decided silently)
+Pricing: see `CUSTOMER_PRICING.md` (expired agreements: revert or hold; unverified candidates; who verifies varying histories; staff `create_order` default price; percentage/tier discounts; below-cost policy). Credit (from `CREDIT_POLICY.md`): requalification timing, maximum extension length, administrative exceptions, billing corrections. Business: who owns agreement verification day to day.
+
+### Missing or ambiguous agreements
+Production data was not examined. On the Staging data (test customers only): 1 candidate (Test Club Alpha / EFZ - Fire Ball, $10.00, 2 orders) and 7 needing manual confirmation (5 single-order, 2 varying). The real list must come from a dry run on a Production copy.
+
+### Launch blockers
+Approve and apply M25 and M26 to Staging (runbook), then supervised Staging testing of the app against M26; a native device/emulator run; owner decisions above; verified real price agreements; payment provider onboarding; scheduler enablement; backup B.4 encrypted copy (older item); the leftover empty folder `C:\ABDIR~1` (please run `rmdir C:\ABDIR~1`).
+
 ## How to run the checks
 
 ```bash
