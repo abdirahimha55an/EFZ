@@ -36,43 +36,185 @@
   --accent: #f8fafc;
 }
 
+/*
+ * THEME TOKENS. Light mode keeps its existing look; these semantic tokens are what the dark theme is built from.
+ *   app-bg      the page behind everything          surface-1  cards, tables, modals, popovers
+ *   surface-2   table headers, inputs, row hover     surface-3  chips, selected rows, pressed states
+ *   line*       dividers and borders                 text-1..4  primary, secondary, muted, hint text
+ *   solid       the filled brand control (primary buttons, the active nav item)
+ *   tint-*      status colours: soft background, readable text, border (success=green, pending=amber, urgent=red, info=blue/sky)
+ * The dark values are layered navy / slate (no pure black) and every text token is at least 4.5:1 on the surface it is used on.
+ */
+:root {
+  --app-bg: #f8fafc;
+  --surface-1: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #f1f5f9;
+  --line: #e2e8f0;
+  --line-subtle: #f1f5f9;
+  --line-strong: #cbd5e1;
+  --text-1: #0f172a;
+  --text-2: #475569;
+  --text-3: #64748b;
+  --text-4: #94a3b8;
+}
+
 .dark {
-  --background: #020617; /* charcoal navy */
-  --foreground: #f8fafc;
-  --card: #0f172a; /* deep navy */
-  --card-border: #1e293b;
-  --border: #1e293b;
-  --muted: #1e293b;
-  --muted-foreground: #94a3b8;
-  --accent: #0f172a;
+  color-scheme: dark;   /* native controls: select lists, date pickers, scrollbars */
+
+  --app-bg: #182238;
+  --surface-1: #1f2b45;
+  --surface-2: #27344f;
+  --surface-3: #31405f;
+  --line: #34415f;
+  --line-subtle: #2a3652;
+  --line-strong: #4a5a7c;
+  --text-1: #eaeff9;
+  --text-2: #cbd4e5;
+  --text-3: #b2bdd3;
+  --text-4: #a3b0c8;
+  --accent-text: #9db4ff;   /* brand blue as TEXT or an outline on a dark surface */
+  --solid: #35529f;
+  --solid-hover: #4264b8;
+  --overlay: rgba(10, 16, 32, 0.62);
+
+  --tint-red-bg: rgba(239, 68, 68, 0.16);     --tint-red-text: #fca5a5;     --tint-red-border: rgba(248, 113, 113, 0.38);
+  --tint-rose-bg: rgba(244, 63, 94, 0.16);    --tint-rose-text: #fda4af;    --tint-rose-border: rgba(251, 113, 133, 0.38);
+  --tint-amber-bg: rgba(245, 158, 11, 0.16);  --tint-amber-text: #fcd34d;   --tint-amber-border: rgba(251, 191, 36, 0.38);
+  --tint-orange-bg: rgba(249, 115, 22, 0.16); --tint-orange-text: #fdba74;  --tint-orange-border: rgba(251, 146, 60, 0.38);
+  --tint-yellow-bg: rgba(234, 179, 8, 0.16);  --tint-yellow-text: #fde047;  --tint-yellow-border: rgba(250, 204, 21, 0.38);
+  --tint-emerald-bg: rgba(16, 185, 129, 0.16); --tint-emerald-text: #6ee7b7; --tint-emerald-border: rgba(52, 211, 153, 0.38);
+  --tint-green-bg: rgba(34, 197, 94, 0.16);   --tint-green-text: #86efac;   --tint-green-border: rgba(74, 222, 128, 0.38);
+  --tint-teal-bg: rgba(20, 184, 166, 0.16);   --tint-teal-text: #5eead4;    --tint-teal-border: rgba(45, 212, 191, 0.38);
+  --tint-sky-bg: rgba(14, 165, 233, 0.16);    --tint-sky-text: #7dd3fc;     --tint-sky-border: rgba(56, 189, 248, 0.38);
+  --tint-blue-bg: rgba(59, 130, 246, 0.16);   --tint-blue-text: #93c5fd;    --tint-blue-border: rgba(96, 165, 250, 0.38);
+  --tint-indigo-bg: rgba(99, 102, 241, 0.18); --tint-indigo-text: #a5b4fc;  --tint-indigo-border: rgba(129, 140, 248, 0.38);
+  --tint-violet-bg: rgba(139, 92, 246, 0.18); --tint-violet-text: #c4b5fd;  --tint-violet-border: rgba(167, 139, 250, 0.38);
+  --tint-purple-bg: rgba(168, 85, 247, 0.18); --tint-purple-text: #d8b4fe;  --tint-purple-border: rgba(192, 132, 252, 0.38);
+
+  /* the older tokens (still used by body and a few components) follow the new ones */
+  --background: var(--app-bg);
+  --foreground: var(--text-1);
+  --card: var(--surface-1);
+  --card-border: var(--line);
+  --border: var(--line);
+  --muted: var(--surface-2);
+  --muted-foreground: var(--text-3);
+  --accent: var(--surface-2);
 }
 
-/* Dark Mode Overrides for hardcoded classes */
-.dark .bg-white { background-color: var(--card) !important; }
-.dark .bg-slate-50 { background-color: var(--background) !important; }
-.dark .bg-slate-50\/50 { background-color: rgba(2, 6, 23, 0.5) !important; }
-.dark .text-slate-900 { color: var(--foreground) !important; }
-.dark .text-slate-700 { color: var(--muted-foreground) !important; }
-.dark .text-slate-600 { color: var(--muted-foreground) !important; }
-.dark .text-slate-500 { color: var(--muted-foreground) !important; }
-.dark .border-slate-100 { border-color: var(--border) !important; }
-.dark .border-slate-200 { border-color: var(--border) !important; }
-.dark .divide-slate-50 > * + * { border-color: var(--border) !important; }
-.dark .divide-slate-100 > * + * { border-color: var(--border) !important; }
-.dark .shadow-sm { box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.5); }
-.dark .shadow-md { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); }
+/* ---- Dark mode: neutral surfaces, text and borders (hardcoded Tailwind classes are mapped to the tokens in ONE place) ---- */
+.dark .bg-white { background-color: var(--surface-1) !important; }
+.dark .bg-slate-50, .dark .hover\:bg-slate-50:hover, .dark .hover\:bg-white:hover { background-color: var(--surface-2) !important; }
+.dark .bg-slate-50\/50, .dark .hover\:bg-slate-50\/50:hover, .dark .hover\:bg-slate-50\/30:hover { background-color: color-mix(in srgb, var(--surface-2) 55%, transparent) !important; }
+.dark .bg-slate-100, .dark .bg-slate-200, .dark .hover\:bg-slate-100:hover, .dark .hover\:bg-slate-200:hover { background-color: var(--surface-3) !important; }
+.dark .bg-white\/80 { background-color: color-mix(in srgb, var(--surface-1) 82%, transparent) !important; }
+/* the old dark-variant classes were written for a near-black palette: they now use the layered tokens */
+.dark .dark\:bg-slate-950 { background-color: var(--app-bg) !important; }
+.dark .dark\:bg-slate-900 { background-color: var(--surface-1) !important; }
+.dark .dark\:bg-slate-800, .dark .dark\:hover\:bg-slate-800:hover { background-color: var(--surface-2) !important; }
+.dark .dark\:hover\:bg-slate-700:hover { background-color: var(--surface-3) !important; }
+.dark .dark\:bg-slate-800\/50, .dark .dark\:bg-slate-800\/30, .dark .dark\:hover\:bg-slate-800\/50:hover, .dark .dark\:hover\:bg-slate-800\/30:hover { background-color: color-mix(in srgb, var(--surface-2) 55%, transparent) !important; }
+/* the filled brand control: primary buttons, the active navigation item, dark summary panels */
+.dark .bg-brand-blue, .dark .dark\:bg-brand-blue, .dark .bg-slate-900 { background-color: var(--solid) !important; }
+.dark .hover\:bg-brand-blue-light:hover, .dark .dark\:hover\:bg-brand-blue-light:hover, .dark .hover\:bg-slate-800:hover { background-color: var(--solid-hover) !important; }
+.dark .bg-slate-800 { background-color: var(--surface-3) !important; }
 
-/* Scrollbar dark mode defaults */
-.dark ::-webkit-scrollbar-track {
-  background: #020617;
-}
-.dark ::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border: 2px solid #020617;
-}
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
-}
+.dark .text-slate-900, .dark .text-slate-800, .dark .text-slate-950, .dark .dark\:text-slate-50, .dark .dark\:text-slate-100, .dark .dark\:text-slate-200, .dark .hover\:text-slate-900:hover, .dark .dark\:hover\:text-slate-200:hover { color: var(--text-1) !important; }
+.dark .text-slate-700, .dark .text-slate-600, .dark .dark\:text-slate-300 { color: var(--text-2) !important; }
+.dark .text-slate-500, .dark .dark\:text-slate-400 { color: var(--text-3) !important; }
+.dark .text-slate-400 { color: var(--text-4) !important; }
+.dark .placeholder\:text-slate-400::placeholder, .dark .dark\:placeholder\:text-slate-400::placeholder, .dark .dark\:placeholder\:text-slate-500::placeholder { color: var(--text-4) !important; }
+
+.dark .border-slate-100, .dark .border-slate-200, .dark .dark\:border-slate-800, .dark .border-slate-800 { border-color: var(--line) !important; }
+.dark .border-slate-50 { border-color: var(--line-subtle) !important; }
+.dark .border-slate-300, .dark .border-slate-700, .dark .dark\:border-slate-700 { border-color: var(--line-strong) !important; }
+.dark .divide-slate-50 > * + *, .dark .divide-slate-100 > * + *, .dark .dark\:divide-slate-800 > * + * { border-color: var(--line-subtle) !important; }
+
+/* form controls that are not the shared Input component */
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]), .dark select, .dark textarea { background-color: var(--surface-2) !important; color: var(--text-1) !important; border-color: var(--line-strong) !important; }
+.dark input::placeholder, .dark textarea::placeholder { color: var(--text-4) !important; }
+.dark input:disabled, .dark select:disabled, .dark textarea:disabled { opacity: 0.6; }
+
+/* ---- Dark mode: status colours (success green, pending amber, urgent red, info blue/sky ...) as soft tints with readable text ---- */
+.dark :is(.bg-red-50, .bg-red-100, .hover\:bg-red-50:hover, .dark\:bg-red-900\/10) { background-color: var(--tint-red-bg) !important; }
+.dark :is(.text-red-600, .text-red-700, .text-red-800, .text-red-900) { color: var(--tint-red-text) !important; }
+.dark :is(.border-red-100, .border-red-200, .border-red-300, .dark\:border-red-900\/20) { border-color: var(--tint-red-border) !important; }
+.dark :is(.bg-rose-50, .bg-rose-100) { background-color: var(--tint-rose-bg) !important; }
+.dark :is(.text-rose-600, .text-rose-700, .text-rose-800, .text-rose-900) { color: var(--tint-rose-text) !important; }
+.dark :is(.border-rose-100, .border-rose-200) { border-color: var(--tint-rose-border) !important; }
+.dark :is(.bg-amber-50, .bg-amber-100, .dark\:bg-amber-900\/10, .dark\:bg-amber-950\/30) { background-color: var(--tint-amber-bg) !important; }
+.dark :is(.text-amber-600, .text-amber-700, .text-amber-800, .text-amber-900) { color: var(--tint-amber-text) !important; }
+.dark :is(.border-amber-100, .border-amber-200, .border-amber-300, .dark\:border-amber-900\/20, .dark\:border-amber-900\/50) { border-color: var(--tint-amber-border) !important; }
+.dark :is(.bg-orange-50, .bg-orange-100) { background-color: var(--tint-orange-bg) !important; }
+.dark :is(.text-orange-600, .text-orange-700) { color: var(--tint-orange-text) !important; }
+.dark :is(.bg-yellow-50, .bg-yellow-100) { background-color: var(--tint-yellow-bg) !important; }
+.dark :is(.text-yellow-600, .text-yellow-700, .text-yellow-800) { color: var(--tint-yellow-text) !important; }
+.dark :is(.bg-emerald-50, .bg-emerald-100) { background-color: var(--tint-emerald-bg) !important; }
+.dark :is(.text-emerald-600, .text-emerald-700, .text-emerald-800, .text-emerald-900) { color: var(--tint-emerald-text) !important; }
+.dark :is(.border-emerald-100, .border-emerald-200) { border-color: var(--tint-emerald-border) !important; }
+.dark :is(.bg-green-50, .bg-green-100, .dark\:bg-green-900\/10) { background-color: var(--tint-green-bg) !important; }
+.dark :is(.text-green-600, .text-green-700, .text-green-800) { color: var(--tint-green-text) !important; }
+.dark :is(.border-green-100, .border-green-200) { border-color: var(--tint-green-border) !important; }
+.dark :is(.bg-teal-50, .bg-teal-100) { background-color: var(--tint-teal-bg) !important; }
+.dark :is(.text-teal-600, .text-teal-700) { color: var(--tint-teal-text) !important; }
+.dark :is(.bg-sky-50, .bg-sky-100) { background-color: var(--tint-sky-bg) !important; }
+.dark :is(.text-sky-600, .text-sky-700, .text-sky-800) { color: var(--tint-sky-text) !important; }
+.dark :is(.border-sky-100, .border-sky-200) { border-color: var(--tint-sky-border) !important; }
+.dark :is(.bg-blue-50, .bg-blue-100, .hover\:bg-blue-50:hover, .dark\:bg-blue-900\/10) { background-color: var(--tint-blue-bg) !important; }
+.dark :is(.text-blue-600, .text-blue-700, .text-blue-800) { color: var(--tint-blue-text) !important; }
+.dark :is(.border-blue-100, .border-blue-200, .dark\:border-blue-900\/20) { border-color: var(--tint-blue-border) !important; }
+.dark :is(.bg-indigo-50, .bg-indigo-100) { background-color: var(--tint-indigo-bg) !important; }
+.dark :is(.text-indigo-600, .text-indigo-700) { color: var(--tint-indigo-text) !important; }
+.dark :is(.bg-violet-50, .bg-violet-100) { background-color: var(--tint-violet-bg) !important; }
+.dark :is(.text-violet-600, .text-violet-700) { color: var(--tint-violet-text) !important; }
+.dark :is(.bg-purple-50, .bg-purple-100) { background-color: var(--tint-purple-bg) !important; }
+.dark :is(.text-purple-600, .text-purple-700) { color: var(--tint-purple-text) !important; }
+.dark :is(.border-purple-100, .border-purple-200, .dark\:border-purple-900\/20) { border-color: var(--tint-purple-border) !important; }
+
+/* solid status badges with small white text: a deeper red / amber so the white text keeps AA contrast on the dark surfaces */
+.dark .bg-red-500 { background-color: #dc2626 !important; }
+.dark .bg-amber-500 { background-color: #b45309 !important; }
+
+/* neutral surfaces written with an opacity suffix, brand-blue used as an accent, and the lighter status shades */
+.dark :is(.bg-slate-50\/80, .bg-slate-50\/70, .bg-slate-50\/60, .hover\:bg-slate-50\/80:hover, .hover\:bg-slate-50\/70:hover) { background-color: color-mix(in srgb, var(--surface-2) 80%, transparent) !important; }
+.dark .hover\:bg-slate-100\/80:hover { background-color: var(--surface-3) !important; }
+.dark .bg-white\/95 { background-color: color-mix(in srgb, var(--surface-1) 94%, transparent) !important; }
+.dark :is(.border-slate-200\/80, .border-slate-50\/50) { border-color: var(--line) !important; }
+.dark :is(.text-brand-blue, .hover\:text-brand-blue:hover, .hover\:text-brand-blue-dark:hover, .group:hover .group-hover\:text-brand-blue) { color: var(--accent-text) !important; }
+.dark .border-brand-blue { border-color: var(--accent-text) !important; }
+.dark .hover\:bg-brand-blue:hover { background-color: var(--solid) !important; }
+.dark .hover\:text-white:hover { color: #ffffff !important; }
+.dark :is(.text-red-500, .text-red-400) { color: var(--tint-red-text) !important; }
+.dark :is(.text-amber-500, .text-amber-400) { color: var(--tint-amber-text) !important; }
+.dark :is(.text-emerald-500, .text-emerald-400) { color: var(--tint-emerald-text) !important; }
+.dark :is(.text-green-500) { color: var(--tint-green-text) !important; }
+.dark :is(.text-blue-500, .text-blue-400) { color: var(--tint-blue-text) !important; }
+.dark :is(.text-purple-500, .text-purple-400, .text-violet-500) { color: var(--tint-purple-text) !important; }
+.dark :is(.text-orange-500) { color: var(--tint-orange-text) !important; }
+.dark :is(.text-teal-500) { color: var(--tint-teal-text) !important; }
+
+/* charts (recharts): the series keep their colours, but dark ink, light grid lines and the white tooltip follow the theme */
+.dark .recharts-cartesian-axis-tick-value, .dark .recharts-text { fill: var(--text-3) !important; }
+.dark .recharts-legend-item-text { color: var(--text-2) !important; }
+.dark .recharts-cartesian-grid line, .dark .recharts-cartesian-grid-horizontal line, .dark .recharts-cartesian-grid-vertical line { stroke: var(--line) !important; }
+.dark .recharts-cartesian-axis-line, .dark .recharts-reference-line line { stroke: var(--line-strong) !important; }
+.dark .recharts-default-tooltip { background-color: var(--surface-2) !important; border-color: var(--line-strong) !important; }
+.dark .recharts-tooltip-label, .dark .recharts-tooltip-item { color: var(--text-1) !important; }
+.dark :is([stroke="#1F2F5E"], [stroke="#1f2f5e"]) { stroke: var(--accent-text) !important; }
+.dark :is([fill="#1F2F5E"], [fill="#1f2f5e"]) { fill: var(--accent-text) !important; }
+.dark :is([fill="#0F172A"], [fill="#0f172a"], [fill="#334155"], [fill="#475569"]) { fill: var(--text-2) !important; }
+.dark :is([stroke="#E2E8F0"], [stroke="#e2e8f0"], [stroke="#F1F5F9"], [stroke="#f1f5f9"]) { stroke: var(--line) !important; }
+
+/* ---- Dark mode: restrained depth (no heavy black shadows or glows) ---- */
+.dark .shadow-sm { box-shadow: 0 1px 2px 0 rgba(8, 12, 24, 0.28); }
+.dark .shadow-md, .dark .shadow-lg { box-shadow: 0 4px 14px -4px rgba(8, 12, 24, 0.4); }
+.dark .shadow-xl, .dark .shadow-2xl { box-shadow: 0 10px 28px -8px rgba(8, 12, 24, 0.5); }
+
+/* Scrollbars */
+.dark ::-webkit-scrollbar-track { background: var(--app-bg); }
+.dark ::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid var(--app-bg); }
+.dark ::-webkit-scrollbar-thumb:hover { background: #5b6c92; }
 
 body {
   background-color: var(--background);
