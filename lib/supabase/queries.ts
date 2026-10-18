@@ -278,11 +278,13 @@ export type CreateOrderInput = {
   deliveryNotes?: string;
   /** Required by the database when a Super Admin approves a line below cost. */
   belowCostReason?: string;
+  /** Required by the database when a line is charged at a price other than the customer's agreed price (migration 27). */
+  priceOverrideReason?: string;
   items: Array<{
     productId: string;
     /** Whole number, at least 1. */
     quantity: number;
-    /** Negotiated price; omit for the product's selling price. */
+    /** Omit to charge the customer's agreed price (or the list price); a different price for a customer with an agreement needs priceOverrideReason (migration 27). */
     actualUnitPrice?: number;
     designName?: string;
   }>;
@@ -883,6 +885,16 @@ export function createDb(client: EfzSupabaseClient) {
      * The database refuses anyone but a Super Admin, an order that already has terms,
      * and a missing/too short reason; it writes the one audit line. Nothing else changes.
      */
+    /**
+     * The price create_order() will apply to this customer and product (migration 27): the agreed price, the list price, or "review" when the
+     * price is waiting to be confirmed. Null on a database without migration 27 (the form then behaves as before).
+     */
+    async resolvePrice(customerId: string, productId: string, designName?: string): Promise<{ source: "agreement" | "list" | "review"; price: number | null; listPrice: number | null; reason: string | null } | null> {
+      const { data, error } = await client.rpc("resolve_order_price", { p_customer_id: customerId, p_product_id: productId, p_design_name: designName ?? null });
+      if (error) return null;
+      return data as unknown as { source: "agreement" | "list" | "review"; price: number | null; listPrice: number | null; reason: string | null };
+    },
+
     async setPaymentTerms(id: string, terms: PaymentTerms, reason: string): Promise<void> {
       const { error } = await client.rpc("set_order_payment_terms", { p_order_id: id, p_payment_terms: terms, p_reason: reason });
       if (error) throw new EfzDbError("orders.setPaymentTerms", error);

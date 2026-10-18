@@ -16,6 +16,8 @@ export type CreditDailyDeps = {
   secret: string | undefined;
   /** Calls credit_daily_run with the service role. */
   run: () => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
+  /** Calls price_daily_run (migration 27: agreed-price expiry notices). Optional; a failure here never fails the credit run. */
+  runPrices?: () => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
 };
 const json = (status: number, body: Json): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -34,5 +36,9 @@ export async function handleCreditDaily(req: Request, deps: CreditDailyDeps): Pr
   const r = await deps.run();
   if (r.error) return json(500, { error: "The daily run failed" });
   const d = (r.data ?? {}) as { asOf?: string; remindersSent?: number; failed?: number };
-  return json(200, { ok: true, asOf: d.asOf ?? null, remindersSent: d.remindersSent ?? 0, failed: d.failed ?? 0 });
+  let priceNoticesSent: number | null = null;
+  if (deps.runPrices) {
+    try { const p = await deps.runPrices(); if (!p.error) priceNoticesSent = Number(((p.data ?? {}) as { noticesSent?: number }).noticesSent ?? 0); } catch { /* the credit run already succeeded; the price notices are retried by the next run */ }
+  }
+  return json(200, { ok: true, asOf: d.asOf ?? null, remindersSent: d.remindersSent ?? 0, failed: d.failed ?? 0, ...(deps.runPrices ? { priceNoticesSent } : {}) });
 }

@@ -804,6 +804,8 @@ export type Database = {
     Functions: {
       create_order: { Args: { payload: Json }; Returns: string };
       /** Migration 20: create_order() + fixed payment terms, one transaction. */
+      resolve_order_price: { Args: { p_customer_id: string; p_product_id: string; p_design_name: string | null }; Returns: unknown };
+      run_price_checks: { Args: Record<string, never>; Returns: unknown };
       create_order_with_terms: { Args: { payload: Json; p_payment_terms: "paid_at_sale" | "credit" }; Returns: string };
       /** Migration 20: Super Admin review of an order without terms (once, audited). */
       set_order_payment_terms: { Args: { p_order_id: string; p_payment_terms: "paid_at_sale" | "credit"; p_reason: string }; Returns: undefined };

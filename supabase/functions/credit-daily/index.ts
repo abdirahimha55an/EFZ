@@ -10,5 +10,7 @@ Deno.serve((req) =>
   handleCreditDaily(req, {
     secret: Deno.env.get("CREDIT_CRON_SECRET"),
     run: async () => (admin ? ((await admin.rpc("credit_daily_run")) as never) : { data: null, error: { message: "not configured" } }),
+    // migration 27 (price expiry notices); until it is applied the call fails harmlessly and priceNoticesSent is null
+    runPrices: async () => (admin ? ((await admin.rpc("price_daily_run")) as never) : { data: null, error: { message: "not configured" } }),
   }),
 );

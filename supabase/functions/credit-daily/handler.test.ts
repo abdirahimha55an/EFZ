@@ -25,6 +25,21 @@ test("the right secret runs the database function once and returns only the coun
   const h = mk(); const r = await handleCreditDaily(req({ "x-cron-secret": SECRET }), h.deps);
   assert.equal(r.status, 200); assert.deepEqual(await r.json(), { ok: true, asOf: "2026-10-18", remindersSent: 3, failed: 0 }); assert.equal(h.calls(), 1);
 });
+test("the price notices run after the credit run; their failure (or a database without migration 27) never fails the credit run", async () => {
+  let credit = 0, prices = 0;
+  const ok = { secret: SECRET, run: async () => { credit++; return { data: { asOf: "2026-10-18", remindersSent: 1, failed: 0 }, error: null }; }, runPrices: async () => { prices++; return { data: { noticesSent: 4 }, error: null }; } };
+  const r = await handleCreditDaily(req({ "x-cron-secret": SECRET }), ok);
+  assert.deepEqual(await r.json(), { ok: true, asOf: "2026-10-18", remindersSent: 1, failed: 0, priceNoticesSent: 4 }); assert.equal(credit, 1); assert.equal(prices, 1);
+  for (const bad of [async () => ({ data: null, error: { message: "function does not exist" } }), async () => { throw new Error("boom"); }]) {
+    const r2 = await handleCreditDaily(req({ "x-cron-secret": SECRET }), { ...ok, runPrices: bad });
+    assert.equal(r2.status, 200); assert.deepEqual(await r2.json(), { ok: true, asOf: "2026-10-18", remindersSent: 1, failed: 0, priceNoticesSent: null });
+  }
+});
+test("a failed credit run never runs the price notices", async () => {
+  let prices = 0;
+  const r = await handleCreditDaily(req({ "x-cron-secret": SECRET }), { secret: SECRET, run: async () => ({ data: null, error: { message: "x" } }), runPrices: async () => { prices++; return { data: {}, error: null }; } });
+  assert.equal(r.status, 500); assert.equal(prices, 0);
+});
 test("a database failure is reported as a plain 500 without any detail from the database", async () => {
   const h = mk({ error: true }); const r = await handleCreditDaily(req({ "x-cron-secret": SECRET }), h.deps); const text = await r.text();
   assert.equal(r.status, 500); assert.ok(!text.includes("hunter2")); assert.deepEqual(JSON.parse(text), { error: "The daily run failed" });

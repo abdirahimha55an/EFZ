@@ -240,6 +240,28 @@ Production data was not examined. On the Staging data (test customers only): 1 c
 ### Launch blockers
 Approve and apply M25 and M26 to Staging (runbook), then supervised Staging testing of the app against M26; a native device/emulator run; owner decisions above; verified real price agreements; payment provider onboarding; scheduler enablement; backup B.4 encrypted copy (older item); the leftover empty folder `C:\ABDIR~1` (please run `rmdir C:\ABDIR~1`).
 
+## Milestone 8 (2026-10-18): confirmed price policy (Migration 27), a DRAFT applied nowhere
+
+Branch only, **local**. Migrations 25, 26 and 27 are applied to **no** database (Staging is at M24, credit OFF, no payment method enabled). Production untouched. Nothing pushed, merged or deployed. Read `docs/MIGRATION_27.md` (the owner's ten rules, each mapped to its implementation and tests) and `docs/CUSTOMER_PRICING.md`.
+
+### What changed
+Open-ended agreements stay in force (nothing expires them); customers are notified before an end date (30 days, 7 days, after); staff-created orders now use the same pricing function as the app (a different price for a customer with an agreement needs a documented reason and is audited); every audit event carries the agreement price; a future-dated change keeps the current price until the day before it starts (a gap found while writing the tests: it used to drop the customer to the list price in between); the Hub order form shows the agreed price and asks for the override reason; the `credit-daily` trigger also runs the price notices.
+
+### Results (local disposable PostgreSQL clones unless stated)
+| Check | Result |
+|---|---|
+| Suites on M25+M26+M27: M21 / M22 / M23 / M25 / M26 / **M27** / exposure | 81 / 33 / 97 / 135 / 63 / **38** / 19, 0 failures |
+| Concurrency M25 / M26 / **M27** (real parallel sessions) | 13 / 11 / **10**, all pass (M27: 60 staff orders racing 30 price changes, orders racing a revocation, two future-dated replacements, simultaneous notice runs) |
+| M27 mutation test | **27 of 27 caught** (one survivor in the first run was closed with a new assertion) |
+| Rollback chain 27, then 26, then 25 on a data-rich clone | financial totals identical at every step; all 168 function definitions identical to Migration 24 (carriage returns ignored) |
+| Hub | `tsc` clean, 37/37 unit tests, `next build --webpack` OK, ESLint errors unchanged (9, all in files this work does not touch) |
+| Hub browser test (Customer Prices page and order form) | **26 of 26**: permissions on real Staging; the screens and exact arguments mock-backed (Staging has no M26/M27) |
+| Edge function tests (credit-daily 8, payments 16, register-customer 14, staging-test-payment 5) | 43 of 43 |
+| Customer app | unchanged by M27 (151/151 Jest tests from milestone 7) |
+
+### Still true
+Nothing is applied to Staging or Production; the scheduler is not operational (customers are still told when they open the catalogue); no native Android device or emulator run; credit stays disabled; EVC Plus and eDahab stay unavailable. Remaining owner decisions are in `CUSTOMER_PRICING.md` and `CREDIT_POLICY.md`. Applying M25 + M26 + M27 to Staging follows `docs/STAGING_RUNBOOK.md` and needs separate authorization.
+
 ## How to run the checks
 
 ```bash

@@ -38,7 +38,12 @@ type OrderLineDraft = {
   productId: string;
   quantity: number;
   actualUnitPrice: number;
+  /** True once the user typed a price: only then is a price sent; otherwise the database applies the agreed (or list) price. */
+  priceTouched?: boolean;
 };
+
+/** What create_order() will apply to this customer and product (migration 27); null when the database does not offer it. */
+type PriceInfo = { source: "agreement" | "list" | "review"; price: number | null; listPrice: number | null; reason: string | null } | null;
 
 /**
  * `suffix` keeps the initial row's key deterministic. Generating it from
@@ -82,6 +87,8 @@ export default function OrdersPage() {
     orderDate: efzToday(),
     /** Super Admin only, when a line is priced below cost. */
     belowCostReason: "",
+    /** Needed when a line is charged a price other than the customer's agreed price. */
+    priceOverrideReason: "",
   });
   const [formData, setFormData] = useState(blankForm);
 
@@ -100,6 +107,8 @@ export default function OrdersPage() {
     reason: "",
   });
   const [orderItems, setOrderItems] = useState<OrderLineDraft[]>([blankOrderLine("first")]);
+  // The price the database will apply per customer and product (agreed price, list price, or "review"). Fetched, never computed here.
+  const [priceInfo, setPriceInfo] = useState<Record<string, PriceInfo>>({});
 
   // The whole page in one read. Orders arrive from the order_details view with
   // their items and payments already nested, so there is no N+1 fan-out here.
@@ -357,9 +366,25 @@ export default function OrdersPage() {
     setOrderItems(prev => [...prev, blankOrderLine()]);
   };
 
-  const updateOrderItem = (id: string, patch: Partial<{ productId: string; quantity: number; actualUnitPrice: number }>) => {
+  const updateOrderItem = (id: string, patch: Partial<{ productId: string; quantity: number; actualUnitPrice: number; priceTouched: boolean }>) => {
     setOrderItems(prev => prev.map(item => item.id === id ? { ...item, ...patch } : item));
   };
+
+  // Ask the database what each chosen product costs THIS customer; untouched lines follow the answer.
+  const priceKeys = orderItems.map(i => (formData.customerId && i.productId ? `${formData.customerId}|${i.productId}` : "")).join(",");
+  useEffect(() => {
+    if (!formData.customerId) return;
+    const wanted = Array.from(new Set(orderItems.filter(i => i.productId).map(i => i.productId)));
+    wanted.forEach(async (productId) => {
+      const key = `${formData.customerId}|${productId}`;
+      const info = await getDb().orders.resolvePrice(formData.customerId, productId).catch(() => null);
+      setPriceInfo(prev => ({ ...prev, [key]: info }));
+      // lines whose price the user has not typed follow the database's answer
+      if (info && info.price !== null) setOrderItems(prev => prev.map(l => l.productId === productId && !l.priceTouched && l.actualUnitPrice !== info.price ? { ...l, actualUnitPrice: info.price as number } : l));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [priceKeys]);
+  const lineInfo = (item: OrderLineDraft): PriceInfo => (formData.customerId && item.productId ? priceInfo[`${formData.customerId}|${item.productId}`] ?? null : null);
 
   const removeOrderItem = (id: string) => {
     setOrderItems(prev => prev.length > 1 ? prev.filter(item => item.id !== id) : prev);
@@ -374,7 +399,9 @@ export default function OrdersPage() {
     const costPrice = product?.costPrice ?? null;
     const lineRevenue = actualUnitPrice * quantity;
     const lineCost = costPrice === null ? null : costPrice * quantity;
-    const belowCost = costPrice !== null && Boolean(product) && actualUnitPrice < costPrice;
+    const info = formData.customerId && item.productId ? priceInfo[`${formData.customerId}|${item.productId}`] ?? null : null;
+    const atAgreedPrice = info?.source === "agreement" && info.price === actualUnitPrice;
+    const belowCost = costPrice !== null && Boolean(product) && actualUnitPrice < costPrice && !atAgreedPrice;
     return { product, quantity, actualUnitPrice, costPrice, lineRevenue, lineCost, belowCost };
   });
 
@@ -428,12 +455,22 @@ export default function OrdersPage() {
         showNotification('error', `Insufficient stock for ${product.name}: only ${product.stock} available.`);
         return;
       }
-      if (product.costPrice !== null && item.actualUnitPrice < product.costPrice && !perms.approveBelowCost) {
+      const info = lineInfo(item);
+      if (info?.source === "review") {
+        showNotification('error', `The price of ${product.name} for this customer is waiting to be confirmed (${info.reason ?? "pending agreement"}). Resolve it in Customer Prices first.`);
+        return;
+      }
+      if (info?.source === "agreement" && item.priceTouched && info.price !== item.actualUnitPrice && formData.priceOverrideReason.trim().length < 10) {
+        showNotification('error', `This customer has an agreed price of $${Number(info.price).toFixed(2)} for ${product.name}. To charge a different price, write the reason (at least 10 characters).`);
+        return;
+      }
+      if (product.costPrice !== null && item.actualUnitPrice < product.costPrice && !perms.approveBelowCost && !(info?.source === "agreement" && info.price === item.actualUnitPrice)) {
         showNotification('error', `Price for ${product.name} is below its cost. Only a Super Admin can approve a below-cost sale.`);
         return;
       }
     }
 
+    const overridesAgreement = validItems.some(i => { const info = lineInfo(i); return info?.source === "agreement" && i.priceTouched && info.price !== i.actualUnitPrice; });
     if (hasBelowCostLine && perms.approveBelowCost && !formData.belowCostReason.trim()) {
       showNotification('error', 'A below-cost sale needs an approval reason.');
       return;
@@ -493,10 +530,12 @@ export default function OrdersPage() {
         orderDate,
         deliveryNotes: formData.notes,
         belowCostReason: hasBelowCostLine ? formData.belowCostReason.trim() : undefined,
+        priceOverrideReason: overridesAgreement ? formData.priceOverrideReason.trim() : undefined,
+        // With migration 27 an untouched line sends no price: the database applies the agreed (or list) price itself.
         items: validItems.map(item => ({
           productId: item.productId,
           quantity: item.quantity,
-          actualUnitPrice: item.actualUnitPrice,
+          ...(lineInfo(item) && !item.priceTouched ? {} : { actualUnitPrice: item.actualUnitPrice }),
         })),
       });
 
@@ -874,6 +913,7 @@ export default function OrdersPage() {
                     </label>
                     <select 
                       required
+                      data-testid="order-customer"
                       className="w-full h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-medium outline-none focus:ring-2 focus:ring-brand-blue/20 transition-all cursor-pointer"
                       value={formData.customerId}
                       onChange={e => setFormData({...formData, customerId: e.target.value})}
@@ -966,8 +1006,9 @@ export default function OrdersPage() {
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                             <select
                               className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium outline-none focus:ring-2 focus:ring-brand-blue/20"
+                              data-testid="order-product"
                               value={item.productId}
-                              onChange={e => updateOrderItem(item.id, { productId: e.target.value, actualUnitPrice: Number(products.find(p => p.id === e.target.value)?.sellingPrice ?? products.find(p => p.id === e.target.value)?.price ?? 0) })}
+                              onChange={e => updateOrderItem(item.id, { productId: e.target.value, priceTouched: false, actualUnitPrice: Number(products.find(p => p.id === e.target.value)?.sellingPrice ?? products.find(p => p.id === e.target.value)?.price ?? 0) })}
                             >
                               <option value="">Select product</option>
                               {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -987,8 +1028,9 @@ export default function OrdersPage() {
                               type="number"
                               min="0"
                               step="0.01"
+                              data-testid="order-price"
                               value={item.actualUnitPrice}
-                              onChange={e => updateOrderItem(item.id, { actualUnitPrice: Number(e.target.value || 0) })}
+                              onChange={e => updateOrderItem(item.id, { actualUnitPrice: Number(e.target.value || 0), priceTouched: true })}
                               className="h-9 rounded-lg bg-white border-slate-200 text-xs"
                               placeholder="Actual price"
                             />
@@ -1000,6 +1042,11 @@ export default function OrdersPage() {
                             </span>
                             <span className="font-bold text-slate-900">Total: ${lineTotal.toFixed(2)}</span>
                           </div>
+                          {(() => { const info = lineInfo(item); return info?.source === "agreement" ? (
+                            <p className="text-[10px] font-bold text-emerald-700" data-testid="order-agreed-price">Agreed price for this customer: ${Number(info.price).toFixed(2)} (list ${Number(info.listPrice).toFixed(2)}). Change it only with a reason.</p>
+                          ) : info?.source === "review" ? (
+                            <p className="text-[10px] font-bold text-amber-700" data-testid="order-price-review">Price waiting to be confirmed ({info.reason}). This line cannot be ordered until it is resolved in Customer Prices.</p>
+                          ) : null; })()}
                           {belowCost && (
                             <p className="text-[10px] font-bold text-red-600">
                               {perms.approveBelowCost
@@ -1035,6 +1082,21 @@ export default function OrdersPage() {
                       )}
                     </div>
                   </div>
+
+                  {orderItems.some(i => { const info = lineInfo(i); return info?.source === "agreement" && i.priceTouched && info.price !== i.actualUnitPrice; }) && (
+                    <div className="space-y-1 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                      <label className="text-[10px] font-bold text-amber-800 ml-1">Reason for charging a price other than the agreed price (required)</label>
+                      <textarea
+                        required
+                        data-testid="order-price-override-reason"
+                        className="w-full h-16 rounded-lg border border-amber-200 bg-white p-2 text-xs outline-none"
+                        placeholder="e.g., Customer paid cash up front; owner agreed by phone"
+                        value={formData.priceOverrideReason}
+                        onChange={e => setFormData({ ...formData, priceOverrideReason: e.target.value })}
+                      />
+                      <p className="text-[10px] text-amber-700">Recorded as a price override with your name, the agreed price and the price charged.</p>
+                    </div>
+                  )}
 
                   {hasBelowCostLine && perms.approveBelowCost && (
                     <div className="space-y-1 rounded-xl border border-red-200 bg-red-50 p-3">

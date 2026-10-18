@@ -1,6 +1,14 @@
-# Negotiated customer pricing (Migration 26)
+# Negotiated customer pricing (Migrations 26 and 27)
 
-**Status: implemented and tested LOCALLY. Applied nowhere (not Staging, not Production).** Nothing here changes a price until an owner-approved migration is applied and agreements are verified.
+**Status: implemented and tested LOCALLY. Applied nowhere (not Staging, not Production).** Nothing here changes a price until owner-approved migrations are applied and agreements are verified. Migration 27 (`MIGRATION_27.md`) implements the owner's confirmed rules of 2026-10-18 (open-ended agreements, expiry notices, one pricing function for the app and for staff orders).
+
+## Confirmed owner policy (2026-10-18)
+1. A verified agreement with no end date stays in force until authorized staff change, revoke or end it; it never expires for being old.
+2. An agreement with an end date follows that date; the customer is notified (30 days, 7 days, and when it has ended).
+3. Changes need an authorized staff member and are audited (previous price, new price, reason, who, when); they apply from their start date only, so confirmed orders, invoices, payments and revenue keep their prices.
+4. An established verified agreement is never silently replaced by the list price (a future-dated change keeps the current price until the day before it starts; a pending or conflicting agreement holds the line instead of falling back to list).
+5. Historical prices that do not prove an agreement are listed for manual review, never imported automatically.
+6. The Android app and staff-created orders use the same server-side function (`_price_resolve`). A staff member who charges a customer with an agreement a different price must write a reason; it is recorded and audited.
 
 ## What already existed (and is reused)
 * `order_items.standard_unit_price` = the list price at the time; `order_items.actual_unit_price` = the price charged. Staff orders (`create_order`) already store both and already have the "below cost needs a Super Admin and a reason" rule.
@@ -39,10 +47,10 @@ This Staging data contains only test customers. **1 candidate and 7 cases needin
 * **Production was not examined**, so real missing or ambiguous agreements are **unknown**. The same dry run must be repeated on a Production copy by the owner before any agreement is trusted.
 
 ## Decisions the owner must make (nothing was decided silently)
-1. **Expired agreement:** currently reverts to list price and is flagged. Alternative: hold the item ("to be confirmed") until renewed. Holding is safer for established customers but stops their online orders.
+1. ~~Expired agreement~~ **Decided:** agreements without an end date never expire; an agreement with an explicit end date reverts to the list price after that date, after the customer has been notified.
 2. **Imported candidates:** currently block online ordering of that item until verified. Alternative: let candidates apply immediately (rejected: it would trust unverified history).
 3. **Varying historical prices:** never auto-applied; who verifies, and what evidence is required?
-4. **Staff-entered orders:** `create_order` still takes the price typed by staff; it does not auto-fill agreed prices. Should it default to the agreement?
+4. ~~Staff-entered orders~~ **Decided and implemented in Migration 27:** staff orders use the agreed price unless a documented reason is given.
 5. **Agreement-wide % discounts or customer tiers:** not built; confirm whether they exist in the business.
 6. **Below-cost agreements:** allowed only with Super Admin approval and a reason; confirm that is the policy.
 
