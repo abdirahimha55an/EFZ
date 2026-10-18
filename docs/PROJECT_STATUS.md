@@ -290,6 +290,11 @@ Nothing is applied to Staging or Production; nothing pushed, merged, deployed or
 
 Remaining blockers: **H1 is open** until the live Staging definitions are compared (needs your secure read-only procedure); nothing may be applied to Staging without separate authorization.
 
+## Milestone 10 (2026-10-18): Migrations 25, 26, 27 APPLIED TO STAGING (not Production)
+
+Applied to Staging `adjjamiqwboawqedaapi` only, by the pinned window `C:\EFZ-checks\P21\staging\m25_27_window.ps1` (evidence: `C:\EFZ-checks\P21\staging\APPLY25_27_20261018-083637Z\status.txt`), after the H1 live-definition check matched (`H1_PREFLIGHT_20261018-082418Z`) and a fresh sealed, restore-verified backup (`C:\EFZ-backups\staging\20261018-083311Z`). M25 08:37:07Z, M26 08:37:35Z, M27 08:37:56Z. After each step the full schema fingerprint equalled the locally rehearsed result exactly and the financial baseline moved only by the tested changes; `validate_financials` integrity 14 PASS / 4 WARN (existing data) / 0 FAIL; M21 81/81, M22 33/33 and the Staging variant of the M27 checks (`supabase/checks/27_price_policy_staging_checks.sql`, 55/55, rolled back, no table-wide lock) passed on live Staging; the rollback guards refused out-of-order rollbacks. The 23, 25, 26 and original 27 suites were deliberately NOT run on live Staging (they disable triggers / mass-update orders).
+State after: credit OFF (approved proposal loaded), no payment method enabled, no price agreement exists, schedulers not running. **Production is untouched (still Migration 20).** The branch also gained a build guard in `next.config.ts`: a Vercel build that is not production fails unless `NEXT_PUBLIC_SUPABASE_URL` is the Staging project, so a preview can never be built against Production.
+
 ## How to run the checks
 
 ```bash
