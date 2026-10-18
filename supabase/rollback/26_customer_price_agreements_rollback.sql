@@ -13,6 +13,17 @@
 begin;
 set local lock_timeout = '30s';
 
+-- DEPENDENCY GUARD: refuse to run while a later migration still depends on what this script removes (the required order is 27, then 26, then 25).
+do $guard$
+begin
+  if to_regclass('public.price_agreement_notices') is not null or to_regprocedure('public.resolve_order_price(text, text, text)') is not null or to_regprocedure('public.price_daily_run()') is not null
+     or pg_get_functiondef('public.create_order(jsonb)'::regprocedure) like '%_price_resolve%' or pg_get_functiondef('public.convert_website_request(uuid, jsonb)'::regprocedure) like '%priceOverrideReason%' then
+    raise exception 'Migration 27 is still applied and depends on objects this rollback drops (_price_resolve, order_price_resolutions). Roll back migration 27 first (rollback/27_price_policy_no_expiry_rollback.sql). Nothing was changed.' using errcode = '55000';
+  end if;
+end
+$guard$;
+
+
 -- the one-argument cart first, so that the restored callers have something to call
 create or replace function public._customer_price_cart(p_lines jsonb)
 returns jsonb

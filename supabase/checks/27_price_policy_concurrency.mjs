@@ -31,7 +31,7 @@ insert into auth.users (id, aud, role, email, email_confirmed_at, raw_app_meta_d
   ('${SA}', 'authenticated', 'authenticated', 't27c-sa@example.test', now(), '{"provider":"email"}', '{}', now(), now()), ('${MGR}', 'authenticated', 'authenticated', 't27c-mgr@example.test', now(), '{"provider":"email"}', '{}', now(), now()),
   ('${MGR2}', 'authenticated', 'authenticated', 't27c-mgr2@example.test', now(), '{"provider":"email"}', '{}', now(), now()), ('${STAFF}', 'authenticated', 'authenticated', 't27c-staff@example.test', now(), '{"provider":"email"}', '{}', now(), now()),
   ('${CA}', 'authenticated', 'authenticated', 't27c-a@example.test', now(), '{"provider":"email","efz_kind":"customer"}', '{}', now(), now());
-insert into public.products (id, name, selling_price, cost_price, stock, is_active) values ('p27c-a', 'T27C Ball', 10, 6, 1000000, true), ('p27c-b', 'T27C Ball B', 20, 12, 1000000, true);
+insert into public.products (id, name, selling_price, cost_price, stock, is_active) values ('p27c-a', 'T27C Ball', 10, 6, 1000000, true), ('p27c-b', 'T27C Ball B', 20, 12, 1000000, true), ('p27c-c', 'T27C Ball C', 30, 18, 1000000, true);
 ${as(null, "service_role")}
 select public.register_customer_account('${CA}', 't27c-a@example.test', 'T27C A', '069 827 1000', '', null);
 reset role;
@@ -84,6 +84,20 @@ const reps = await parallel([MGR, MGR2].map((sub, i) => ({ sub, role: "authentic
 t("two simultaneous future-dated replacements of one agreement: exactly one succeeds, the other is refused", a2.status === 0 && reps.filter((r) => r.err === "").length === 1 && reps.filter((r) => /Only an active agreement|overlapping/.test(r.err)).length === 1, reps.map((r) => r.err.slice(0, 120)).join(" | "));
 t("and the customer has the old price today and the new price on the start date, with no day at the list price (20.00) in between",
   q(`select string_agg((public._price_resolve('${custA}', 'p27c-b', null, current_date + d) ->> 'price'), ',' order by d) from generate_series(0, 5) d`).replace(/\.00/g, "").startsWith("17,17,17,1") && !q(`select string_agg((public._price_resolve('${custA}', 'p27c-b', null, current_date + d) ->> 'source'), ',' order by d) from generate_series(0, 5) d`).includes("list"));
+
+// 3b. a scheduled change is revoked by two managers at the same instant while a customer looks at the catalogue: exactly one revocation, exactly one continuation, the price never changes
+sql(`${as(MGR, "authenticated")}
+select public.create_price_agreement('${custA}', 'p27c-c', null, 26.00, public.efz_today() - 1, null, 'Third product starting price (test)');`);
+const active3 = q(`select public.t27c_active('${custA}', 'p27c-c')`);
+const succ3 = sql(`${as(MGR, "authenticated")}
+select public.replace_price_agreement('${active3}', 24.00, public.efz_today() + 3, null, 'Scheduled lower price (test)');`);
+const succId = q(`select id from public.customer_price_agreements where customer_id = '${custA}' and product_id = 'p27c-c' and unit_price = 24.00`);
+const revs3 = await parallel([MGR, MGR2, CA].map((sub, i) => i < 2 ? ({ sub, role: "authenticated", sql: `select public.revoke_price_agreement('${succId}', 'Scheduled change cancelled by manager ${i + 1} at the same instant (test)');` })
+  : ({ sub, role: "authenticated", sql: Array.from({ length: 10 }, () => "select count(*) from public.customer_catalog();").join("\n") })));
+t("two simultaneous revocations of a scheduled change: exactly one succeeds, the other is refused", succ3.status === 0 && revs3.slice(0, 2).filter((r) => r.err === "").length === 1 && revs3.slice(0, 2).filter((r) => /Only an active agreement/.test(r.err)).length === 1, revs3.map((r) => r.err.slice(0, 100)).join(" | "));
+t("exactly ONE continuation exists (24.00 is gone, 26.00 continues from the planned start date), and the customer pays 26.00 on every day with no day at the list price (30.00)",
+  q(`select count(*) from public.customer_price_agreements where customer_id = '${custA}' and product_id = 'p27c-c' and status = 'active' and unit_price = 26.00 and effective_from = current_date + 3`) === "1"
+  && q(`select string_agg((public._price_resolve('${custA}', 'p27c-c', null, current_date + d) ->> 'price'), ',' order by d) from generate_series(0, 6) d`) === "26.00,26.00,26.00,26.00,26.00,26.00,26.00");
 
 // 4. simultaneous expiry-notice runs: one notice per agreement and stage
 sql(`${as(MGR, "authenticated")}\nselect public.create_price_agreement('${custA}', 'p27c-a', null, 9.00, public.efz_today(), public.efz_today() + 5, 'Ends in five days (notice race test)');`);

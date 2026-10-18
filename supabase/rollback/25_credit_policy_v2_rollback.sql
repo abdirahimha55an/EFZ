@@ -15,6 +15,17 @@
 begin;
 set local lock_timeout = '30s';
 
+-- DEPENDENCY GUARD: refuse to run while a later migration still depends on what this script removes (the required order is 27, then 26, then 25).
+do $guard$
+begin
+  if to_regclass('public.customer_price_agreements') is not null or to_regclass('public.price_agreement_notices') is not null or to_regprocedure('public._price_resolve(text, text, uuid, date)') is not null
+     or pg_get_functiondef('public.create_order(jsonb)'::regprocedure) like '%_price_resolve%' then
+    raise exception 'Migrations 26/27 are still applied and depend on objects this rollback drops (credit notices, events). Roll back migration 27, then 26, first. Nothing was changed.' using errcode = '55000';
+  end if;
+end
+$guard$;
+
+
 update public.customer_credit_accounts set status = 'suspended', reason = left('Rolled back from revoked: ' || reason, 500) where status = 'revoked';
 alter table public.customer_credit_accounts drop constraint if exists customer_credit_accounts_status_check;
 alter table public.customer_credit_accounts add constraint customer_credit_accounts_status_check check (status in ('approved', 'suspended'));

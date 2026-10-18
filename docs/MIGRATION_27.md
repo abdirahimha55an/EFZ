@@ -2,7 +2,7 @@
 
 **Status: a DRAFT applied to no database** (not Staging, not Production). Do not apply without the owner's explicit authorization; follow `docs/STAGING_RUNBOOK.md`. It sits on top of Migrations 25 and 26.
 
-Files: `supabase/27_price_policy_no_expiry.sql` (generated from the exact live text of `create_order` and the M26 text by `C:\EFZ-checks\P21\gen_m27.mjs`), `supabase/rollback/27_price_policy_no_expiry_rollback.sql`, `supabase/checks/27_price_policy_checks.sql` (38 checks), `supabase/checks/27_price_policy_concurrency.mjs` (10 checks, local only: it commits fixtures), `supabase/scheduler/27_price_daily_schedule.sql` (optional pg_cron job, not run by anything).
+Files: `supabase/27_price_policy_no_expiry.sql` (generated from the text of `create_order` restored from Staging backup 20261017-165739Z (not read from live Staging) and the M26 text by `C:\EFZ-checks\P21\gen_m27.mjs`), `supabase/rollback/27_price_policy_no_expiry_rollback.sql`, `supabase/checks/27_price_policy_checks.sql` (55 checks), `supabase/checks/27_price_policy_concurrency.mjs` (12 checks, local only: it commits fixtures), `supabase/scheduler/27_price_daily_schedule.sql` (optional pg_cron job, not run by anything), `supabase/checks/27_preflight_live_definitions.sql` (read-only live check), `27_precondition_check.sh`, `27_rollback_chain_check.sh` (local only).
 
 ## The owner's confirmed rule (2026-10-18) and where each point is implemented and tested
 | # | Rule | Implementation | Test |
@@ -15,7 +15,15 @@ Files: `supabase/27_price_policy_no_expiry.sql` (generated from the exact live t
 | 7 | An established verified agreement is never silently replaced by the list price | A pending, conflicting or unapproved-below-cost agreement blocks the line (app and staff) instead of falling back to list; a future-dated replacement no longer revokes the old price at once (this was a real gap found while writing the tests) | F7, D4 |
 | 8 | Historical prices that do not establish a reliable agreement are flagged, not imported | `import_price_candidates` (M26): only consistent prices become *pending* candidates; everything else is a manual-confirmation case | M26 suite (import) |
 | 9 | Android checkout and staff-created orders use the same server-side pricing function | `create_order` (and `create_order_with_terms` through it) now call `_price_resolve` as of the order date. No price typed = the agreed (else list) price. A different price for a customer with an agreement needs `priceOverrideReason` (10+ chars), is recorded as `staff_override` and audited as a WARNING. Customers without an agreement behave exactly as before. `resolve_order_price` lets the Hub form show the price | F1-F14, parity test F10 |
-| 10 | Automated tests | 38 SQL checks, 10 concurrency checks, 27 mutations (all caught), Hub browser checks O1-O7, edge tests | below |
+| 10 | Automated tests | 55 SQL checks, 12 concurrency checks, mutation test (see PROJECT_STATUS milestone 9), Hub browser checks O1-O7, edge tests | below |
+
+## Review fixes (2026-10-18, second pass)
+* **Precondition (H1):** the migration refuses to replace `create_order` / `convert_website_request` unless their stored text (CR removed, md5) is the expected pre-27 text or migration 27's own (safe retry). The expected values come from a restore of Staging backup 20261017-165739Z, **not from live Staging; H1 is therefore NOT fully resolved until `checks/27_preflight_live_definitions.sql` has been run on live Staging and matched.** Tested by `checks/27_precondition_check.sh`.
+* **Rollback guards (H2):** rollback 26 refuses while 27 is applied; rollback 25 refuses while 26/27 are applied; rollback 27 refuses if 26 is missing. Tested by `checks/27_rollback_chain_check.sh`.
+* **Request conversion (H3):** `convert_website_request` passes `priceOverrideReason` to `create_order` (same rules as staff orders; review-state lines block the conversion and leave the request `confirmed`). `convert_order_request` is a legacy path **not granted to any client role**; it sends no price, so the agreed (else list) price applies, and review-state lines block it. Customers without agreements: unchanged.
+* **M1:** revoking a replacement that has not started continues the predecessor's terms with a new audited agreement (the predecessor's end date can never be extended, and nothing is rewritten). **M2:** an agreement whose successor takes over gets no "price ends" notice.
+* **M4:** the resolver's review reason no longer mentions cost.
+* **M3:** unchanged by design (see the runbook, "Review-state limitation").
 
 ## What it changes
 * New table `price_agreement_notices` (RLS on, all client privileges revoked, update/delete blocked by trigger).

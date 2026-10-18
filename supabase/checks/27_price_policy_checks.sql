@@ -69,7 +69,7 @@ declare
   ca uuid := 'c7000000-0000-4000-8000-00000000000a';      -- customer A (app account)
   cb uuid := 'c7000000-0000-4000-8000-00000000000b';      -- customer B (app account)
   dA1 uuid := 'd2700000-0000-4000-8000-000000000001'; dA2 uuid := 'd2700000-0000-4000-8000-000000000002';
-  acc record; t text; j jsonb; v_a text; v_b text; v_today date := public.efz_today(); v_ag uuid; v_ag2 uuid; v_ag3 uuid; v_id uuid; v_o text; v_o2 text; v_n int; v_rev0 numeric; v_rev1 numeric; v_tot0 numeric; v_tot1 numeric; v_res jsonb;
+  acc record; t text; j jsonb; v_a text; v_b text; v_today date := public.efz_today(); v_ag uuid; v_ag2 uuid; v_ag3 uuid; v_id uuid; v_o text; v_o2 text; v_n int; v_rev0 numeric; v_rev1 numeric; v_tot0 numeric; v_tot1 numeric; v_res jsonb; v_succ uuid; v_cont uuid;
 begin
   -- ---------------------------------------------------------------- fixtures
   alter table public.orders disable trigger user;
@@ -172,6 +172,41 @@ begin
       = '11.00:agreement,11.00:agreement,11.00:agreement,10.00:agreement,10.00:agreement,10.00:agreement'
     and (select status || ':' || effective_to from public.customer_price_agreements where id = v_id) = 'active:' || (v_today + 2)
     and exists (select 1 from public.price_agreement_events where agreement_id = v_id and kind = 'ended' and details ->> 'newEnd' = (v_today + 2)::text and details ->> 'reason' like '%Lower price%'), t);
+  -- ---------------------------------------------------------------- R. revoking a replacement that has not started continues the predecessor's price; N. no misleading notice
+  v_res := public.price_daily_run();
+  perform pg_temp.chk('N1 a replacement takes over seamlessly: the predecessor (ending in 2 days, successor starting in 3) gets NO "your price ends" notice and no notice row',
+    (v_res ->> 'noticesSent')::int = 0 and not exists (select 1 from public.price_agreement_notices where agreement_id = v_id), v_res::text);
+  select id into v_succ from public.customer_price_agreements where customer_id = v_a and product_id = 'p27-e' and unit_price = 10.00 and status = 'active';
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.revoke_price_agreement(%L, ''Scheduled change cancelled before it started (T27)'') as v', v_succ));
+  perform pg_temp.chk('R1 revoking the scheduled change before it starts keeps the customer on the previous price: 11.00 on every day, never the list price (12.00); the predecessor stays active and ended, a continuation (same terms, open-ended as before) starts on the day the change would have started',
+    not pg_temp.err(t)
+    and (select string_agg((public._price_resolve(v_a, 'p27-e', null, v_today + d) ->> 'price') || ':' || (public._price_resolve(v_a, 'p27-e', null, v_today + d) ->> 'source'), ',' order by d) from generate_series(0, 6) d)
+        = '11.00:agreement,11.00:agreement,11.00:agreement,11.00:agreement,11.00:agreement,11.00:agreement,11.00:agreement'
+    and (select status from public.customer_price_agreements where id = v_id) = 'active' and (select status from public.customer_price_agreements where id = v_succ) = 'revoked'
+    and (select count(*) from public.customer_price_agreements c where c.customer_id = v_a and c.product_id = 'p27-e' and c.status = 'active' and c.unit_price = 11.00 and c.effective_from = v_today + 3 and c.effective_to is null) = 1, t);
+  perform pg_temp.chk('R2 the continuation is audited: a "created" event that names the agreement it continues and the reason; the revoked change keeps its own "revoked" event; nothing was deleted or rewritten',
+    exists (select 1 from public.price_agreement_events e where e.kind = 'created' and e.details ->> 'continues' = v_id::text and e.details ->> 'reason' like '%scheduled change was revoked%' and e.actor = 'T27 Manager')
+    and exists (select 1 from public.price_agreement_events e where e.agreement_id = v_succ and e.kind = 'revoked')
+    and (select effective_to from public.customer_price_agreements where id = v_id) = v_today + 2);
+  v_res := public.price_daily_run();
+  perform pg_temp.chk('R3 still no "price ends" notice after the continuation exists (the predecessor is continued, not ended)', (v_res ->> 'noticesSent')::int = 0 and not exists (select 1 from public.price_agreement_notices where agreement_id = v_id));
+  -- a predecessor that had its own end date: the continuation keeps that end date
+  select id into v_ag from public.customer_price_agreements where customer_id = v_a and product_id = 'p27-b' and status = 'active' and unit_price = 17.00;
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.replace_price_agreement(%L, 15.00, %L, null, ''Lower price from next week (T27 end-dated predecessor)'') as v', v_ag, v_today + 4)); v_succ := (pg_temp.jv(t) #>> '{}')::uuid;
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.revoke_price_agreement(%L, ''Cancelled the scheduled change (T27)'') as v', v_succ));
+  perform pg_temp.chk('R4 a predecessor that had an end date (in 20 days) is continued up to that same date: 17.00 on day 4 and on its original last day, the list price (20.00) after it',
+    not pg_temp.err(t) and (public._price_resolve(v_a, 'p27-b', null, v_today + 3) ->> 'price')::numeric = 17 and (public._price_resolve(v_a, 'p27-b', null, v_today + 4) ->> 'price')::numeric = 17
+    and (public._price_resolve(v_a, 'p27-b', null, v_today + 20) ->> 'price')::numeric = 17 and (public._price_resolve(v_a, 'p27-b', null, v_today + 21) ->> 'source') = 'list', t);
+  -- a future agreement that replaces nothing has no predecessor
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.create_price_agreement(%L, ''p27-c'', null, 6.40, %L, null, ''Promotion for B from today (T27)'') as v', v_b, v_today + 11)); v_succ := (pg_temp.jv(t) #>> '{}')::uuid;
+  select count(*) into v_n from public.customer_price_agreements where customer_id = v_b and product_id = 'p27-c';
+  perform pg_temp.q(mgr_u, 'authenticated', format('select public.revoke_price_agreement(%L, ''Withdrawn again (T27)'') as v', v_succ));
+  perform pg_temp.chk('R5 revoking a future agreement that REPLACES nothing creates no continuation (only a replacement has a predecessor to continue)',
+    (select count(*) from public.customer_price_agreements where customer_id = v_b and product_id = 'p27-c') = v_n, v_n::text);
+  -- the authorization of the revoke is unchanged
+  perform pg_temp.chk('R6 an Officer or a customer still cannot revoke (42501)', pg_temp.denied(pg_temp.q(off_u, 'authenticated', format('select public.revoke_price_agreement(%L, ''Trying to revoke a price (T27)'') as v', v_id)))
+    and pg_temp.denied(pg_temp.q(ca, 'authenticated', format('select public.revoke_price_agreement(%L, ''Trying to revoke a price (T27)'') as v', v_id))));
+
   -- ---------------------------------------------------------------- E. changes apply to the future only
   select coalesce((x ->> 'revenue_generated')::numeric, 0) into v_rev0 from jsonb_array_elements(pg_temp.q(sa_u, 'authenticated', 'select * from public.financial_summary')::jsonb) x limit 1;
   v_o := pg_temp.jv(pg_temp.co(mgr_u, v_a, jsonb_build_array(jsonb_build_object('productId', 'p27-c', 'quantity', 4)))) #>> '{}';
@@ -252,6 +287,66 @@ begin
     not pg_temp.err(t) and (pg_temp.jv(t) ->> 'source') = 'agreement' and (pg_temp.jv(t) ->> 'price')::numeric = 6 and (pg_temp.jv(t) ->> 'listPrice')::numeric = 10 and pg_temp.banned(pg_temp.jv(t)) is null and not (pg_temp.jv(t) ? 'agreementId')
     and (pg_temp.jv(pg_temp.q(off_u, 'authenticated', 'select public.resolve_order_price(''cust-t27-s'', ''p27-b'', null) as v')) ->> 'source') = 'list'
     and pg_temp.err(pg_temp.q(ca, 'authenticated', format('select public.resolve_order_price(%L, ''p27-a'', null) as v', v_a))) and pg_temp.denied(pg_temp.q(null, 'anon', 'select public.resolve_order_price(''x'', ''p27-a'', null) as v')), t);
+  -- ---------------------------------------------------------------- I. request conversion goes through the same pricing rules; M4. no cost information for staff who cannot see cost
+  insert into public.user_permissions (user_id, permission_code) values ('u-t27-mgr', 'view_website_requests'), ('u-t27-mgr', 'view_all_website_requests'), ('u-t27-mgr', 'convert_website_requests'), ('u-t27-mgr', 'view_all_customers'), ('u-t27-mgr', 'view_customers')
+    on conflict do nothing;
+  insert into public.order_requests (id, customer_name, phone, product_id, product_name, quantity, delivery_location, status) values
+    ('e2700000-0000-4000-8000-000000000001', 'T27 Req 1', '069 827 7001', 'p27-a', 'T27 Ball A', 2, 'Hodan', 'new'),
+    ('e2700000-0000-4000-8000-000000000002', 'T27 Req 2', '069 827 7002', 'p27-b', 'T27 Ball B', 1, 'Hodan', 'new'),
+    ('e2700000-0000-4000-8000-000000000003', 'T27 Req 3', '069 827 7003', 'p27-e', 'T27 Ball E', 1, 'Hodan', 'new');
+  alter table public.order_requests disable trigger user;
+  insert into public.order_requests (id, customer_name, phone, product_id, product_name, quantity, delivery_location, status)
+  select ('e27000' || lpad(n::text, 2, '0') || '-0000-4000-8000-000000000009')::uuid, 'T27 Web ' || n, '069 827 78' || lpad(n::text, 2, '0'), 'p27-a', 'T27 Ball A', 2, 'Hodan', 'confirmed' from generate_series(1, 6) n;
+  alter table public.order_requests enable trigger user;
+  -- convert_order_request is the legacy path: it is NOT granted to any client role on this schema. It is tested here with a grant that exists only inside this rolled-back transaction.
+  perform pg_temp.chk('I0 convert_order_request is not callable by any client role (a legacy path); only convert_website_request is exposed', not has_function_privilege('authenticated', 'public.convert_order_request(uuid, text)', 'execute') and not has_function_privilege('anon', 'public.convert_order_request(uuid, text)', 'execute') and has_function_privilege('authenticated', 'public.convert_website_request(uuid, jsonb)', 'execute'));
+  grant execute on function public.convert_order_request(uuid, text) to authenticated;
+  -- convert_order_request: no price is sent, so the agreed (else list) price applies
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.convert_order_request(%L, %L) as v', 'e2700000-0000-4000-8000-000000000001', v_a)); v_o := pg_temp.jv(t) #>> '{}';
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.convert_order_request(%L, %L) as v', 'e2700000-0000-4000-8000-000000000002', 'cust-t27-s')); v_o2 := pg_temp.jv(t) #>> '{}';
+  perform pg_temp.chk('I1 convert_order_request: for a customer with an agreement the order gets the agreed price (7.00, list 10.00) with an "agreement" resolution; for a customer without one the list price exactly as before (20.00); both requests are marked converted',
+    v_o is not null and pg_temp.line(v_o) = '10.00:7.00:2' and (select source from public.order_price_resolutions where order_id = v_o) = 'agreement'
+    and v_o2 is not null and pg_temp.line(v_o2) = '20.00:20.00:1' and (select source from public.order_price_resolutions where order_id = v_o2) = 'list'
+    and (select count(*) from public.order_requests where status = 'converted' and converted_order_id in (v_o, v_o2)) = 2, coalesce(v_o, '') || coalesce(v_o2, ''));
+  -- convert_website_request
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.convert_website_request(%L, %L::jsonb) as v', 'e2700001-0000-4000-8000-000000000009', jsonb_build_object('customerId', v_a, 'lines', jsonb_build_array(jsonb_build_object('productId', 'p27-a', 'quantity', 2, 'actualUnitPrice', 7.00)))::text));
+  v_o := pg_temp.jv(t) #>> '{}';
+  perform pg_temp.chk('I2 convert_website_request: confirming exactly the agreed price needs no reason', v_o is not null and pg_temp.line(v_o) = '10.00:7.00:2' and (select source from public.order_price_resolutions where order_id = v_o) = 'agreement', t);
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.convert_website_request(%L, %L::jsonb) as v', 'e2700002-0000-4000-8000-000000000009', jsonb_build_object('customerId', v_a, 'lines', jsonb_build_array(jsonb_build_object('productId', 'p27-a', 'quantity', 2, 'actualUnitPrice', 9.00)))::text));
+  perform pg_temp.chk('I3 a different confirmed price for a customer with an agreement is refused WITHOUT a reason (22023, the message names priceOverrideReason); the request stays confirmed and no order was created',
+    pg_temp.err(t) and pg_temp.code(t) = '22023' and pg_temp.msg(t) like '%priceOverrideReason%'
+    and (select status::text from public.order_requests where id = 'e2700002-0000-4000-8000-000000000009') = 'confirmed' and (select converted_order_id from public.order_requests where id = 'e2700002-0000-4000-8000-000000000009') is null, t);
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.convert_website_request(%L, %L::jsonb) as v', 'e2700002-0000-4000-8000-000000000009', jsonb_build_object('customerId', v_a, 'priceOverrideReason', 'Customer confirmed 9.00 by phone, owner agreed', 'lines', jsonb_build_array(jsonb_build_object('productId', 'p27-a', 'quantity', 2, 'actualUnitPrice', 9.00)))::text));
+  v_o := pg_temp.jv(t) #>> '{}';
+  perform pg_temp.chk('I4 with priceOverrideReason in the payload the conversion succeeds, the line is recorded as a staff override and the audit log has the warning',
+    not pg_temp.err(t) and pg_temp.line(v_o) = '10.00:9.00:2' and (select source from public.order_price_resolutions where order_id = v_o) = 'staff_override'
+    and exists (select 1 from public.system_logs l where l.target_id = v_o and l.metadata ->> 'event' = 'agreed_price_overridden' and l.metadata ->> 'reason' like '%owner agreed%'), t);
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.convert_website_request(%L, %L::jsonb) as v', 'e2700003-0000-4000-8000-000000000009', jsonb_build_object('customerId', 'cust-t27-s', 'lines', jsonb_build_array(jsonb_build_object('productId', 'p27-a', 'quantity', 2, 'actualUnitPrice', 9.00)))::text));
+  v_o := pg_temp.jv(t) #>> '{}';
+  perform pg_temp.chk('I5 for a customer without an agreement the confirmed price is accepted exactly as before (9.00, no reason needed), recorded with the "list" rule', not pg_temp.err(t) and pg_temp.line(v_o) = '10.00:9.00:2' and (select source from public.order_price_resolutions where order_id = v_o) = 'list', t);
+  -- review state: cust-t27-s has a pending (unverified) agreement for p27-e
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.convert_order_request(%L, %L) as v', 'e2700000-0000-4000-8000-000000000003', 'cust-t27-s'));
+  perform pg_temp.chk('I6 a line whose price is waiting for confirmation (pending agreement) blocks BOTH conversions (22023, "needs to be confirmed"); the requests stay unconverted and no order exists',
+    pg_temp.err(t) and pg_temp.code(t) = '22023' and pg_temp.msg(t) like '%needs to be confirmed%'
+    and (select status::text from public.order_requests where id = 'e2700000-0000-4000-8000-000000000003') = 'new'
+    and pg_temp.err(pg_temp.q(mgr_u, 'authenticated', format('select public.convert_website_request(%L, %L::jsonb) as v', 'e2700004-0000-4000-8000-000000000009', jsonb_build_object('customerId', 'cust-t27-s', 'lines', jsonb_build_array(jsonb_build_object('productId', 'p27-e', 'quantity', 1, 'actualUnitPrice', 12.00)))::text)))
+    and (select status::text from public.order_requests where id = 'e2700004-0000-4000-8000-000000000009') = 'confirmed'
+    and not exists (select 1 from public.order_items i join public.orders o on o.id = i.order_id where o.customer_id = 'cust-t27-s' and i.product_id = 'p27-e'), t);
+  perform pg_temp.chk('I7 the conversions keep their authorization: an Officer without convert_website_requests is refused (42501) and a customer-app user cannot call either',
+    pg_temp.denied(pg_temp.q(off_u, 'authenticated', format('select public.convert_website_request(%L, ''{}''::jsonb) as v', 'e2700005-0000-4000-8000-000000000009')))
+    and pg_temp.err(pg_temp.q(ca, 'authenticated', format('select public.convert_order_request(%L, %L) as v', 'e2700000-0000-4000-8000-000000000003', v_a))));
+  -- M4: a price that became below cost and was never approved: staff who cannot see cost learn nothing about cost
+  t := pg_temp.q(mgr_u, 'authenticated', format('select public.create_price_agreement(%L, ''p27-b'', null, 15.00, %L, null, ''Agreed before the cost rose (T27)'') as v', 'cust-t27-s', v_today)); v_ag3 := (pg_temp.jv(t) #>> '{}')::uuid;
+  update public.products set cost_price = 16.00 where id = 'p27-b';
+  t := pg_temp.co(off_u, 'cust-t27-s', jsonb_build_array(jsonb_build_object('productId', 'p27-b', 'quantity', 1)));
+  j := pg_temp.jv(pg_temp.q(off_u, 'authenticated', 'select public.resolve_order_price(''cust-t27-s'', ''p27-b'', null) as v'));
+  perform pg_temp.chk('M4a the order error and resolve_order_price for an Officer without cost permissions say the price needs review, and neither contains the word "cost" or any cost figure',
+    pg_temp.err(t) and pg_temp.code(t) = '22023' and pg_temp.msg(t) not ilike '%cost%' and pg_temp.msg(t) not like '%16%' and (j ->> 'source') = 'review' and (j ->> 'reason') not ilike '%cost%' and pg_temp.banned(j) is null, t || ' ' || j::text);
+  perform pg_temp.chk('M4b the order stays blocked (no bypass, even for a Super Admin) and the pricing administrators still see the problem on the Customer Prices list (belowCurrentCost)',
+    pg_temp.err(pg_temp.co(sa_u, 'cust-t27-s', jsonb_build_array(jsonb_build_object('productId', 'p27-b', 'quantity', 1)))) and pg_temp.err(pg_temp.co(sa_u, 'cust-t27-s', jsonb_build_array(jsonb_build_object('productId', 'p27-b', 'quantity', 1, 'actualUnitPrice', 15.00)), jsonb_build_object('belowCostReason', 'Trying to bypass the review (T27)')))
+    and exists (select 1 from jsonb_array_elements(pg_temp.jv(pg_temp.q(mgr_u, 'authenticated', 'select public.list_price_agreements(''cust-t27-s'') as v'))) e where (e ->> 'belowCurrentCost')::boolean and not (e ->> 'belowCostApproved')::boolean));
+  update public.products set cost_price = 12.00 where id = 'p27-b';
+
   -- ---------------------------------------------------------------- G. the customer app is unchanged by the new policy
   perform pg_temp.chk('G1 the app still prices from the server alone: a client price in the cart is ignored (A: Red 6.00 whatever is sent)',
     (pg_temp.jv(pg_temp.preview(ca, jsonb_build_array(jsonb_build_object('productId', 'p27-a', 'designId', dA1, 'quantity', 1, 'unitPrice', 0.01, 'price', 0.01)))) -> 'lines' -> 0 ->> 'unitPrice')::numeric = 6);

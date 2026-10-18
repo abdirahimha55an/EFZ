@@ -13,11 +13,17 @@
 --      unapproved below cost) blocks the line instead of silently using the list price. Customers without an agreement behave exactly as before.
 --   3b. replace_price_agreement: a change that starts in the future leaves the current price in force until the day before it starts (the old agreement is end-dated, not
 --      revoked), so a customer is never dropped to the list price in between. A change that starts today or earlier replaces it at once, as before.
+--   3c. revoke_price_agreement: revoking a replacement that has NOT started yet continues the predecessor's terms with a new, audited agreement (an end date can never be
+--      extended), so the customer never silently falls to the list price. The expiry notices skip an agreement whose successor takes over.
+--   3d. The resolver's 'review' reason no longer says the price is below cost (staff without cost permission see it in create_order / resolve_order_price). Pending,
+--      conflicting and unapproved-below-cost lines stay BLOCKED for staff orders: there is no bypass; the path is Customer Prices (verify, reject or approve).
+--   3e. convert_website_request passes priceOverrideReason through to create_order; convert_order_request sends no price, so the agreed (else list) price applies.
+--   Precondition: the stored text of create_order and convert_website_request must match the definitions this file was written against (see the DO block below).
 --   4. Every audit event of an agreement now also carries the agreement's price, product and design at that moment (with the previous price on a change).
 -- Existing orders, invoices, payments and revenue are never touched; prices apply prospectively only.
 -- Adds: price_agreement_notices (insert-only), _price_expiry_notices, price_daily_run (service role), run_price_checks (pricing admins), resolve_order_price (the Hub
 -- order form asks it what price create_order will apply).
--- Redefines: create_order, replace_price_agreement, _price_event, customer_catalog (now volatile: it records the notices). Widens order_price_resolutions.source with 'staff_override'.
+-- Redefines: create_order, convert_website_request, replace_price_agreement, revoke_price_agreement, _price_resolve, _price_event, customer_catalog (now volatile: it records the notices). Widens order_price_resolutions.source with 'staff_override'.
 -- Rollback: rollback/27_price_policy_no_expiry_rollback.sql (run it BEFORE the migration 26 rollback).
 -- =============================================================================
 
@@ -29,6 +35,15 @@ do $pre$
 begin
   if to_regclass('public.customer_price_agreements') is null or to_regprocedure('public._price_resolve(text, text, uuid, date)') is null or to_regclass('public.customer_notifications') is null then
     raise exception 'migration 26 (and 25) must be applied first';
+  end if;
+  -- The migration replaces create_order and convert_website_request. It refuses to overwrite a definition it was not written against: the CR-stripped md5 of the stored
+  -- definition must be the expected PRE-27 text (first application) or this migration's own text (safe retry). The expected values below were taken from a restore of the
+  -- Staging backup 20261017-165739Z, NOT from the live Staging database; compare them with supabase/checks/27_preflight_live_definitions.sql run read-only on Staging first.
+  if md5(replace(pg_get_functiondef('public.create_order(jsonb)'::regprocedure), chr(13), '')) not in ('bad8d28eac60a8243e6bba614f6191a1', '265e9745acb9418787e6d8cebfb450af') then
+    raise exception 'create_order is not the definition migration 27 was written against; refusing to replace it (compare supabase/checks/27_preflight_live_definitions.sql)';
+  end if;
+  if md5(replace(pg_get_functiondef('public.convert_website_request(uuid, jsonb)'::regprocedure), chr(13), '')) not in ('bc32b50df6f50e37e6759086a1f6dd1c', 'fe992c8ab3edc37522d08e3e6eb41c9c') then
+    raise exception 'convert_website_request is not the definition migration 27 was written against; refusing to replace it (compare supabase/checks/27_preflight_live_definitions.sql)';
   end if;
 end
 $pre$;
@@ -64,6 +79,9 @@ begin
      where g.status = 'active' and g.effective_to is not null and g.effective_from <= v_today
        and g.effective_to between v_today - 30 and v_today + 30
        and (p_customer is null or g.customer_id = p_customer)
+       -- a successor agreement for the same customer, product and design that starts the day after (or earlier) and runs beyond this end date takes over: no "your price ends" notice
+       and not exists (select 1 from public.customer_price_agreements s where s.id <> g.id and s.customer_id = g.customer_id and s.product_id = g.product_id and s.design_id is not distinct from g.design_id
+                         and s.status = 'active' and s.effective_from <= g.effective_to + 1 and coalesce(s.effective_to, date 'infinity') > g.effective_to)
   loop
     v_stage := case when r.effective_to < v_today then 'expired' when r.effective_to - v_today <= 7 then 'expiry_7' else 'expiry_30' end;
     insert into public.price_agreement_notices (agreement_id, stage, customer_id) values (r.id, v_stage, r.customer_id) on conflict do nothing;
@@ -132,7 +150,7 @@ create or replace function public.replace_price_agreement(p_id uuid, p_unit_pric
 returns uuid
 language plpgsql volatile security definer set search_path = public
 as $fn$
-declare g public.customer_price_agreements%rowtype; v_below boolean; v_id uuid; v_today date := public.efz_today(); v_future boolean;
+declare g public.customer_price_agreements%rowtype; v_below boolean; v_id uuid; v_today date := public.efz_today(); v_future boolean; v_ended boolean := false;
 begin
   perform public._require_pricing_admin();
   select * into g from public.customer_price_agreements where id = p_id for update;
@@ -143,7 +161,7 @@ begin
   if v_future then
     if g.effective_to is null or g.effective_to >= p_effective_from then
       update public.customer_price_agreements set effective_to = p_effective_from - 1 where id = p_id;
-      perform public._price_event(p_id, g.customer_id, 'ended', jsonb_build_object('previousEnd', g.effective_to, 'newEnd', p_effective_from - 1, 'reason', 'Replaced from ' || p_effective_from || ' by a new price: ' || btrim(p_reason)));
+      v_ended := true;
     end if;
   else
     update public.customer_price_agreements set status = 'revoked', closed_by = public.current_profile_id(), closed_at = now(), closed_reason = 'Replaced by a new price: ' || btrim(p_reason) where id = p_id;
@@ -151,13 +169,85 @@ begin
   insert into public.customer_price_agreements (customer_id, product_id, design_id, unit_price, effective_from, effective_to, status, source, below_cost_approved, below_cost_reason, reason, created_by, verified_by, verified_at, verify_note)
   values (g.customer_id, g.product_id, g.design_id, p_unit_price, p_effective_from, p_effective_to, 'active', 'manual', v_below, case when v_below then btrim(p_below_cost_reason) end, btrim(p_reason),
           public.current_profile_id(), public.current_profile_id(), now(), 'Replaces agreement ' || p_id) returning id into v_id;
-  if not v_future then
+  if v_ended then
+    perform public._price_event(p_id, g.customer_id, 'ended', jsonb_build_object('previousEnd', g.effective_to, 'newEnd', p_effective_from - 1, 'replacedBy', v_id, 'reason', 'Replaced from ' || p_effective_from || ' by a new price: ' || btrim(p_reason)));
+  elsif not v_future then
     perform public._price_event(p_id, g.customer_id, 'revoked', jsonb_build_object('reason', 'Replaced by a new price: ' || btrim(p_reason), 'replacedBy', v_id));
   end if;
   perform public._price_event(v_id, g.customer_id, 'created', jsonb_build_object('productId', g.product_id, 'designId', g.design_id, 'unitPrice', p_unit_price, 'previousPrice', g.unit_price, 'replaces', p_id, 'from', p_effective_from, 'to', p_effective_to, 'reason', btrim(p_reason), 'belowCost', v_below));
   return v_id;
 end;
 $fn$;
+
+-- 4c. Revoking a replacement that has not started continues the predecessor's price; the resolver's review reason no longer mentions cost
+create or replace function public.revoke_price_agreement(p_id uuid, p_reason text)
+returns void
+language plpgsql volatile security definer set search_path = public
+as $fn$
+declare g public.customer_price_agreements%rowtype; pred public.customer_price_agreements%rowtype; v_pred uuid; v_prev_end date; v_have boolean; v_cont uuid; v_today date := public.efz_today();
+begin
+  perform public._require_pricing_admin();
+  if p_reason is null or char_length(btrim(p_reason)) < 10 then raise exception 'Give a reason (at least 10 characters)' using errcode = '22023'; end if;
+  select * into g from public.customer_price_agreements where id = p_id for update;
+  if not found or g.status <> 'active' then raise exception 'Only an active agreement can be revoked' using errcode = '22023'; end if;
+  update public.customer_price_agreements set status = 'revoked', closed_by = public.current_profile_id(), closed_at = now(), closed_reason = btrim(p_reason) where id = p_id;
+  perform public._price_event(p_id, g.customer_id, 'revoked', jsonb_build_object('reason', btrim(p_reason)));
+  -- 27: revoking a replacement that has NOT started yet must not leave the customer without the price they had. Its predecessor was end-dated the day before the
+  -- replacement's start, and an end date can never be extended, so the predecessor's terms are CONTINUED by a new agreement (audited, nothing is discarded or rewritten).
+  if g.effective_from > v_today then
+    select (e.details ->> 'replaces')::uuid into v_pred from public.price_agreement_events e where e.agreement_id = p_id and e.kind = 'created' and e.details ? 'replaces' order by e.id limit 1;
+    if v_pred is not null then
+      select * into pred from public.customer_price_agreements where id = v_pred for update;
+      if found and pred.status = 'active' and pred.effective_to = g.effective_from - 1 then
+        select (e.details ->> 'previousEnd')::date into v_prev_end from public.price_agreement_events e
+         where e.agreement_id = v_pred and e.kind = 'ended' and e.details ->> 'replacedBy' = p_id::text order by e.id desc limit 1;
+        v_have := found;
+        if v_have then
+          insert into public.customer_price_agreements (customer_id, product_id, design_id, unit_price, effective_from, effective_to, status, source, below_cost_approved, below_cost_reason, reason, created_by, verified_by, verified_at, verify_note)
+          values (pred.customer_id, pred.product_id, pred.design_id, pred.unit_price, g.effective_from, v_prev_end, 'active', 'manual', pred.below_cost_approved, pred.below_cost_reason,
+                  'Continues agreement ' || pred.id || ' because the scheduled change ' || p_id || ' was revoked', public.current_profile_id(), public.current_profile_id(), now(), 'Reinstated: scheduled change ' || p_id || ' revoked')
+          returning id into v_cont;
+          perform public._price_event(v_cont, g.customer_id, 'created', jsonb_build_object('productId', pred.product_id, 'designId', pred.design_id, 'unitPrice', pred.unit_price, 'continues', pred.id,
+                  'from', g.effective_from, 'to', v_prev_end, 'reason', 'The scheduled change was revoked, so the previous price continues: ' || btrim(p_reason), 'belowCost', pred.below_cost_approved));
+        end if;
+      end if;
+    end if;
+  end if;
+end;
+$fn$;
+
+create or replace function public._price_resolve(p_customer_id text, p_product_id text, p_design_id uuid, p_on date)
+returns jsonb
+language plpgsql stable security definer set search_path = public
+as $fn$
+declare
+  v_on date := coalesce(p_on, public.efz_today()); p public.products%rowtype; scope integer; n_active integer; n_pending integer; a public.customer_price_agreements%rowtype;
+begin
+  select * into p from public.products where id = p_product_id;
+  if not found then return jsonb_build_object('source', 'none', 'price', null, 'listPrice', null, 'reason', 'unknown product'); end if;
+  -- most specific first: the design's own agreement, then the product-wide one
+  for scope in 1..2 loop
+    if scope = 1 and p_design_id is null then continue; end if;
+    select count(*) filter (where status = 'active'), count(*) filter (where status = 'pending_review') into n_active, n_pending
+      from public.customer_price_agreements g
+     where g.customer_id = p_customer_id and g.product_id = p_product_id and v_on between g.effective_from and coalesce(g.effective_to, date 'infinity')
+       and g.design_id is not distinct from (case when scope = 1 then p_design_id else null end) and g.status in ('active', 'pending_review');
+    if n_active > 1 then return jsonb_build_object('source', 'review', 'price', null, 'listPrice', p.selling_price, 'reason', 'conflicting agreements'); end if;
+    if n_active = 1 then
+      select * into a from public.customer_price_agreements g
+       where g.customer_id = p_customer_id and g.product_id = p_product_id and g.status = 'active' and v_on between g.effective_from and coalesce(g.effective_to, date 'infinity')
+         and g.design_id is not distinct from (case when scope = 1 then p_design_id else null end);
+      if a.unit_price < p.cost_price and not a.below_cost_approved then
+        return jsonb_build_object('source', 'review', 'price', null, 'listPrice', p.selling_price, 'reason', 'the agreed price needs an authorized review');
+      end if;
+      return jsonb_build_object('source', 'agreement', 'price', a.unit_price, 'listPrice', p.selling_price, 'agreementId', a.id);
+    end if;
+    if n_pending > 0 then return jsonb_build_object('source', 'review', 'price', null, 'listPrice', p.selling_price, 'reason', 'an agreement is waiting to be verified'); end if;
+  end loop;
+  return jsonb_build_object('source', 'list', 'price', p.selling_price, 'listPrice', p.selling_price);
+end;
+$fn$;
+revoke all on function public._price_resolve(text, text, uuid, date) from public, anon, authenticated;
 
 -- 5. The catalogue records the notices (a look is enough; no scheduler is needed for the customer to be told)
 create or replace function public.customer_catalog()
@@ -513,6 +603,158 @@ begin
     from public.orders o
    where o.id = v_order_id;
 
+  return v_order_id;
+end;
+$fn$;
+
+-- 7. Website-request conversion passes the price-override reason through to create_order (convert_order_request needs no change: it sends no price, so the agreed price applies)
+create or replace function public.convert_website_request(p_request_id uuid, p_payload jsonb)
+ RETURNS text
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $fn$
+declare
+  v_req         public.order_requests%rowtype;
+  v_actor       text := public.current_profile_id();
+  v_actor_name  text := coalesce(public.current_profile_name(), '');
+  v_label       text := 'REQ-' || upper(left(replace(p_request_id::text, '-', ''), 8));
+  v_lines       jsonb := p_payload -> 'lines';
+  v_new         jsonb := p_payload -> 'newCustomer';
+  v_customer_id text := nullif(btrim(coalesce(p_payload ->> 'customerId', '')), '');
+  v_owner_id    text;
+  v_owner       public.profiles%rowtype;
+  v_items       jsonb := '[]'::jsonb;
+  v_line        jsonb;
+  v_name        text;
+  v_phone_raw   text;
+  v_canon       text;
+  v_stored      text;
+  v_new_cust    boolean := false;
+  v_order_id    text;
+begin
+  select * into v_req from public.order_requests where id = p_request_id for update;
+  if not found or not public.can_access_order_request(v_req.assigned_to) then
+    raise exception 'Permission denied or unknown website request' using errcode = '42501';
+  end if;
+
+  if not public.has_permission('convert_website_requests') then   -- 19
+    raise exception 'Permission denied: convert_website_requests is required' using errcode = '42501';
+  end if;
+
+  if v_req.status = 'converted' then
+    raise exception 'Website request % was already converted to order %', v_label, v_req.converted_order_id
+      using errcode = 'WR409';
+  end if;
+  if v_req.status <> 'confirmed' then
+    raise exception 'Only a confirmed request can be converted (this one is %)', v_req.status using errcode = 'WR409';
+  end if;
+
+  if jsonb_typeof(v_lines) is distinct from 'array' or jsonb_array_length(v_lines) not between 1 and 20 then
+    raise exception 'A conversion needs between 1 and 20 lines' using errcode = '22023';
+  end if;
+  for v_line in select * from jsonb_array_elements(v_lines)
+  loop
+    if nullif(v_line ->> 'productId', '') is null or (v_line -> 'actualUnitPrice') is null
+       or jsonb_typeof(v_line -> 'actualUnitPrice') <> 'number' then
+      raise exception 'Every line needs a product and a confirmed unit price' using errcode = '22023';
+    end if;
+    v_items := v_items || jsonb_build_array(jsonb_build_object(
+                 'productId', v_line ->> 'productId',
+                 'quantity', v_line -> 'quantity',
+                 'actualUnitPrice', v_line -> 'actualUnitPrice'));
+  end loop;
+
+  if (v_customer_id is null) = (v_new is null or jsonb_typeof(v_new) <> 'object') then
+    raise exception 'Choose an existing customer or a new one' using errcode = '22023';
+  end if;
+
+  if v_customer_id is not null then
+    if nullif(btrim(coalesce(p_payload ->> 'ownerOfficerId', v_new ->> 'ownerOfficerId', '')), '') is not null then
+      raise exception 'An existing customer keeps its owner; ownership changes only with a customer transfer'
+        using errcode = '22023';
+    end if;
+  else
+    v_new_cust := true;
+    if not public.has_permission('add_customers') then
+      raise exception 'Permission denied: add_customers is required to create a customer' using errcode = '42501';
+    end if;
+    v_name := btrim(coalesce(v_new ->> 'name', ''));
+    if char_length(v_name) not between 1 and 200 then
+      raise exception 'The new customer needs a name (up to 200 characters)' using errcode = '22023';
+    end if;
+    v_phone_raw := btrim(coalesce(v_new ->> 'phone', ''));
+    v_canon := public.validate_request_phone(v_phone_raw);
+
+    if exists (select 1 from public.customers c where public.customer_phone_canonical(c.phone) = v_canon)
+       and coalesce((p_payload ->> 'confirmNoDuplicate')::boolean, false) is not true then
+      raise exception 'A customer with this phone already exists: pick it, or confirm a separate customer'
+        using errcode = 'WR410';
+    end if;
+
+    v_owner_id := nullif(btrim(coalesce(v_new ->> 'ownerOfficerId', '')), '');
+    if v_owner_id is not null then
+      if not public.has_permission('assign_website_requests') then   -- 19: a supervisory capability
+        raise exception 'Permission denied: only a request assigner can set the initial owner' using errcode = '42501';
+      end if;
+      select * into v_owner from public.profiles where id = v_owner_id;
+      if not found or v_owner.role <> 'Marketing Officer' or v_owner.status <> 'active' then
+        raise exception 'The initial owner must be an active Marketing Officer' using errcode = '22023';
+      end if;
+    end if;
+
+    -- Stored in the existing customer convention: 9-digit national number for Somali.
+    v_stored := case when v_canon like '+252%' then substr(v_canon, 5) else v_canon end;
+    v_customer_id := 'cust-' || replace(gen_random_uuid()::text, '-', '');
+
+    insert into public.customers (id, name, email, phone, notes, marketing_officer_id, registered_by, status)
+    values (v_customer_id, v_name, btrim(coalesce(v_new ->> 'email', '')), v_stored,
+            btrim(coalesce(v_new ->> 'notes', '')), v_owner_id, v_actor, 'active');
+
+    if v_owner_id is not null then
+      insert into public.customer_ownership_changes (customer_id, customer_name, old_officer_id, old_officer_name,
+                                                     new_officer_id, new_officer_name, reason, orders_moved,
+                                                     changed_by, changed_by_name)
+      values (v_customer_id, v_name, null, '', v_owner_id, v_owner.name,
+              'Initial owner set at website-request conversion', '{}', v_actor, v_actor_name);
+
+      insert into public.system_logs (id, severity, category, message, user_id, username, target_id, metadata)
+      values ('log-' || replace(gen_random_uuid()::text, '-', ''), 'INFO', 'CUSTOMER',
+              format('Customer %s created from %s and assigned to %s', v_customer_id, v_label, v_owner.name),
+              v_actor, v_actor_name, v_customer_id,
+              jsonb_build_object('source', 'db', 'event', 'website_request_initial_owner', 'requestId', p_request_id,
+                                 'customerId', v_customer_id, 'officerId', v_owner_id));
+    end if;
+  end if;
+
+  -- The only path to orders: the unchanged create_order() with all its rules.
+  v_order_id := public.create_order(jsonb_build_object(
+    'customerId',      v_customer_id,
+    'deliveryNotes',   btrim(coalesce(p_payload ->> 'deliveryNotes', '')),
+    'belowCostReason', p_payload ->> 'belowCostReason',
+    'priceOverrideReason', p_payload ->> 'priceOverrideReason',   -- 27: the reason create_order needs when the confirmed price differs from an agreed price
+    'items',           v_items));
+
+  update public.order_requests
+     set status             = 'converted',
+         converted_order_id = v_order_id,
+         handled_by         = v_actor,
+         status_changed_at  = now(),
+         updated_at         = now()
+   where id = p_request_id;
+
+  insert into public.order_request_events (request_id, event, from_status, to_status, actor_id, actor_name, order_id, details)
+  values (p_request_id, 'converted', 'confirmed', 'converted', v_actor, v_actor_name, v_order_id,
+          jsonb_build_object('customerId', v_customer_id, 'newCustomer', v_new_cust,
+                             'ownerOfficerId', v_owner_id, 'lines', v_items));
+
+  insert into public.system_logs (id, severity, category, message, user_id, username, target_id, metadata)
+  values ('log-' || replace(gen_random_uuid()::text, '-', ''), 'INFO', 'ORDER',
+          format('Website request %s converted to order %s (%s customer)', v_label, v_order_id,
+                 case when v_new_cust then 'new' else 'existing' end),
+          v_actor, v_actor_name, p_request_id::text,
+          jsonb_build_object('source', 'db', 'event', 'website_request_converted', 'requestId', p_request_id,
+                             'orderId', v_order_id, 'customerId', v_customer_id, 'newCustomer', v_new_cust));
   return v_order_id;
 end;
 $fn$;

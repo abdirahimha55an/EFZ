@@ -331,6 +331,8 @@ export type ConvertRequestInput = {
   lines: { productId: string; quantity: number; actualUnitPrice: number }[];
   deliveryNotes?: string;
   belowCostReason?: string;
+  /** Needed (10+ characters) when a confirmed price differs from the customer's agreed price (migration 27). */
+  priceOverrideReason?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -1421,6 +1423,7 @@ export function createDb(client: EfzSupabaseClient) {
           lines: input.lines,
           deliveryNotes: input.deliveryNotes ?? "",
           ...(input.belowCostReason ? { belowCostReason: input.belowCostReason } : {}),
+          ...(input.priceOverrideReason ? { priceOverrideReason: input.priceOverrideReason } : {}),
         } as unknown as Json,
       });
       if (error) throw new EfzDbError("orderRequests.convert", error);

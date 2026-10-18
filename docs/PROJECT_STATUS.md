@@ -262,6 +262,34 @@ Open-ended agreements stay in force (nothing expires them); customers are notifi
 ### Still true
 Nothing is applied to Staging or Production; the scheduler is not operational (customers are still told when they open the catalogue); no native Android device or emulator run; credit stays disabled; EVC Plus and eDahab stay unavailable. Remaining owner decisions are in `CUSTOMER_PRICING.md` and `CREDIT_POLICY.md`. Applying M25 + M26 + M27 to Staging follows `docs/STAGING_RUNBOOK.md` and needs separate authorization.
 
+## Milestone 9 (2026-10-18): fixes from the independent Migration 27 review (local only)
+
+Nothing is applied to Staging or Production; nothing pushed, merged, deployed or imported; credit and payment methods unchanged. See `docs/MIGRATION_27.md` ("Review fixes") and `docs/STAGING_RUNBOOK.md`.
+
+| Review finding | Status |
+|---|---|
+| H1 definition fingerprint | **Implemented but NOT closed**: M27 refuses to replace `create_order` / `convert_website_request` unless their stored text matches the expected pre-27 (or its own) md5. The expected values come from the restore of backup 20261017-165739Z, **not from live Staging**. Closing H1 needs `supabase/checks/27_preflight_live_definitions.sql` to be run on live Staging (secure read-only procedure) and match. |
+| H2 rollback guards | Fixed: 26 refuses while 27 is applied; 25 refuses while 26/27 are; 27 refuses if 26 is missing |
+| H3 conversions | Fixed and tested: `convert_website_request` passes `priceOverrideReason`; `convert_order_request` (legacy, not granted to any client role) gets the agreed price and blocks review-state lines |
+| M1 | Fixed: revoking an unstarted replacement continues the predecessor with an audited new agreement |
+| M2 | Fixed: no "price ends" notice when a successor takes over |
+| M3 | Unchanged by design; documented with the authorized resolution path |
+| M4 | Fixed: the resolver's review reason no longer mentions cost |
+| M5, M6 | Runbook updated (Hub sequencing, guarded window and locks, fingerprints, stop conditions, rollback order 27, 26, 25) |
+
+### Results (local disposable PostgreSQL clones unless stated)
+| Check | Result |
+|---|---|
+| Suites on M25+M26+M27: M21 / M22 / M23 / M25 / M26 / **M27** / exposure | 81 / 33 / 97 / 135 / 63 / **55** / 19, 0 failures |
+| Concurrency M25 / M26 / **M27** | 13 / 11 / **12**, all pass (new: two managers revoke one scheduled change while a customer browses: one revocation, one continuation, the price never moves) |
+| M27 mutation test | **33 of 33 caught** (6 new mutants for the fixes) |
+| `27_precondition_check.sh` | clean apply, retry, drifted `create_order` refused, drifted `convert_website_request` refused (nothing applied each time) |
+| `27_rollback_chain_check.sh` on two data-rich clones | 26 and 25 rollbacks refuse out of order and change nothing; 27, 26, 25 succeed in order; orders, lines, payments, terms and credit orders identical at every step; all function definitions equal Migration 24 (carriage returns ignored) |
+| Hub | `tsc` clean, 37/37 unit tests, `next build --webpack` OK, ESLint errors unchanged (9, all in untouched files); browser test not re-run (the only Hub change is one optional field in the conversion call) |
+| Edge function tests | 43 of 43 |
+
+Remaining blockers: **H1 is open** until the live Staging definitions are compared (needs your secure read-only procedure); nothing may be applied to Staging without separate authorization.
+
 ## How to run the checks
 
 ```bash
