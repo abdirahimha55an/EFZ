@@ -274,6 +274,7 @@ begin
   t := pg_temp.q(mgr_u, 'authenticated', format('select public.verify_price_agreement(%L, 7.50, %L, null, ''Customer says 7.50, owner confirmed by phone (T26)'') as v', v_cand1, v_today - 60));
   perform pg_temp.chk('E9 verifying may CORRECT the price (7.50 instead of the historical 7.00): the confirmed price is what applies, and the event keeps both', not pg_temp.err(t) and (pg_temp.jv(pg_temp.q(mgr_u, 'authenticated', format('select public.resolve_customer_price(%L, ''p26-a'', %L) as v', 'cust-t26-c', dA1))) ->> 'price')::numeric = 7.5
     and exists (select 1 from public.price_agreement_events where agreement_id = v_cand1 and kind = 'verified' and (details ->> 'candidatePrice')::numeric = 7 and (details ->> 'confirmedPrice')::numeric = 7.5 and (details ->> 'changed') = 'true'), t);
+  perform pg_temp.chk('E10a rejecting a candidate needs a reason of at least 10 characters', pg_temp.err(pg_temp.q(mgr_u, 'authenticated', format('select public.reject_price_agreement(%L, ''no'') as v', v_cand2))) and (select status from public.customer_price_agreements where id = v_cand2) = 'pending_review');
   t := pg_temp.q(mgr_u, 'authenticated', format('select public.reject_price_agreement(%L, ''The owner says this was a one-off discount (T26)'') as v', v_cand2));
   perform pg_temp.chk('E10 rejecting a candidate closes it with a reason, and the customer then pays the list price for that product (an explicit decision, recorded); a rejected agreement cannot be revived',
     not pg_temp.err(t) and (select status from public.customer_price_agreements where id = v_cand2) = 'rejected' and (pg_temp.jv(pg_temp.q(mgr_u, 'authenticated', format('select public.resolve_customer_price(%L, ''p26-b'', null) as v', 'cust-t26-c'))) ->> 'source') = 'list'
@@ -305,6 +306,7 @@ begin
     and (select count(*) from public.price_agreement_events where customer_id = v_a and kind = 'revoked') = 3 and exists (select 1 from public.system_logs where metadata ->> 'event' = 'price_agreement_revoked' and target_id = v_a)
     and jsonb_array_length(pg_temp.jv(pg_temp.q(mgr_u, 'authenticated', format('select public.price_agreement_history(%L) as v', v_a)))) >= 8);
   begin update public.customer_price_agreements set unit_price = 1 where id = (select id from public.customer_price_agreements where customer_id = v_b and product_id = 'p26-c' and status = 'active'); perform pg_temp.chk('F5a an active agreement''s price cannot be rewritten', false); exception when others then perform pg_temp.chk('F5a an active agreement''s price cannot be rewritten', sqlstate = '42501'); end;
+  begin update public.customer_price_agreements set effective_to = v_today + 30 where id = v_ag2; perform pg_temp.chk('F5f the database itself refuses to push an agreement''s end date later (an agreement can be shortened, never extended)', false); exception when others then perform pg_temp.chk('F5f the database itself refuses to push an agreement''s end date later (an agreement can be shortened, never extended)', sqlstate = '42501'); end;
   begin update public.customer_price_agreements set status = 'active' where id = v_ag; perform pg_temp.chk('F5b a revoked agreement cannot be reopened', false); exception when others then perform pg_temp.chk('F5b a revoked agreement cannot be reopened', sqlstate = '42501'); end;
   begin update public.customer_price_agreements set customer_id = v_a where id = v_ag2; perform pg_temp.chk('F5c an agreement cannot be moved to another customer', false); exception when others then perform pg_temp.chk('F5c an agreement cannot be moved to another customer', sqlstate = '42501'); end;
   begin delete from public.customer_price_agreements where id = v_ag2; perform pg_temp.chk('F5d an agreement cannot be deleted', false); exception when others then perform pg_temp.chk('F5d an agreement cannot be deleted', sqlstate = '42501'); end;
@@ -316,12 +318,37 @@ begin
         (pg_temp.preview(ca, jsonb_build_array(jsonb_build_object('productId', 'p26-a', 'designId', dA2, 'quantity', 1)))), (pg_temp.q(ca, 'authenticated', 'select public.my_price_agreements() as v')), (pg_temp.q(ca, 'authenticated', 'select public.my_orders() as v')),
         (pg_temp.q(ca, 'authenticated', 'select public.my_finance() as v')), (pg_temp.q(cb, 'authenticated', 'select * from public.customer_catalog()')), (pg_temp.q(cb, 'authenticated', 'select public.my_price_agreements() as v'))) x(body)
       where body !~ '"err"'));
+  perform pg_temp.chk('G1b with rows PRESENT in all three new tables, customers, Officers and anonymous callers still read NONE of them (not their own either) and cannot write',
+    (select count(*) from public.customer_price_agreements) > 0 and (select count(*) from public.price_agreement_events) > 0 and (select count(*) from public.order_price_resolutions) > 0
+    and (select bool_and(pg_temp.none(pg_temp.q(u, r, 'select 1 as v from public.' || tb))) from (values (ca, 'authenticated'), (cb, 'authenticated'), (off_u, 'authenticated'), (null::uuid, 'anon')) c(u, r), (values ('customer_price_agreements'), ('price_agreement_events'), ('order_price_resolutions')) x(tb))
+    and pg_temp.err(pg_temp.q(ca, 'authenticated', format('update public.customer_price_agreements set unit_price = 1 where customer_id = %L returning 1 as v', v_a))) and pg_temp.err(pg_temp.q(ca, 'authenticated', 'insert into public.order_price_resolutions (order_item_id, order_id, customer_id, product_id, source, list_price, applied_price) values (''x'', ''x'', ''x'', ''x'', ''list'', 1, 1) returning 1 as v')));
   perform pg_temp.chk('G2 customer B never receives customer A''s agreement: none of A''s agreement ids or A-only prices appear in anything B can call (catalogue, designs, my_price_agreements)',
     not exists (select 1 from public.customer_price_agreements g where g.customer_id = v_a and (pg_temp.q(cb, 'authenticated', 'select public.my_price_agreements() as v') like '%' || g.id::text || '%' or pg_temp.q(cb, 'authenticated', 'select * from public.customer_designs()') like '%' || g.id::text || '%'))
     and (pg_temp.desrow(cb, dA1) ->> 'price')::numeric = 10);
   perform pg_temp.chk('G3 the catalogue contract the app relies on is unchanged except for two added columns, and a customer without an approved account (signed in as a stranger) and anonymous callers get nothing',
     (select count(*) from jsonb_object_keys(pg_temp.catrow(ca, 'p26-a'))) = 13 and pg_temp.denied(pg_temp.q(cx, 'authenticated', 'select * from public.customer_catalog()')) and pg_temp.denied(pg_temp.q(null, 'anon', 'select * from public.customer_catalog()'))
     and pg_temp.denied(pg_temp.q(cx, 'authenticated', 'select public.my_price_agreements() as v')));
+
+  -- ---------------------------------------------------------------- I. credit orders use the same price decision
+  -- (a compact credit setup, inside this rolled-back transaction: the approved policy shape, a long-standing account, one completed purchase and enough sales history for the company cap)
+  update public.credit_policy set enabled = true, min_completed_purchases = 1, min_total_value = null, min_approved_days = 1, purchase_window_days = 90, initial_credit_limit = 1000, default_terms_days = 30, company_cap_percent = 100, cap_basis_months = 3, max_outstanding = null where id;
+  insert into public.customers (id, name, email, phone, notes, status) values ('cust-t26-h', 'T26 Sales History', 'h@example.test', '069 826 0099', 'sales history', 'active');
+  perform pg_temp.hist('H-X0', 'cust-t26-h', 200, 'p26-b', 'T26 Ball B', 1, 20, 20);
+  perform pg_temp.hist('H-X1', 'cust-t26-h', 70, 'p26-b', 'T26 Ball B', 50, 20, 20);
+  update public.orders set order_date = (date_trunc('month', v_today) - interval '2 month')::date + 5 where id = 'H-X1';
+  perform pg_temp.hist('H-AC', v_a, 20, 'p26-b', 'T26 Ball B', 1, 20, 20);
+  alter table public.customer_account_events disable trigger trg_customer_account_events_guard; update public.customer_account_events set created_at = now() - interval '100 days' where event = 'approved'; alter table public.customer_account_events enable trigger trg_customer_account_events_guard;
+  insert into public.payments (id, order_id, amount, payment_date, payment_method, reference, notes) values ('pay-t26-hac', 'H-AC', 20, v_today - 20, 'Cash', '', '');
+  t := pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 500, 30, ''Eligible, credit approved for the pricing test (T26)'') as v', v_a));
+  perform pg_temp.chk('I0 setup: customer A has an approved credit account (a completed purchase, long-standing approval, computable company cap)', not pg_temp.err(t) and (pg_temp.jv(pg_temp.q(ca, 'authenticated', 'select public.customer_credit_status() as v')) ->> 'canBuyOnCredit') = 'true', t);
+  t := pg_temp.q(ca, 'authenticated', format('select public.customer_place_credit_order(%L::jsonb) as v', jsonb_build_object('deliveryLocation', 'Hodan', 'submissionKey', 'f2600000-0000-4000-8000-000000000099', 'unitPrice', 0.01,
+        'lines', jsonb_build_array(jsonb_build_object('productId', 'p26-d', 'quantity', 2, 'unitPrice', 0.01)))::text));
+  v_order := pg_temp.jv(t) ->> 'orderId';
+  perform pg_temp.chk('I1 a CREDIT order is priced by the same decision, ignoring a price sent by the app: 2 x 12.00 (A''s agreement for ball D; list 15.00) = 24.00, the line keeps the list price as its standard price, and the resolution record names the agreement',
+    not pg_temp.err(t) and (select total from public.orders where id = v_order) = 24 and (select standard_unit_price || ':' || actual_unit_price from public.order_items where order_id = v_order) = '15.00:12.00'
+    and (select count(*) from public.order_price_resolutions r join public.customer_price_agreements g on g.id = r.agreement_id where r.order_id = v_order and r.applied_price = 12 and g.customer_id = v_a) = 1, t);
+  select count(*) into v_n from public.order_items where order_id = v_order;
+  perform pg_temp.chk('I2 the same credit cart for customer B (no agreement for ball D) would be priced at the list price: B''s preview shows 2 x 15.00 = 30.00', (pg_temp.jv(pg_temp.preview(cb, jsonb_build_array(jsonb_build_object('productId', 'p26-d', 'quantity', 2)))) ->> 'total')::numeric = 30);
 
   -- ---------------------------------------------------------------- H. staff ordering is unchanged
   t := pg_temp.q(mgr_u, 'authenticated', format('select public.create_order(%L::jsonb) as v', json_build_object('customerId', v_a, 'items', json_build_array(json_build_object('productId', 'p26-a', 'quantity', 1, 'actualUnitPrice', 9)))::text));
