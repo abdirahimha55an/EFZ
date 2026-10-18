@@ -96,11 +96,13 @@ declare
   cd uuid := 'c5000000-0000-4000-8000-00000000000d';      -- reminders, escalation, extension
   ce uuid := 'c5000000-0000-4000-8000-00000000000e';      -- disputes and void
   cf uuid := 'c5000000-0000-4000-8000-00000000000f';      -- duplicate customer record (same phone as C)
+  ch uuid := 'c5000000-0000-4000-8000-000000000011';      -- per-customer outstanding ceiling
+  ci uuid := 'c5000000-0000-4000-8000-000000000012';      -- override rules, suspension, policy switched off
   cg uuid := 'c5000000-0000-4000-8000-000000000010';      -- same phone as C, left pending (duplicate-phone approval check)
   cx uuid := 'c5000000-0000-4000-8000-0000000000fa';      -- signed in, not a customer
   acc record; t text; j jsonb; k int := 0; v_n int; v_n2 int; v_id uuid; v_id2 uuid; v_order text; v_o2 text; v_o3 text; v_d uuid;
   v_a text; v_b text; v_c text; v_dd text; v_e text; v_f text; v_today date := public.efz_today(); v_first date := date_trunc('month', public.efz_today())::date;
-  pol_before jsonb; cap jsonb; v_rev numeric; v_d2 uuid; v_av numeric; v_rem int; v_ntf int;
+  pol_before jsonb; cap jsonb; v_rev numeric; v_d2 uuid; v_h text; v_i text; v_av numeric; v_rem int; v_ntf int;
 begin
   -- ---------------------------------------------------------------- fixtures
   select to_jsonb(p) into pol_before from public.credit_policy p where p.id;
@@ -119,13 +121,13 @@ begin
     (cx, 'authenticated', 'authenticated', 't25-x@example.test', now(), '{"provider":"email"}', '{}', now(), now());
   insert into auth.users (id, aud, role, email, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
   select u, 'authenticated', 'authenticated', e, now(), '{"provider":"email","efz_kind":"customer"}', '{}', now(), now()
-    from (values (ca, 't25-a@example.test'), (cb, 't25-b@example.test'), (cc, 't25-c@example.test'), (cd, 't25-d@example.test'), (ce, 't25-e@example.test'), (cf, 't25-f@example.test'), (cg, 't25-g@example.test')) v(u, e);
+    from (values (ca, 't25-a@example.test'), (cb, 't25-b@example.test'), (cc, 't25-c@example.test'), (cd, 't25-d@example.test'), (ce, 't25-e@example.test'), (cf, 't25-f@example.test'), (cg, 't25-g@example.test'), (ch, 't25-h@example.test'), (ci, 't25-i@example.test')) v(u, e);
   insert into public.products (id, name, selling_price, cost_price, stock, is_active) values ('p25-plain', 'T25 Ball Plain', 10, 5, 1000000, true);
   for acc in select * from (values (ca, 't25-a@example.test', 'T25 Buyer A', '069 825 0001'), (cb, 't25-b@example.test', 'T25 Buyer B', '069 825 0002'), (cc, 't25-c@example.test', 'T25 Buyer C', '069 825 0003'),
-                                   (cd, 't25-d@example.test', 'T25 Buyer D', '069 825 0004'), (ce, 't25-e@example.test', 'T25 Buyer E', '069 825 0005'), (cf, 't25-f@example.test', 'T25 Buyer F', '069 825 0003'), (cg, 't25-g@example.test', 'T25 Buyer G', '069 825 0003')) v(u, e, n, ph) loop
+                                   (cd, 't25-d@example.test', 'T25 Buyer D', '069 825 0004'), (ce, 't25-e@example.test', 'T25 Buyer E', '069 825 0005'), (cf, 't25-f@example.test', 'T25 Buyer F', '069 825 0003'), (cg, 't25-g@example.test', 'T25 Buyer G', '069 825 0003'), (ch, 't25-h@example.test', 'T25 Buyer H', '069 825 0006'), (ci, 't25-i@example.test', 'T25 Buyer I', '069 825 0007')) v(u, e, n, ph) loop
     perform pg_temp.q(null, 'service_role', format('select public.register_customer_account(%L, %L, %L, %L, '''', null)', acc.u, acc.e, acc.n, acc.ph));
   end loop;
-  for acc in select id from public.customer_accounts where email in ('t25-a@example.test', 't25-b@example.test', 't25-c@example.test', 't25-d@example.test', 't25-e@example.test') loop
+  for acc in select id from public.customer_accounts where email in ('t25-a@example.test', 't25-b@example.test', 't25-c@example.test', 't25-d@example.test', 't25-e@example.test', 't25-h@example.test', 't25-i@example.test') loop
     perform pg_temp.q(mgr_u, 'authenticated', format('select public.approve_customer_account(%L, null, true, false, ''Verified by phone call (T25)'')', acc.id));
   end loop;
   select customer_id into v_a from public.customer_accounts where email = 't25-a@example.test';
@@ -133,6 +135,8 @@ begin
   select customer_id into v_c from public.customer_accounts where email = 't25-c@example.test';
   select customer_id into v_dd from public.customer_accounts where email = 't25-d@example.test';
   select customer_id into v_e from public.customer_accounts where email = 't25-e@example.test';
+  select customer_id into v_h from public.customer_accounts where email = 't25-h@example.test';
+  select customer_id into v_i from public.customer_accounts where email = 't25-i@example.test';
   -- a customer record that only carries the company's sales history (no app account)
   insert into public.customers (id, name, email, phone, notes, status) values ('cust-t25-hist', 'T25 History', 'hist@example.test', '069 825 9999', 'sales history fixture', 'active');
 
@@ -547,6 +551,60 @@ begin
     and exists (select 1 from public.system_logs where metadata ->> 'event' = 'credit_default_voided' and severity = 'WARNING'), t);
   perform pg_temp.chk('H12 voiding does not silently restore credit: the account is still revoked until a Super Admin approves it again, and a second void is refused',
     (select status from public.customer_credit_accounts where customer_id = v_e) = 'revoked' and pg_temp.err(pg_temp.q(sa_u, 'authenticated', format('select public.void_credit_default(%L, %L, ''Voiding it a second time'') as v', v_d2, v_id))));
+
+  -- ---------------------------------------------------------------- J. the optional per-customer ceiling on TOTAL outstanding (migration 24, kept)
+  perform pg_temp.age_approval(v_h, 70);
+  perform pg_temp.mkdone('ORD-T25-J1', v_h, 10); perform pg_temp.mkdone('ORD-T25-J2', v_h, 20); perform pg_temp.mkdone('ORD-T25-J3', v_h, 30);
+  perform pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 40, 30, ''Eligible, initial limit agreed (T25 H)'') as v', v_h));
+  perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(true, 3, null, true, 30, ''T25 test: a ceiling of 25 per customer'', 60, 25, true) as v');
+  j := pg_temp.cs(ch);
+  perform pg_temp.chk('J1 a per-customer ceiling of $25 caps the available credit below the $40 limit (available $25)', (j ->> 'canBuyOnCredit') = 'true' and (j -> 'account' ->> 'available') = '25.00' and (j -> 'account' ->> 'creditLimit') = '40.00', j::text);
+  t := pg_temp.place(ch, 3, pg_temp.key(80));
+  perform pg_temp.chk('J2 an order of $30 is refused although the limit is $40 (the ceiling is $25); nothing is created', pg_temp.err(t) and pg_temp.msg(t) like '%above your available credit ($25.00)%' and (select count(*) from public.orders where customer_id = v_h and payment_terms = 'credit') = 0, t);
+  t := pg_temp.place(ch, 2, pg_temp.key(81));
+  perform pg_temp.chk('J3 an order of $20 is accepted; $5 remain under the ceiling', not pg_temp.err(t) and (pg_temp.cs(ch) -> 'account' ->> 'available') = '5.00', t);
+  perform pg_temp.mkorder('ORD-T25-JX', v_h, 'pending', v_today, 10, false);
+  j := pg_temp.cs(ch);
+  perform pg_temp.chk('J4 the ceiling counts ALL the customer''s outstanding balances, not only credit invoices: an unpaid $10 staff order takes the total to $30 >= $25, so credit pauses with the ceiling reason and the server refuses',
+    (j ->> 'canBuyOnCredit') = 'false' and (j -> 'eligibility' -> 'standingReasons' ->> 0) like '%reached the maximum ($25.00)%' and pg_temp.denied(pg_temp.place(ch, 1, pg_temp.key(82))), j::text);
+  perform pg_temp.q(sa_u, 'authenticated', format('select public.record_payment(%L, 10, ''Cash'', null, ''JX'', ''pay the staff order'') as v', 'ORD-T25-JX'));
+  perform pg_temp.chk('J5 paying that order brings the total back to $20: credit reopens with $5 available', (pg_temp.cs(ch) ->> 'canBuyOnCredit') = 'true' and (pg_temp.cs(ch) -> 'account' ->> 'available') = '5.00');
+  perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(true, 3, null, true, 30, ''T25 test: no ceiling'', 60, null, true) as v');
+  perform pg_temp.chk('J6 clearing the ceiling returns to the personal limit only ($40 minus $20 owed = $20 available)', (pg_temp.cs(ch) -> 'account' ->> 'available') = '20.00');
+
+  -- ---------------------------------------------------------------- K. overrides (only when the policy allows them), suspension, and the master switch
+  perform pg_temp.chk('K1 with overrides NOT enabled (the approved proposal) an unqualified customer cannot be authorized, with or without an override reason',
+    pg_temp.err(pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 30, 30, ''Wholesale partner (T25 I)'', ''Owner approved the exception on a call'') as v', v_i)))
+    and pg_temp.msg(pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 30, 30, ''Wholesale partner (T25 I)'', ''Owner approved the exception on a call'') as v', v_i))) like '%Requirement overrides are not enabled%'
+    and not exists (select 1 from public.customer_credit_accounts where customer_id = v_i));
+  perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy_rules(90, 40, 100, 3, true, ''T25 test: allow requirement overrides'') as v');
+  perform pg_temp.chk('K2 once the policy allows overrides, one needs a recorded reason of 10+ characters, and only a Super Admin can make it',
+    pg_temp.err(pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 30, 30, ''Wholesale partner (T25 I)'') as v', v_i)))
+    and pg_temp.err(pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 30, 30, ''Wholesale partner (T25 I)'', ''too short'') as v', v_i)))
+    and pg_temp.denied(pg_temp.q(mgr_u, 'authenticated', format('select public.set_customer_credit(%L, 30, 30, ''Wholesale partner (T25 I)'', ''Manager may not override'') as v', v_i))));
+  t := pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 30, 30, ''Wholesale partner (T25 I)'', ''Owner approved the exception on a call'') as v', v_i));
+  perform pg_temp.chk('K3 with the recorded override I is authorized ($30): flagged override_used, and the audit line keeps the reason and the unmet requirements', not pg_temp.err(t) and (select override_used from public.customer_credit_accounts where customer_id = v_i)
+    and exists (select 1 from public.system_logs where metadata ->> 'event' = 'customer_credit_set' and target_id = v_i and metadata ->> 'overrideReason' = 'Owner approved the exception on a call' and jsonb_array_length(metadata -> 'eligibility' -> 'reasons') > 0), t);
+  j := pg_temp.cs(ci);
+  perform pg_temp.chk('K4 an authorized override customer CAN buy on credit within the limit (and not beyond it)', (j ->> 'canBuyOnCredit') = 'true' and (j -> 'account' ->> 'override') = 'true' and (j -> 'account' ->> 'available') = '30.00'
+    and not pg_temp.err(pg_temp.place(ci, 2, pg_temp.key(90))) and pg_temp.err(pg_temp.place(ci, 2, pg_temp.key(91))), j::text);
+  perform pg_temp.mkorder('ORD-T25-IU', v_i, 'delivered', v_today, 10, false);
+  j := pg_temp.cs(ci);
+  perform pg_temp.chk('K5 an override never covers account standing: a delivered order with an unpaid balance blocks the override customer, and the server refuses', (j ->> 'canBuyOnCredit') = 'false' and (j -> 'eligibility' -> 'standingReasons' ->> 0) like '%unpaid balance%' and pg_temp.denied(pg_temp.place(ci, 1, pg_temp.key(92))), j::text);
+  perform pg_temp.q(sa_u, 'authenticated', format('select public.record_payment(%L, 10, ''Cash'', null, ''IU'', ''pay it'') as v', 'ORD-T25-IU'));
+  perform pg_temp.chk('K6 paying it lifts that restriction for a customer who never defaulted ($10 of $30 left)', (pg_temp.cs(ci) ->> 'canBuyOnCredit') = 'true' and (pg_temp.cs(ci) -> 'account' ->> 'available') = '10.00');
+  perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(false, 3, null, true, 30, ''T25 test: credit switched off'', 60, null, true) as v');
+  perform pg_temp.chk('K7 switching the whole policy OFF stops every credit purchase, including an authorized override account and an ordinary authorized account (A)', (pg_temp.cs(ci) ->> 'canBuyOnCredit') = 'false' and (pg_temp.cs(ci) ->> 'message') = 'Credit purchasing is not currently available.'
+    and pg_temp.denied(pg_temp.place(ci, 1, pg_temp.key(93))) and (pg_temp.cs(ca) ->> 'canBuyOnCredit') = 'false');
+  perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(true, 3, null, true, 30, ''T25 test: credit back on'', 60, null, true) as v');
+  perform pg_temp.q(sa_u, 'authenticated', format('select public.suspend_customer_credit(%L, ''T25 paused for review'') as v', v_i));
+  perform pg_temp.chk('K8 a Super Admin can suspend credit (audited): the customer is stopped at once with the paused message; suspension is not a default and records none',
+    (select status from public.customer_credit_accounts where customer_id = v_i) = 'suspended' and (pg_temp.cs(ci) ->> 'canBuyOnCredit') = 'false' and (pg_temp.cs(ci) ->> 'message') like '%paused%' and pg_temp.denied(pg_temp.place(ci, 1, pg_temp.key(94)))
+    and exists (select 1 from public.system_logs where metadata ->> 'event' = 'customer_credit_suspended' and target_id = v_i) and not exists (select 1 from public.customer_credit_defaults where customer_id = v_i));
+  perform pg_temp.chk('K9 only a Super Admin can suspend; a revoked account (after a default) cannot be "suspended" and a manager cannot suspend',
+    pg_temp.denied(pg_temp.q(mgr_u, 'authenticated', format('select public.suspend_customer_credit(%L, ''Manager suspending'') as v', v_i)))
+    and pg_temp.err(pg_temp.q(sa_u, 'authenticated', format('select public.suspend_customer_credit(%L, ''Suspend a revoked account'') as v', v_dd))));
+  perform pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy_rules(90, 40, 100, 3, false, ''T25 test: overrides off again'') as v');
 
   -- ---------------------------------------------------------------- I. financial integrity, isolation and exposure
   perform pg_temp.chk('I1 every credit order of this suite is a normal order: total = sum of lines, paid + balance = total, no negative values',

@@ -37,6 +37,9 @@ create function pg_temp.denied(t text) returns boolean language sql immutable as
 create function pg_temp.none(t text) returns boolean language sql immutable as $f$ select t = '[]' or pg_temp.denied(t) $f$;
 create function pg_temp.jv(t text) returns jsonb language sql immutable as $f$ select case when pg_temp.err(t) then null else t::jsonb -> 0 -> 'v' end $f$;
 create function pg_temp.msg(t text) returns text language sql immutable as $f$ select t::jsonb ->> 'msg' $f$;
+-- Migration 25 replaced the credit policy (complete policy needed to enable it, fixed term, initial limit, company cap, no override unless allowed). This suite tests the checkout and
+-- credit MECHANICS and runs on a database at migration 23, 24 or 25: when migration 25 is present a test configuration is set up inside this rolled-back transaction (below).
+create function pg_temp.m25() returns boolean language sql stable as $f$ select exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'credit_policy' and column_name = 'purchase_window_days') $f$;
 
 do $t$
 declare
@@ -84,6 +87,23 @@ begin
   select customer_id into v_b from public.customer_accounts where email = 't23-b@example.test';
   select customer_id into v_c from public.customer_accounts where email = 't23-c@example.test';
   update public.customers set marketing_officer_id = 'u-t23-mo' where id = v_a;      -- customer A belongs to an officer (commission ownership)
+
+  if pg_temp.m25() then
+    -- test configuration for the migration-25 policy (rolled back with everything else): no proposal values, a complete test policy, overrides allowed (this suite tests them),
+    -- long-standing approvals, and a sales history big enough for the company-wide cap not to matter.
+    update public.credit_policy set min_completed_purchases = null, min_total_value = null, min_approved_days = null, max_outstanding = null, default_terms_days = null,
+           purchase_window_days = 90, initial_credit_limit = 1000, company_cap_percent = 100, cap_basis_months = 3, allow_requirement_override = true where id;
+    insert into public.customers (id, name, email, phone, notes, status) values ('cust-t23-hist', 'T23 History', 'hist23@example.test', '069 823 9999', 'sales history fixture', 'active');
+    insert into public.products (id, name, selling_price, cost_price, stock, is_active) values ('p23-hist', 'T23 History Ball', 10, 5, 1000000, true);
+    for acc in select d from (values ((date_trunc('month', public.efz_today()) - interval '3 month' - interval '40 days')::date), ((date_trunc('month', public.efz_today()) - interval '3 month')::date + 5),
+                                       ((date_trunc('month', public.efz_today()) - interval '2 month')::date + 5), ((date_trunc('month', public.efz_today()) - interval '1 month')::date + 5)) x(d) loop
+      insert into public.orders (id, customer_id, customer_name, phone, status, order_type, order_date, delivery_notes) values ('ORD-T23-H' || to_char(acc.d, 'YYYYMMDD'), 'cust-t23-hist', 'T23', '', 'delivered', 'regular', acc.d, '');
+      insert into public.order_items (id, order_id, product_id, product_name, design_name, quantity, standard_unit_price, actual_unit_price, historical_unit_cost) values ('itm-t23-h' || to_char(acc.d, 'YYYYMMDD'), 'ORD-T23-H' || to_char(acc.d, 'YYYYMMDD'), 'p23-hist', 'P', 'P', 300, 10, 10, 5);
+    end loop;
+    alter table public.customer_account_events disable trigger trg_customer_account_events_guard;
+    update public.customer_account_events set created_at = now() - interval '400 days' where event = 'approved';
+    alter table public.customer_account_events enable trigger trg_customer_account_events_guard;
+  end if;
 
   -- ---------------------------------------------------------------- A. access: only approved customers; everyone else denied
   perform pg_temp.chk('A1 every customer function refuses pending, suspended, unregistered and anonymous callers (42501)',
@@ -328,7 +348,7 @@ begin
   perform pg_temp.chk('E3 enabling credit without a purchase requirement or repayment period is refused', pg_temp.err(pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(true, null, null, true, 30, ''enable for T23'') as v'))
     and pg_temp.err(pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(true, 2, null, true, null, ''enable for T23'') as v')));
   perform pg_temp.chk('E4 a credit limit cannot be set while credit is disabled', pg_temp.err(pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 500, 30, ''Trusted customer for T23'') as v', v_a))));
-  t := pg_temp.q(sa_u, 'authenticated', 'select public.set_credit_policy(true, 2, 20, true, 30, ''T23 test policy: 2 completed purchases worth at least 20'') as v');
+  t := pg_temp.q(sa_u, 'authenticated', format('select public.set_credit_policy(true, 2, 20, true, %s, ''T23 test policy: 2 completed purchases worth at least 20''%s) as v', case when pg_temp.m25() then 14 else 30 end, case when pg_temp.m25() then ', 1' else '' end));
   perform pg_temp.chk('E5 a Super Admin sets the policy (audited, with the old values recorded)', not pg_temp.err(t) and exists (select 1 from public.system_logs where metadata ->> 'event' = 'credit_policy_set' and metadata -> 'before' is not null), t);
   t := pg_temp.q(ca, 'authenticated', 'select public.customer_credit_status() as v');
   perform pg_temp.chk('E6 an ordinary customer is shown the requirements and accurate progress, and no credit',
@@ -435,7 +455,7 @@ begin
   perform pg_temp.q(sa_u, 'authenticated', format('select public.suspend_customer_credit(%L, ''Paused for T23'') as v', v_a));
   perform pg_temp.chk('E26 a Super Admin can suspend credit (audited); the status then reads suspended', (select status from public.customer_credit_accounts where customer_id = v_a) = 'suspended'
     and exists (select 1 from public.system_logs where metadata ->> 'event' = 'customer_credit_suspended'));
-  t := pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 80, 30, ''Long-standing wholesale partner'', ''Known partner, policy exception approved by the owner'') as v', v_b));
+  t := pg_temp.q(sa_u, 'authenticated', format('select public.set_customer_credit(%L, 80, 14, ''Long-standing wholesale partner'', ''Known partner, policy exception approved by the owner'') as v', v_b));
   perform pg_temp.chk('E27 an override (with a 10+ character reason) can authorize a customer who does not meet the policy; it is flagged in the account and the audit line',
     not pg_temp.err(t) and (select override_used from public.customer_credit_accounts where customer_id = v_b) = true
     and exists (select 1 from public.system_logs where metadata ->> 'event' = 'customer_credit_set' and target_id = v_b and metadata ->> 'overrideReason' is not null), t);
