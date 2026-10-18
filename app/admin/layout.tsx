@@ -501,6 +501,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     setNavPath(pathname);
     if (activeModuleId) setNavOpen((prev) => ({ ...prev, [activeModuleId]: true }));
   }
+  // The selected page stays in view when the sidebar is taller than the window (it scrolls the sidebar, never the page).
+  useEffect(() => {
+    // Only the sidebar's own scroll box is moved (never scrollIntoView, which would also scroll the page wrapper sideways while the phone drawer is closed).
+    const link = document.querySelector<HTMLElement>('[data-testid="sidebar-nav"] a[aria-current="page"]');
+    const box = link?.closest('[data-testid="sidebar-nav"]')?.parentElement;
+    if (!link || !box) return;
+    const l = link.getBoundingClientRect(), b = box.getBoundingClientRect();
+    if (l.top < b.top) box.scrollTop -= b.top - l.top;
+    else if (l.bottom > b.bottom) box.scrollTop += l.bottom - b.bottom;
+  }, [pathname, navOpen]);
   const moduleOpen = (id: string) => navOpen[id] ?? id === activeModuleId;
   const toggleModule = (id: string) => {
     const next = { ...navOpen, [id]: !moduleOpen(id) };
@@ -520,22 +530,22 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         title={link.name}
         data-testid={`nav-link-${link.href.replace("/admin/", "").replace("/admin", "overview") || "overview"}`}
         className={cn(
-          "flex items-center gap-3 rounded-xl text-xs font-bold transition-all duration-200 group outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/60",
-          nested ? "px-2.5 py-2" : "px-3 py-2.5",
+          "flex items-center gap-2.5 rounded-xl text-xs font-bold transition-all duration-200 group outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/60",
+          nested ? "px-2 py-2" : "px-3 py-2.5",
           isActive
             ? "bg-brand-blue text-white shadow-lg shadow-brand-blue/20"
             : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
         )}
         onClick={() => setIsMobileOpen(false)}
       >
-        <div className={cn("p-1.5 rounded-lg transition-colors", isActive ? "bg-white/20" : "bg-slate-100 dark:bg-slate-800 group-hover:bg-white dark:group-hover:bg-slate-700")}>
+        <div className={cn("shrink-0 p-1.5 rounded-lg transition-colors", isActive ? "bg-white/20" : "bg-slate-100 dark:bg-slate-800 group-hover:bg-white dark:group-hover:bg-slate-700")}>
           <Icon className="h-4 w-4" />
         </div>
-        <span className="truncate">{link.name}</span>
+        <span className="min-w-0 flex-1 break-words leading-snug" data-testid="nav-label">{link.name}</span>
         {/* open requests (new, contacted, confirmed), RLS-scoped to this user; the two request pages each count their own source */}
         {badge > 0 && (
           <span
-            className={cn("ml-auto min-w-5 rounded-full px-1.5 text-center text-[10px] font-bold", isActive ? "bg-white text-brand-blue" : "bg-red-500 text-white")}
+            className={cn("ml-auto min-w-5 shrink-0 rounded-full px-1.5 text-center text-[10px] font-bold", isActive ? "bg-white text-brand-blue" : "bg-red-500 text-white")}
             data-testid={link.href === '/admin/requests' ? "requests-badge" : "app-requests-badge"}
           >
             {badge}
@@ -812,7 +822,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-[70] w-72 bg-brand-blue-dark text-slate-300 transition-all duration-300 ease-in-out md:static md:translate-x-0 border-r border-slate-800 shadow-2xl md:shadow-none flex flex-col",
+          "fixed inset-y-0 left-0 z-[70] w-[19rem] max-w-[88vw] bg-brand-blue-dark text-slate-300 transition-all duration-300 ease-in-out md:static md:translate-x-0 border-r border-slate-800 shadow-2xl md:shadow-none flex flex-col",
           isMobileOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
@@ -861,14 +871,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     )}
                   >
                     <ModIcon className="h-4 w-4 shrink-0" />
-                    <span className="truncate text-left">{m.label}</span>
+                    <span className="min-w-0 flex-1 break-words text-left leading-snug">{m.label}</span>
                     {!open && pending > 0 && (
-                      <span className="ml-auto min-w-5 rounded-full bg-red-500 px-1.5 text-center text-[10px] font-bold text-white" data-testid={`nav-module-badge-${m.id}`}>{pending}</span>
+                      <span className="ml-auto min-w-5 shrink-0 rounded-full bg-red-500 px-1.5 text-center text-[10px] font-bold text-white" data-testid={`nav-module-badge-${m.id}`}>{pending}</span>
                     )}
                     <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open ? "rotate-180" : "-rotate-90", !open && pending > 0 ? "" : "ml-auto")} aria-hidden="true" />
                   </button>
                   {open && (
-                    <div id={`nav-group-${m.id}`} role="group" aria-label={m.label} className="mt-1 ml-5 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-700">
+                    <div id={`nav-group-${m.id}`} role="group" aria-label={m.label} className="mt-1 ml-4 space-y-0.5 border-l border-slate-200 pl-1.5 dark:border-slate-700">
                       {items.map((i) => renderNavItem(i, true))}
                     </div>
                   )}
