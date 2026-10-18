@@ -6,7 +6,8 @@
 --   * The six tables this migration added are DROPPED with their rows: customer_credit_defaults (the default history), customer_credit_events (the credit history),
 --     credit_due_extensions, credit_disputes, credit_reminders, customer_notifications. Their facts are also in system_logs (audit) for the events that wrote an audit line,
 --     but the tables themselves are not recoverable: EXPORT THEM FIRST if any real default, dispute or extension exists.
---   * The seven new policy columns are dropped (values lost; they were also audited when saved).
+--   * The seven new policy columns are dropped (values lost; they were also audited when saved). The proposal values migration 25 put into the shared columns
+--     (3 purchases, 60 days, 30-day term) are cleared again if the policy row is still the untouched proposal; an edited policy keeps its values.
 --   * Accounts with status 'revoked' (credit revoked after a default) become 'suspended' so the older status rule holds. Their former limit is unchanged.
 --     After rollback the migration-24 behaviour applies again: in particular, paying an overdue invoice WOULD restore credit, and a default is no longer remembered.
 --   * Orders, order lines, payments, credit accounts and credit orders are not touched.
@@ -464,6 +465,11 @@ drop table if exists public.credit_due_extensions;
 drop table if exists public.customer_credit_events;
 drop table if exists public.customer_credit_defaults;
 drop function if exists public.guard_credit_history();
+
+-- the proposal values migration 25 loaded into the shared columns are removed again ONLY while the row is still that untouched proposal (credit off, note unchanged);
+-- a policy the owner has edited since is left exactly as it is
+update public.credit_policy set min_completed_purchases = null, min_approved_days = null, default_terms_days = null, note = ''
+ where id and enabled = false and note like 'Approved proposal loaded by migration 25%';
 
 alter table public.credit_policy drop column if exists purchase_window_days;
 alter table public.credit_policy drop column if exists initial_credit_limit;
