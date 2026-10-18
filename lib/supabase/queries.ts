@@ -1344,6 +1344,21 @@ export function createDb(client: EfzSupabaseClient) {
       return count ?? 0;
     },
 
+    /**
+     * Open requests split by source, for the two menu badges: "app" = placed through the customer app (it has a customer_order_requests link, migration 22),
+     * "web" = every other request. Before migration 22 the link table does not exist and every request counts as "web".
+     */
+    async openCounts(): Promise<{ total: number; web: number; app: number }> {
+      const rows = unwrapList("orderRequests.openCounts", await client.from("order_requests").select("id").in("status", ["new", "contacted", "confirmed"]).limit(1000));
+      if (rows.length === 0) return { total: 0, web: 0, app: 0 };
+      const links = await client.from("customer_order_requests" as never).select("request_id").limit(5000);
+      const linkError = (links as { error: { code?: string } | null }).error;
+      if (linkError && linkError.code !== "42P01" && linkError.code !== "PGRST205") throw new EfzDbError("orderRequests.openCounts.links", linkError as PostgrestError);
+      const appIds = new Set(((links as { data: { request_id: string }[] | null }).data ?? []).map((l) => l.request_id));
+      const app = rows.filter((r) => appIds.has(r.id)).length;
+      return { total: rows.length, web: rows.length - app, app };
+    },
+
     /** Timeline and staff notes of one request. */
     async activity(requestId: string): Promise<{ notes: WebsiteRequestNote[]; events: WebsiteRequestEvent[] }> {
       const [notes, events] = await Promise.all([

@@ -38,7 +38,7 @@ import {
   Moon,
   Wallet,
   Inbox,
-  Landmark, CreditCard, Tag } from "lucide-react";
+  Landmark, CreditCard, Tag, BadgeCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,34 +64,70 @@ const DEFAULT_SETTINGS: AdminSettings = {
   secondaryColor: "#00E676",
 };
 
-const SIDEBAR_LINKS = [
-  { name: "Overview", href: "/admin", icon: LayoutDashboard, permission: 'view_dashboard' as Permission },
-  { name: "Order Tracking", href: "/admin/orders", icon: ShoppingBag, permission: 'view_orders' as Permission },
-  // 18: requests from the public order page. Super Admin and Managers (manage_website_requests).
-  { name: "Website Requests", href: "/admin/requests", icon: Inbox, permission: 'manage_website_requests' as Permission },
-  { name: "Sales & Analytics", href: "/admin/analytics", icon: BarChart3, permission: 'view_reports' as Permission },
-  // 14: cash, receivables, profitability and reconciliation (read only; cost only via can_view_cost).
-  { name: "Financial Management", href: "/admin/financial", icon: Landmark, permission: 'view_reports' as Permission },
-  { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
-  { name: "Customer Database", href: "/admin/customers", icon: UserCheck, permission: 'view_customers' as Permission },
-  // 21: Android customer app registrations awaiting EFZ approval (manage_customer_accounts; the database enforces it).
-  { name: "Customer App Accounts", href: "/admin/customer-accounts", icon: Smartphone, permission: 'manage_customer_accounts' as Permission },
-  // A Marketing Officer's own commission events (read only). Shown to officers only.
-  { name: "My Commissions", href: "/admin/commissions", icon: Wallet, permission: 'view_commissions' as Permission },
-  { name: "Users & Privileges", href: "/admin/users", icon: Users, permission: 'manage_users' as Permission },
-];
+type NavItem = { name: string; href: string; icon: React.ElementType; permission: Permission; superAdminOnly?: boolean; pricingOnly?: boolean };
+type NavModule = { id: string; label: string; icon: React.ElementType; items: NavItem[] };
 
-const SYSTEM_LINKS = [
-  { name: "Diagnostics", href: "/admin/diagnostics", icon: ShieldCheck, permission: 'view_diagnostics' as Permission },
-  { name: "Audit Trail", href: "/admin/audit", icon: History, permission: 'view_audit_trail' as Permission },
-  { name: "System Management", href: "/admin/system", icon: SettingsIcon, permission: 'manage_system' as Permission },
-  // Legacy orders without recorded payment terms: Super Admin only (the page and the database both enforce it).
-  { name: "Payment Terms Review", href: "/admin/terms-review", icon: ClipboardCheck, permission: 'manage_system' as Permission, superAdminOnly: true },
-  // 23: payment methods, credit policy and customer credit for the Android app (Super Admin only; the database enforces it).
-  { name: "Customer Payments & Credit", href: "/admin/customer-credit", icon: CreditCard, permission: 'manage_system' as Permission, superAdminOnly: true },
-  // 26: negotiated customer prices for the Android app (Super Admin or Manager; the database enforces it).
-  { name: "Customer Prices", href: "/admin/customer-prices", icon: Tag, permission: 'edit_products' as Permission, pricingOnly: true },
+/** Overview stays a direct link. */
+const OVERVIEW_LINK: NavItem = { name: "Overview", href: "/admin", icon: LayoutDashboard, permission: 'view_dashboard' as Permission };
+
+/**
+ * The sidebar, grouped into collapsible modules. Every item keeps the route and the permission it always had; only the grouping changed.
+ * (Marketing & Growth is omitted on purpose: the Hub has no marketing, campaign or customer-acquisition page.)
+ */
+const NAV_MODULES: NavModule[] = [
+  {
+    id: "orders", label: "Orders & Requests", icon: Inbox, items: [
+      // 18: requests from the public order page. Super Admin and Managers (manage_website_requests).
+      { name: "Website Requests", href: "/admin/requests", icon: Globe, permission: 'manage_website_requests' as Permission },
+      // 22: requests placed in the Android customer app by approved accounts (the same order_requests pipeline, filtered by the customer-app link).
+      { name: "Customer App Requests", href: "/admin/customer-app-requests", icon: Smartphone, permission: 'manage_website_requests' as Permission },
+      { name: "Order Tracking", href: "/admin/orders", icon: ShoppingBag, permission: 'view_orders' as Permission },
+    ],
+  },
+  {
+    id: "customers", label: "Customers & CRM", icon: UserCheck, items: [
+      { name: "Customer Database", href: "/admin/customers", icon: UserCheck, permission: 'view_customers' as Permission },
+      // 21: Android customer app registrations awaiting EFZ approval (manage_customer_accounts; the database enforces it).
+      { name: "Customer App Accounts", href: "/admin/customer-accounts", icon: BadgeCheck, permission: 'manage_customer_accounts' as Permission },
+      // 26: negotiated customer prices for the Android app (Super Admin or Manager; the database enforces it).
+      { name: "Customer Prices", href: "/admin/customer-prices", icon: Tag, permission: 'edit_products' as Permission, pricingOnly: true },
+    ],
+  },
+  {
+    id: "sales", label: "Sales & Performance", icon: BarChart3, items: [
+      { name: "Sales & Analytics", href: "/admin/analytics", icon: BarChart3, permission: 'view_reports' as Permission },
+      // A Marketing Officer's own commission events (read only). Shown to officers only.
+      { name: "My Commissions", href: "/admin/commissions", icon: Wallet, permission: 'view_commissions' as Permission },
+    ],
+  },
+  {
+    id: "finance", label: "Finance", icon: Landmark, items: [
+      // 14: cash, receivables, profitability and reconciliation (read only; cost only via can_view_cost).
+      { name: "Financial Management", href: "/admin/financial", icon: Landmark, permission: 'view_reports' as Permission },
+      // 23: payment methods, credit policy and customer credit for the Android app (Super Admin only; the database enforces it).
+      { name: "Customer Payments & Credit", href: "/admin/customer-credit", icon: CreditCard, permission: 'manage_system' as Permission, superAdminOnly: true },
+      // Legacy orders without recorded payment terms: Super Admin only (the page and the database both enforce it).
+      { name: "Payment Terms Review", href: "/admin/terms-review", icon: ClipboardCheck, permission: 'manage_system' as Permission, superAdminOnly: true },
+    ],
+  },
+  {
+    id: "products", label: "Products & Inventory", icon: Package, items: [
+      { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
+    ],
+  },
+  {
+    id: "admin", label: "Administration", icon: SettingsIcon, items: [
+      { name: "Users & Privileges", href: "/admin/users", icon: Users, permission: 'manage_users' as Permission },
+      { name: "Diagnostics", href: "/admin/diagnostics", icon: ShieldCheck, permission: 'view_diagnostics' as Permission },
+      { name: "Audit Trail", href: "/admin/audit", icon: History, permission: 'view_audit_trail' as Permission },
+      { name: "System Management", href: "/admin/system", icon: SettingsIcon, permission: 'manage_system' as Permission },
+    ],
+  },
 ];
+const ALL_NAV_LINKS: NavItem[] = [OVERVIEW_LINK, ...NAV_MODULES.flatMap((m) => m.items)];
+/** A link is active on its own path and below it ("/admin" only on itself). */
+const navIsActive = (pathname: string, href: string) => (href === "/admin" ? pathname === href : pathname === href || pathname.startsWith(href + "/"));
+const NAV_STORAGE_KEY = "efz-hub-nav-v1";
 
 /** How often an open admin tab re-derives its alerts (also when the tab regains focus). */
 const ALERT_REFRESH_MS = 30_000;
@@ -193,6 +229,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [notifications, setNotifications] = useState<Notification[]>([]);
   // 18: open website requests (badge) and a version the Website Requests page re-reads on.
   const [openRequestCount, setOpenRequestCount] = useState<number | null>(null);
+  // The two menu badges: open website requests and open customer-app requests (the sum is openRequestCount).
+  const [openRequestSplit, setOpenRequestSplit] = useState<{ web: number; app: number }>({ web: 0, app: 0 });
+  // Sidebar modules the user opened or closed by hand (remembered in this browser). A module with no entry follows the page being viewed.
+  const [navOpen, setNavOpen] = useState<Record<string, boolean>>(() => {
+    try { const raw = typeof window === "undefined" ? null : window.localStorage.getItem("efz-hub-nav-v1"); const v = raw ? JSON.parse(raw) : {}; return v && typeof v === "object" ? v : {}; } catch { return {}; }
+  });
+  const [navPath, setNavPath] = useState<string | null>(null);
   const [requestSignalVersion, setRequestSignalVersion] = useState(0);
   const refreshNowRef = useRef<() => void>(() => {});
   const [toast, setToast] = useState<{ type: 'success' | 'error', message: string } | null>(null);
@@ -248,8 +291,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         setNotifications(feed);
 
         if (can(nextProfile, "manage_website_requests")) {
-          const openRequests = await db.orderRequests.openCount();
-          if (!cancelled) setOpenRequestCount(openRequests);
+          const split = await db.orderRequests.openCounts();
+          if (!cancelled) { setOpenRequestCount(split.total); setOpenRequestSplit({ web: split.web, app: split.app }); }
         }
       } catch (error) {
         if (!cancelled) console.error("[ADMIN LAYOUT] Failed to load:", describeDbError(error));
@@ -315,9 +358,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             if (!stopped) setNotifications(feed);
             // 18: badge count, and tell the Website Requests page to re-read.
             if (can(me, "manage_website_requests")) {
-              const openRequests = await getDb().orderRequests.openCount();
+              const split = await getDb().orderRequests.openCounts();
               if (!stopped) {
-                setOpenRequestCount(openRequests);
+                setOpenRequestCount(split.total);
+                setOpenRequestSplit({ web: split.web, app: split.app });
                 setRequestSignalVersion(v => v + 1);
               }
             }
@@ -440,7 +484,66 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const hasPermission = (p: Permission) => can(profile, p);
   const hasAnyPermission = (permissions: Permission[]) => canAny(profile, permissions);
 
-  const currentLink = SIDEBAR_LINKS.find(link => link.href === pathname) || SYSTEM_LINKS.find(link => link.href === pathname);
+  const currentLink = ALL_NAV_LINKS.find(link => link.href === pathname);
+
+  // Sidebar behaviour. Whether one entry is shown: the same rules the entries always had.
+  const navAllowed = (link: NavItem): boolean => {
+    if (link.href === '/admin/customers') return hasAnyPermission(['view_customers' as Permission, 'view_own_customers_only' as Permission]);
+    if (link.href === '/admin/orders') return hasAnyPermission(['view_orders' as Permission, 'create_orders' as Permission]);
+    if (link.href === '/admin/commissions') return perms.isMarketingOfficer && hasPermission('view_commissions' as Permission);   // officers' own ledger; management uses the payout tools
+    if (link.superAdminOnly && !perms.isSuperAdmin) return false;
+    if (link.pricingOnly && !perms.managePricing) return false;
+    return link.permission ? hasPermission(link.permission) : true;
+  };
+  const activeModuleId = NAV_MODULES.find((m) => m.items.some((i) => navIsActive(pathname, i.href)))?.id ?? null;
+  // Moving to a page always opens the module that holds it (adjusting state during rendering is React's documented pattern for this).
+  if (navPath !== pathname) {
+    setNavPath(pathname);
+    if (activeModuleId) setNavOpen((prev) => ({ ...prev, [activeModuleId]: true }));
+  }
+  const moduleOpen = (id: string) => navOpen[id] ?? id === activeModuleId;
+  const toggleModule = (id: string) => {
+    const next = { ...navOpen, [id]: !moduleOpen(id) };
+    setNavOpen(next);
+    try { window.localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(next)); } catch { /* private mode: the state still works for this session */ }
+  };
+  const navBadge = (href: string): number => (href === '/admin/requests' ? openRequestSplit.web : href === '/admin/customer-app-requests' ? openRequestSplit.app : 0);
+  const renderNavItem = (link: NavItem, nested: boolean) => {
+    const Icon = link.icon;
+    const isActive = navIsActive(pathname, link.href);
+    const badge = navBadge(link.href);
+    return (
+      <Link
+        key={link.href}
+        href={link.href}
+        aria-current={isActive ? "page" : undefined}
+        title={link.name}
+        data-testid={`nav-link-${link.href.replace("/admin/", "").replace("/admin", "overview") || "overview"}`}
+        className={cn(
+          "flex items-center gap-3 rounded-xl text-xs font-bold transition-all duration-200 group outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/60",
+          nested ? "px-2.5 py-2" : "px-3 py-2.5",
+          isActive
+            ? "bg-brand-blue text-white shadow-lg shadow-brand-blue/20"
+            : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
+        )}
+        onClick={() => setIsMobileOpen(false)}
+      >
+        <div className={cn("p-1.5 rounded-lg transition-colors", isActive ? "bg-white/20" : "bg-slate-100 dark:bg-slate-800 group-hover:bg-white dark:group-hover:bg-slate-700")}>
+          <Icon className="h-4 w-4" />
+        </div>
+        <span className="truncate">{link.name}</span>
+        {/* open requests (new, contacted, confirmed), RLS-scoped to this user; the two request pages each count their own source */}
+        {badge > 0 && (
+          <span
+            className={cn("ml-auto min-w-5 rounded-full px-1.5 text-center text-[10px] font-bold", isActive ? "bg-white text-brand-blue" : "bg-red-500 text-white")}
+            data-testid={link.href === '/admin/requests' ? "requests-badge" : "app-requests-badge"}
+          >
+            {badge}
+          </span>
+        )}
+      </Link>
+    );
+  };
 
   let isAccessDenied = false;
   if (currentLink) {
@@ -736,95 +839,43 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </div>
 
         <div className="flex-1 px-4 py-8 flex flex-col overflow-y-auto custom-scrollbar">
-          {/* Main Navigation */}
-          <div className="space-y-1">
-            <p className="px-3 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em] mb-3">Main Navigation</p>
-            {SIDEBAR_LINKS.map((link) => {
-              // Determine allowed state per-link; allow scoped or action permissions for specific modules
-              let allowed = true;
-              if (link.href === '/admin/customers') {
-                allowed = hasAnyPermission(['view_customers' as Permission, 'view_own_customers_only' as Permission]);
-              } else if (link.href === '/admin/orders') {
-                allowed = hasAnyPermission(['view_orders' as Permission, 'create_orders' as Permission]);
-              } else if (link.href === '/admin/commissions') {
-                // Officers' own commission ledger; management uses the payout tools instead.
-                allowed = perms.isMarketingOfficer && hasPermission('view_commissions' as Permission);
-              } else if (link.permission) {
-                allowed = hasPermission(link.permission);
-              }
-              if (!allowed) return null;
-
-              const Icon = link.icon;
-              const isActive = pathname === link.href;
-              
+          <nav aria-label="Hub navigation" className="space-y-1" data-testid="sidebar-nav">
+            {navAllowed(OVERVIEW_LINK) && renderNavItem(OVERVIEW_LINK, false)}
+            {NAV_MODULES.map((m) => {
+              const items = m.items.filter(navAllowed);
+              if (items.length === 0) return null;
+              const open = moduleOpen(m.id);
+              const hasActive = items.some((i) => navIsActive(pathname, i.href));
+              const pending = items.reduce((n, i) => n + navBadge(i.href), 0);
+              const ModIcon = m.icon;
               return (
-                <Link
-                  key={link.name}
-                  href={link.href}
-                  className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 group",
-                    isActive 
-                      ? "bg-brand-blue text-white shadow-lg shadow-brand-blue/20" 
-                      : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
+                <div key={m.id} className="pt-1" data-testid={`nav-module-${m.id}`}>
+                  <button
+                    type="button"
+                    onClick={() => toggleModule(m.id)}
+                    aria-expanded={open}
+                    aria-controls={`nav-group-${m.id}`}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/60",
+                      hasActive ? "text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
+                    )}
+                  >
+                    <ModIcon className="h-4 w-4 shrink-0" />
+                    <span className="truncate text-left">{m.label}</span>
+                    {!open && pending > 0 && (
+                      <span className="ml-auto min-w-5 rounded-full bg-red-500 px-1.5 text-center text-[10px] font-bold text-white" data-testid={`nav-module-badge-${m.id}`}>{pending}</span>
+                    )}
+                    <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open ? "rotate-180" : "-rotate-90", !open && pending > 0 ? "" : "ml-auto")} aria-hidden="true" />
+                  </button>
+                  {open && (
+                    <div id={`nav-group-${m.id}`} role="group" aria-label={m.label} className="mt-1 ml-5 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-700">
+                      {items.map((i) => renderNavItem(i, true))}
+                    </div>
                   )}
-                  onClick={() => setIsMobileOpen(false)}
-                >
-                  <div className={cn(
-                    "p-1.5 rounded-lg transition-colors",
-                    isActive ? "bg-white/20" : "bg-slate-100 dark:bg-slate-800 group-hover:bg-white dark:group-hover:bg-slate-700"
-                  )}>
-                    <Icon className="h-4 w-4" />
-                  </div>
-                  {link.name}
-                  {/* 18: open requests (new, contacted, confirmed), RLS-scoped to this user. */}
-                  {link.href === '/admin/requests' && (openRequestCount ?? 0) > 0 && (
-                    <span
-                      className={cn("ml-auto min-w-5 rounded-full px-1.5 text-center text-[10px] font-bold", isActive ? "bg-white text-brand-blue" : "bg-red-500 text-white")}
-                      data-testid="requests-badge"
-                    >
-                      {openRequestCount}
-                    </span>
-                  )}
-                  {isActive && link.href !== '/admin/requests' && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
-                </Link>
-              );
-            })}
-          </div>
-
-          {/* System & Logs */}
-          <div className="pt-8 space-y-1">
-            <p className="px-3 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-[0.2em] mb-3">System & Security</p>
-            {SYSTEM_LINKS.map((link) => {
-              if (link.permission && !hasPermission(link.permission)) return null;
-              if ('superAdminOnly' in link && link.superAdminOnly && !perms.isSuperAdmin) return null;
-              if ('pricingOnly' in link && link.pricingOnly && !perms.managePricing) return null;
-              const Icon = link.icon;
-              const isActive = pathname === link.href;
-              
-              const content = (
-                <div className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 group cursor-pointer",
-                  isActive 
-                    ? "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 shadow-lg" 
-                    : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
-                )}>
-                  <div className={cn(
-                    "p-1.5 rounded-lg transition-colors",
-                    isActive ? "bg-white/10 dark:bg-slate-900/10" : "bg-slate-100 dark:bg-slate-800 group-hover:bg-white dark:group-hover:bg-slate-700"
-                  )}>
-                    <Icon className="h-4 w-4" />
-                  </div>
-                  {link.name}
                 </div>
               );
-
-              return (
-                <Link key={link.name} href={link.href} onClick={() => setIsMobileOpen(false)}>
-                  {content}
-                </Link>
-              );
             })}
-          </div>
+          </nav>
 
           <div className="mt-auto pt-10 space-y-6">
             <div className="bg-slate-800/40 rounded-2xl p-5 border border-slate-700/50">
