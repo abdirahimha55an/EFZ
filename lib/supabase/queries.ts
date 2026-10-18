@@ -13,6 +13,7 @@
 import type { PostgrestError } from "@supabase/supabase-js";
 import type { PaymentMethodRow, CreditPolicy, CreditPolicyInput, CreditOverviewRow, CreditHistory, CreditOperations, CreditDispute, ReviewCheckout } from "@/lib/customerFinance";
 import { policyRpcArgs } from "@/lib/customerFinance";
+import type { ImportReport, PriceAgreement, PriceAlerts, PriceHistoryEvent } from "@/lib/customerPrices";
 
 import type {
   AdminSettings,
@@ -1038,6 +1039,65 @@ export function createDb(client: EfzSupabaseClient) {
   // -------------------------------------------------------------------------
   // 23: customer payments and credit (Super Admin). Every rule lives in the audited database functions.
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // 26: customer price agreements (Super Admin or Manager). Every rule lives in the audited database functions.
+  // -------------------------------------------------------------------------
+  const pricing = {
+    async alerts(): Promise<PriceAlerts> {
+      const { data, error } = await client.rpc("price_agreement_alerts");
+      if (error) throw new EfzDbError("pricing.alerts", error);
+      return data as unknown as PriceAlerts;
+    },
+    async list(customerId?: string, status?: string): Promise<PriceAgreement[]> {
+      const { data, error } = await client.rpc("list_price_agreements", { p_customer_id: customerId ?? null, p_status: status ?? null });
+      if (error) throw new EfzDbError("pricing.list", error);
+      return (data as unknown as PriceAgreement[]) ?? [];
+    },
+    async history(customerId: string): Promise<PriceHistoryEvent[]> {
+      const { data, error } = await client.rpc("price_agreement_history", { p_customer_id: customerId });
+      if (error) throw new EfzDbError("pricing.history", error);
+      return (data as unknown as PriceHistoryEvent[]) ?? [];
+    },
+    async create(i: { customerId: string; productId: string; designId: string | null; unitPrice: number; from: string; to: string | null; reason: string; belowCostReason: string | null }): Promise<string> {
+      const { data, error } = await client.rpc("create_price_agreement", { p_customer_id: i.customerId, p_product_id: i.productId, p_design_id: i.designId, p_unit_price: i.unitPrice, p_effective_from: i.from, p_effective_to: i.to, p_reason: i.reason, p_below_cost_reason: i.belowCostReason });
+      if (error) throw new EfzDbError("pricing.create", error);
+      return String(data);
+    },
+    async replace(id: string, unitPrice: number, from: string, to: string | null, reason: string, belowCostReason: string | null): Promise<string> {
+      const { data, error } = await client.rpc("replace_price_agreement", { p_id: id, p_unit_price: unitPrice, p_effective_from: from, p_effective_to: to, p_reason: reason, p_below_cost_reason: belowCostReason });
+      if (error) throw new EfzDbError("pricing.replace", error);
+      return String(data);
+    },
+    async verify(id: string, unitPrice: number, from: string, to: string | null, note: string, belowCostReason: string | null): Promise<void> {
+      const { error } = await client.rpc("verify_price_agreement", { p_id: id, p_unit_price: unitPrice, p_effective_from: from, p_effective_to: to, p_note: note, p_below_cost_reason: belowCostReason });
+      if (error) throw new EfzDbError("pricing.verify", error);
+    },
+    async reject(id: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("reject_price_agreement", { p_id: id, p_reason: reason });
+      if (error) throw new EfzDbError("pricing.reject", error);
+    },
+    async revoke(id: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("revoke_price_agreement", { p_id: id, p_reason: reason });
+      if (error) throw new EfzDbError("pricing.revoke", error);
+    },
+    async end(id: string, to: string, reason: string): Promise<void> {
+      const { error } = await client.rpc("end_price_agreement", { p_id: id, p_effective_to: to, p_reason: reason });
+      if (error) throw new EfzDbError("pricing.end", error);
+    },
+    async importCandidates(dryRun: boolean, since: string | null, minOrders: number): Promise<ImportReport> {
+      const { data, error } = await client.rpc("import_price_candidates", { p_dry_run: dryRun, p_since: since, p_min_orders: minOrders });
+      if (error) throw new EfzDbError("pricing.import", error);
+      return data as unknown as ImportReport;
+    },
+    /** The product designs staff may read (the table's own row rules decide); used by the agreement form. */
+    async designs(): Promise<{ id: string; productId: string; name: string }[]> {
+      // product_designs is not in the generated table types; the table's own row rules decide what staff may read
+      const loose = client as unknown as { from: (t: string) => { select: (c: string) => { eq: (c: string, v: boolean) => { order: (c: string) => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }> } } } };
+      const { data, error } = await loose.from("product_designs").select("id, product_id, name, is_active").eq("is_active", true).order("sort_order");
+      if (error) throw new EfzDbError("pricing.designs", error as never);
+      return ((data as unknown as { id: string; product_id: string; name: string }[]) ?? []).map((d) => ({ id: d.id, productId: d.product_id, name: d.name }));
+    },
+  };
   const financeAdmin = {
     async paymentMethods(): Promise<PaymentMethodRow[]> {
       const { data, error } = await client.rpc("list_payment_methods");
@@ -1980,6 +2040,7 @@ export function createDb(client: EfzSupabaseClient) {
     orderRequests,
     customerAccounts,
     financeAdmin,
+    pricing,
     commissions,
     analytics,
     logs,

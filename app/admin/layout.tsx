@@ -38,7 +38,7 @@ import {
   Moon,
   Wallet,
   Inbox,
-  Landmark, CreditCard } from "lucide-react";
+  Landmark, CreditCard, Tag } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -89,6 +89,8 @@ const SYSTEM_LINKS = [
   { name: "Payment Terms Review", href: "/admin/terms-review", icon: ClipboardCheck, permission: 'manage_system' as Permission, superAdminOnly: true },
   // 23: payment methods, credit policy and customer credit for the Android app (Super Admin only; the database enforces it).
   { name: "Customer Payments & Credit", href: "/admin/customer-credit", icon: CreditCard, permission: 'manage_system' as Permission, superAdminOnly: true },
+  // 26: negotiated customer prices for the Android app (Super Admin or Manager; the database enforces it).
+  { name: "Customer Prices", href: "/admin/customer-prices", icon: Tag, permission: 'edit_products' as Permission, pricingOnly: true },
 ];
 
 /** How often an open admin tab re-derives its alerts (also when the tab regains focus). */
@@ -795,6 +797,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             {SYSTEM_LINKS.map((link) => {
               if (link.permission && !hasPermission(link.permission)) return null;
               if ('superAdminOnly' in link && link.superAdminOnly && !perms.isSuperAdmin) return null;
+              if ('pricingOnly' in link && link.pricingOnly && !perms.managePricing) return null;
               const Icon = link.icon;
               const isActive = pathname === link.href;
               

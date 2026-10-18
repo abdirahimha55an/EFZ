@@ -882,6 +882,17 @@ export type Database = {
       record_credit_risk_review: { Args: { p_default_id: string; p_note: string }; Returns: undefined };
       increase_customer_credit_limit: { Args: { p_customer_id: string; p_new_limit: number; p_reason: string }; Returns: undefined };
       run_credit_checks: { Args: Record<string, never>; Returns: unknown };
+      price_agreement_alerts: { Args: Record<string, never>; Returns: unknown };
+      list_price_agreements: { Args: { p_customer_id?: string | null; p_status?: string | null }; Returns: unknown };
+      price_agreement_history: { Args: { p_customer_id: string }; Returns: unknown };
+      create_price_agreement: { Args: { p_customer_id: string; p_product_id: string; p_design_id: string | null; p_unit_price: number; p_effective_from: string; p_effective_to: string | null; p_reason: string; p_below_cost_reason: string | null }; Returns: string };
+      replace_price_agreement: { Args: { p_id: string; p_unit_price: number; p_effective_from: string; p_effective_to: string | null; p_reason: string; p_below_cost_reason: string | null }; Returns: string };
+      verify_price_agreement: { Args: { p_id: string; p_unit_price: number; p_effective_from: string; p_effective_to: string | null; p_note: string; p_below_cost_reason: string | null }; Returns: undefined };
+      reject_price_agreement: { Args: { p_id: string; p_reason: string }; Returns: undefined };
+      revoke_price_agreement: { Args: { p_id: string; p_reason: string }; Returns: undefined };
+      end_price_agreement: { Args: { p_id: string; p_effective_to: string; p_reason: string }; Returns: undefined };
+      import_price_candidates: { Args: { p_dry_run: boolean; p_since: string | null; p_min_orders: number }; Returns: unknown };
+      resolve_customer_price: { Args: { p_customer_id: string; p_product_id: string; p_design_id: string | null }; Returns: unknown };
       credit_overview: { Args: Record<string, never>; Returns: unknown };
       set_customer_credit: { Args: { p_customer_id: string; p_limit: number; p_terms_days: number; p_reason: string; p_override_reason: string | null }; Returns: undefined };
       suspend_customer_credit: { Args: { p_customer_id: string; p_reason: string }; Returns: undefined };
