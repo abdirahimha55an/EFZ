@@ -171,6 +171,7 @@ begin
            from (values ('select public._credit_run() as v'), ('select public._credit_sync_defaults(''x'') as v'), ('select public._credit_company_cap() as v'), ('select public._credit_effective_due(''x'') as v'),
                         ('select public._credit_send(''x'', ''x'', ''due_7'', ''customer'', ''t'', ''b'') as v'), ('select public._credit_notify_staff(''staff'', ''t'', ''b'') as v')) h(sql)));
 
+  perform pg_temp.chk('A5b the database owner (the role a pg_cron job runs as) can run the daily run directly, and it answers with its counts', (select (public.credit_daily_run() ->> 'asOf') = public.efz_today()::text));
   -- ---------------------------------------------------------------- B. the company-wide cap and its revenue definition
   -- Sales history: an old order, three complete calendar months (100 + 200 + 280 plus one order on the FIRST and one on the LAST day of the window = 600), and orders that must NOT count.
   perform pg_temp.mkorder('ORD-T25-H0', 'cust-t25-hist', 'delivered', (v_first - interval '3 month' - interval '40 days')::date, 50, true);
