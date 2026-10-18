@@ -175,6 +175,37 @@ All screenshots and layout checks of the customer app were made in the **web bui
 * Decide the credit policy values and rules in `docs/CREDIT_POLICY.md`.
 * Start merchant onboarding with WaafiPay and eDahab (next actions are in `docs/PAYMENT_PROVIDERS.md`); never send secrets in chat.
 
+## Milestone 6 (2026-10-18): credit policy v2 (Migration 25), a DRAFT applied nowhere
+
+Everything here is on this branch only, **local**. Migration 25 is applied to **no** database (Staging is at migration 24). Credit is OFF. Production untouched. Nothing pushed, merged or deployed. Read `docs/CREDIT_POLICY.md`, `docs/MIGRATION_25.md`, `docs/CREDIT_SCHEDULER.md`.
+
+### Implemented (local)
+Permanent immediate default with no grace period (revocation at the first overdue day, enforced when an order is accepted and recorded by any look or by the daily run); paying settles but never restores credit; requalification from the settlement and Super Admin re-approval at the initial limit; the approved proposal (3 orders, 90-day window, 60-day age, $40, 30 days, 25% cap over 3 complete months) loaded with credit OFF; company-wide cap on EFZ's existing revenue definition that blocks activation when history is insufficient; extensions that keep the original due date; disputes with void-only-after-billing-error; idempotent reminders and escalations with failure records and retries; append-only default and credit history; duplicate-phone guard; Hub controls; Android status, requalification steps, notices, invoice dates and a report-a-problem form; customer data exposure suites.
+
+### Verified results (local disposable PostgreSQL clones unless stated)
+| Check | Result |
+|---|---|
+| M25 suite (`25_credit_policy_v2_checks.sql`) | **135 checks, 0 failures** |
+| M25 concurrency, real parallel sessions (`25_credit_concurrency.mjs`) | **13 of 13**: company cap across 5 different customers (exactly 1 of 5 $30 orders), the last $20 of cap (exactly 2 of 6), personal $40 limit (exactly 2 of 8), one submission key from 5 sessions (1 order), default race over 8 sessions (1 default, 1 revocation, 1+1 notices), 5 concurrent daily runs (no duplicate reminder), 5 simultaneous disputes (1 opened) |
+| M25 mutation tests | **52 of 54 caught.** Survivors: **M26** (a defaulted invoice can be extended) and **C2** (no per-customer lock): both **equivalent** (another guard already covers each: a defaulted invoice is always overdue-unpaid or paid, and every path that takes the customer lock takes the company lock first). Three gaps found and closed by new tests (late-paid default, voided default, populated-table exposure) |
+| Rollback (`rollback/25_credit_policy_v2_rollback.sql`) | schema fingerprint **identical** to pre-M25 on a populated database; rerunnable; M21 81, M22 33, M23 97, M24 62 pass afterwards; M25 re-applies (135). Two real defects found by the test and fixed (drop order; proposal values left behind) |
+| M21 / M22 / M23 suites on M25 | 81 / 33 / 97, 0 failures (the M23 suite gained a conditional preamble and passes on M24 and M25) |
+| M24 suite | **62 of 62 on a migration-24 database (the live Staging level)**; on migration 25, 43 of 62 fail **by design** (listed in `docs/CREDIT_POLICY.md`; valid cases ported to M25 sections J and K) |
+| Customer data exposure (`customer_data_exposure_checks.sql`) | 17 checks on M24, 18 on M25, 0 failures; a deliberately leaked cost field **is caught**. Observation: the `financial_summary` view is selectable by customers but returns one all-zero, all-null row |
+| Financial validation | output identical before and after M25 on the clone (integrity 0 failures; the Production-specific baseline rows are not applicable to Staging) |
+| Scheduler trigger Edge Function + payments functions | **35 of 35** (`npm run test:payments`) |
+| Hub | `tsc` clean, ESLint clean on changed files, **31 of 31** unit tests, production `next build` OK |
+| Hub browser test (Playwright) | **52 of 52**: **26 against real Staging** (login, permissions of Manager / Officer / Customer Service, API refusals, page behaviour on a migration-24 database, no Production traffic) and **26 mock-backed** (Staging has no migration 25: 9 for M24 states, 17 for the M25 controls and the arguments they send) |
+| Customer app | `tsc` clean, ESLint 0 errors, **142 of 142** Jest tests (including the dedicated exposure test), Android export + secret scan (see the report) |
+
+### What is NOT done or NOT verified
+* **Migration 25 is not applied to Staging.** No Staging-backed test of it exists: the Staging checks above are on migration 24 (the Hub degrades gracefully there). Applying needs your authorization, a fresh backup and the guarded window.
+* **The daily run is not scheduled** and whether pg_cron exists on the projects was not verified; reminders are **not operational** (`docs/CREDIT_SCHEDULER.md`). Only the in-app channel exists.
+* No native Android device or emulator testing; layout was checked in a browser only.
+* **EVC Plus and eDahab remain unavailable for real payments.**
+* Open policy decisions listed in `docs/CREDIT_POLICY.md` (requalification interpretation, minimum purchase value, per-customer ceiling, revenue basis, extension length, overrides).
+* A stray **empty folder `C:\ABDIR~1`** (created 2026-10-17 20:56 by a mistaken file write of mine, containing nothing) could not be removed by me (a safety check blocked it); please delete it with `rmdir C:\ABDIR~1` if you agree.
+
 ## How to run the checks
 
 ```bash

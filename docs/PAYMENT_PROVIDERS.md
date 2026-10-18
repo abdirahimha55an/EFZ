@@ -1,5 +1,7 @@
 # Payment providers for the EFZ customer app: EVC Plus and eDahab
 
+> **EVC Plus (WaafiPay) and eDahab are NOT available for real payments.** The adapters are unit-tested against published formats only; no merchant account, credentials, sandbox or live payment exists, and the WaafiPay credential format is unconfirmed (see the onboarding findings below). Until each provider is contracted, its integration is verified server-side against the provider's sandbox and a supervised small live payment is checked, the only payment that completes is the clearly labelled Staging test method. Credit purchases (migration 25) never involve a provider: repayments are recorded by staff in the existing payments table.
+
 Status: researched from the providers' public documentation on 2026-10-17. **No live payment is possible yet**: both integrations need merchant credentials from the providers. Everything below marked "confirm" is something the public pages do not state.
 
 ## Options compared
