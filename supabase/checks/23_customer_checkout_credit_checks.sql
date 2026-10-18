@@ -130,7 +130,7 @@ begin
   perform pg_temp.chk('A4 the internal helpers cannot be called by any client role',
     (select bool_and(pg_temp.denied(pg_temp.q(u, r, sql)))
        from (values (ca, 'authenticated'), (sa_u, 'authenticated'), (null::uuid, 'anon')) c(u, r),
-            (values ('select public._customer_price_cart(''[]''::jsonb) as v'), ('select public._customer_credit_eligibility(''x'') as v'),
+            (values ((case when to_regprocedure('public._customer_price_cart(jsonb,text)') is not null then 'select public._customer_price_cart(''[]''::jsonb, ''x'') as v' else 'select public._customer_price_cart(''[]''::jsonb) as v' end)), ('select public._customer_credit_eligibility(''x'') as v'),
                     ('select public._record_online_payment(''ORD-1'', 1, ''x'', ''r'', ''a'') as v')) f(sql)));
   perform pg_temp.chk('A5 staff administration is Super Admin only (a Manager with account and order permissions is refused)',
     pg_temp.denied(pg_temp.q(mgr_u, 'authenticated', 'select public.list_payment_methods() as v'))

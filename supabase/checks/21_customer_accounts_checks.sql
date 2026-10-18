@@ -300,7 +300,7 @@ begin
   perform pg_temp.chk('E2 catalog exposes no cost and no exact stock',
     case when pg_temp.err(t) or jsonb_typeof(t::jsonb) <> 'array' or jsonb_array_length(t::jsonb) = 0 then false
          else not exists (select 1 from jsonb_array_elements(t::jsonb) e, jsonb_object_keys(e) key where key in ('cost_price', 'stock', 'low_stock_threshold', 'cost'))
-              and (select count(*) from jsonb_object_keys((t::jsonb) -> 0)) = 11 end, left(t, 80));
+              and (select count(*) from jsonb_object_keys((t::jsonb) -> 0)) in (11, 13) end, left(t, 80));   -- 11 columns at migration 21; migration 26 adds list_price and price_status (the customer's own price status)
   t := pg_temp.q(ca_u, 'authenticated', 'select public.my_orders() as o');
   j := (t::jsonb -> 0 -> 'o');
   select string_agg(e ->> 'id', ',') into v_ids from jsonb_array_elements(j) e;

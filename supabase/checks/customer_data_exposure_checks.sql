@@ -43,7 +43,7 @@ begin
   end if;
 end $f$;
 create function pg_temp.banned(j jsonb) returns text language sql as $f$
-  select string_agg(distinct k, ',') from pg_temp.jkeys(j) k where k ~* '(cost|margin|profit|commission|supplier|officer|buying|wholesale_price|markup|staff_note|internal)'
+  select string_agg(distinct k, ',') from pg_temp.jkeys(j) k where k ~* '(cost|margin|profit|commission|supplier|officer|buying|wholesale_price|markup|staff_note|internal|evidence|candidate)'
 $f$;
 
 do $t$
@@ -79,7 +79,7 @@ begin
       ('customer_price_preview', 'select public.customer_price_preview(''[{"productId":"p-tx","designId":"d9000000-0000-4000-8000-000000000001","quantity":1}]''::jsonb) as v'),
       ('customer_payment_methods', 'select public.customer_payment_methods() as v'), ('customer_credit_status', 'select public.customer_credit_status() as v'),
       ('my_finance', 'select public.my_finance() as v'), ('my_orders', 'select public.my_orders() as v'), ('my_order_requests', 'select public.my_order_requests() as v'),
-      ('my_customer_account', 'select public.my_customer_account() as v'), ('my_notifications', 'select public.my_notifications() as v')) f(name, sql) loop
+      ('my_customer_account', 'select public.my_customer_account() as v'), ('my_notifications', 'select public.my_notifications() as v'), ('my_price_agreements', 'select public.my_price_agreements() as v')) f(name, sql) loop
     if (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = fn.name) = 0 then v_skipped := v_skipped + 1; continue; end if;
     t := pg_temp.q(ca, 'authenticated', fn.sql);
     if pg_temp.err(t) then perform pg_temp.chk('X1 ' || fn.name || ' answers an approved customer', false, t); continue; end if;
