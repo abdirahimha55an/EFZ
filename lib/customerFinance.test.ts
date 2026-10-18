@@ -72,5 +72,5 @@ test("migration 25: notes, rules and the void rule", () => {
 test("migration 25: the company cap is explained, and an insufficient history is said plainly", () => {
   assert.match(capSummary({ configured: false, sufficient: false, reason: "", outstanding: 0, available: 0 }), /not configured/);
   assert.match(capSummary({ configured: true, sufficient: false, reason: "There is no sales history.", outstanding: 0, available: 0 }), /Not computable: There is no sales history/);
-  assert.match(capSummary({ configured: true, sufficient: true, reason: "", months: 3, percent: 25, averageMonthly: 200, cap: 50, outstanding: 30, available: 20 }), /Cap $50.00 (25% of the $200.00 average monthly sales over 3 complete months); $30.00 outstanding, $20.00 available/);
+  assert.equal(capSummary({ configured: true, sufficient: true, reason: "", months: 3, percent: 25, averageMonthly: 200, cap: 50, outstanding: 30, available: 20 }), "Cap $50.00 (25% of the $200.00 average monthly sales over 3 complete months); $30.00 outstanding, $20.00 available.");
 });
