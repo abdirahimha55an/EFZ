@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { ACTIVE_PRODUCT_CATEGORIES, AdminProfile, Product } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
-import { isValidImageUrl, validateProduct } from "@/lib/validators";
+import { isValidImageUrl, resolveImageUrlForSave, validateProduct } from "@/lib/validators";
 
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -224,12 +224,16 @@ export default function ProductsPage() {
       return;
     }
 
+    // The image is optional. A typed URL is saved trimmed; a blank box never clears the stored image (nothing is sent for it).
+    const image = resolveImageUrlForSave(formData.imageUrl, editingProduct?.imageUrl, editingProduct ? "update" : "create");
+    const keptImageNote = image.keptExisting ? " The existing image was kept; to change it, paste a new image URL." : "";
+
     // Catalogue fields everyone with edit_products may write.
     const catalogFields = {
       name: formData.name,
       category: formData.category,
       size: formData.size,
-      imageUrl: formData.imageUrl,
+      ...(image.imageUrl !== undefined ? { imageUrl: image.imageUrl } : {}),
       description: formData.description,
       durability: formData.durability,
       surfaceType: formData.surfaceType,
@@ -281,7 +285,7 @@ export default function ProductsPage() {
 
         showNotification(
           'success',
-          validation.warning ? `Product updated. Warning: ${validation.warning}` : 'Product updated successfully'
+          (validation.warning ? `Product updated. Warning: ${validation.warning}` : 'Product updated successfully') + keptImageNote
         );
       } else {
         // Created with zero stock, then stocked through the ledger, so a new
@@ -289,6 +293,7 @@ export default function ProductsPage() {
         // pricing rights it is created unpriced for a manager to price.
         const created = await db.products.create({
           ...catalogFields,
+          imageUrl: image.imageUrl ?? "",
           sellingPrice: 0,
           ...pricingFields,
           stock: 0,
@@ -756,7 +761,7 @@ export default function ProductsPage() {
                     </div>
 
                     <div className="relative">
-                      <label className="block text-sm font-bold text-slate-700 mb-1">Image URL</label>
+                      <label className="block text-sm font-bold text-slate-700 mb-1">Image URL <span className="font-normal text-slate-400">(optional)</span></label>
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                         <LinkIcon className="h-4 w-4 text-slate-400" />
                       </div>
@@ -770,7 +775,7 @@ export default function ProductsPage() {
                         className="pl-10 text-xs"
                       />
                     </div>
-                    <p className="text-[10px] text-slate-400">Use a direct URL to an image hosted online.</p>
+                    <p className="text-[10px] text-slate-400">Optional. Use a direct http(s) URL to an image hosted online. Leaving it empty never removes an existing image.</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">

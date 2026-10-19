@@ -1,4 +1,4 @@
-import { AdminUser, Customer, Order, Product, OFFICIAL_PERMISSIONS } from "../types";
+import { OFFICIAL_PERMISSIONS, type AdminUser, type Customer, type Order, type Product } from "../types";
 
 export const isValidImageUrl = (imageUrl: string): boolean => {
   try {
@@ -9,10 +9,31 @@ export const isValidImageUrl = (imageUrl: string): boolean => {
   }
 };
 
+/**
+ * What to send for the image URL when a product is saved.
+ *
+ * The image is OPTIONAL: products.image_url is `not null default ''` and the Hub list, the website and the Android app all show a placeholder without one.
+ *  - a URL was typed: it is saved trimmed;
+ *  - the box is blank on an EDIT: nothing is sent (imageUrl undefined), so the stored image is never cleared by a save; keptExisting tells the caller
+ *    that an image was there, so the user can be told it was kept;
+ *  - the box is blank on a NEW product: nothing is sent either (the database default '' applies).
+ */
+export const resolveImageUrlForSave = (
+  input: string | null | undefined,
+  existing: string | null | undefined,
+  mode: "create" | "update"
+): { imageUrl: string | undefined; keptExisting: boolean } => {
+  const typed = (input ?? "").trim();
+  if (typed) return { imageUrl: typed, keptExisting: false };
+  return { imageUrl: undefined, keptExisting: mode === "update" && (existing ?? "").trim() !== "" };
+};
+
 export const validateProduct = (product: Partial<Product>): { ok: boolean; error?: string; warning?: string } => {
   if (!product.id || !product.name) return { ok: false, error: "Product ID and name are required." };
-  if (!product.imageUrl || !isValidImageUrl(product.imageUrl)) {
-    return { ok: false, error: "A valid HTTP or HTTPS image URL is required." };
+  // The image URL is optional; when one is given it must be a real http(s) address.
+  const image = (product.imageUrl ?? "").trim();
+  if (image && !isValidImageUrl(image)) {
+    return { ok: false, error: "The image URL must be a valid HTTP or HTTPS address. Leave it empty to save without changing the image." };
   }
   
   // Financial & Stock Validation
