@@ -485,7 +485,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const hasAnyPermission = (permissions: Permission[]) => canAny(profile, permissions);
 
   const currentLink = ALL_NAV_LINKS.find(link => link.href === pathname);
-  // Header title: from the route alone, so it is there before any page data (or the profile) has loaded.
+  // Header title: from the route and the nav labels alone, so it does not wait for page data. Routes without a nav entry (e.g. /admin/documents) get no header title.
   const headerTitle = ALL_NAV_LINKS.filter(link => navIsActive(pathname, link.href)).sort((a, b) => b.href.length - a.href.length)[0]?.name;
 
   // Sidebar behaviour. Whether one entry is shown: the same rules the entries always had.
