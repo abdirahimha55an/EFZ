@@ -10,6 +10,7 @@ STAGING ONLY (`adjjamiqwboawqedaapi`). Run with the Supabase CLI logged in. Noth
 | `g4_protections` | T12 duplicate / out-of-state conversion, T13 who may convert, T14 old payload, T15 totals + delivery + payment + stock + commission vs a directly created control order |
 | `g5_app_e2e` | the customer-app path: real RPC submit as an approved account -> confirm -> the Hub's own query -> convert |
 | `g6_rollback` | T17: the real rollback text and the real migration text applied back and forth, plus both guards (all rolled back) |
+| `rehearse_cancel` | Rolled-back rehearsal of the Manager cancellation of the concurrency-test order `ORD-4877625` (refuses to run unless that order is still pending). Run with `./run.sh rehearse_cancel`. |
 | `concurrency.sh` | T12 concurrent: the ONLY test that commits (1 customer, 1 request, 1 order, all `TEST-28`) |
 
 ## How it is made safe
