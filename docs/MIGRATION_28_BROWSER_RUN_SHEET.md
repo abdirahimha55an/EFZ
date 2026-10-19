@@ -1,6 +1,6 @@
 # Migration 28 - browser run sheet (Staging preview)
 
-The synthetic data below already exists on EFZ-Staging (`adjjamiqwboawqedaapi`). Open the **Preview** of the latest commit on `android/customer-accounts` (GitHub commit status > Vercel > Visit; previews are behind Vercel login), sign in as the Staging **Manager** (`efz.manager@example.com`, the password you set) and open **Admin > Orders & Requests > Website Requests** (customer-app requests are under **Customer App Requests**).
+The synthetic data below already exists on EFZ-Staging (`adjjamiqwboawqedaapi`). Open the **Preview** of the latest commit on `android/customer-accounts` (GitHub commit status > Vercel > Visit; previews are behind Vercel login), sign in as the Staging **Manager** (`efz.ops@example.com`, the password you set) and open **Admin > Orders & Requests > Website Requests** (customer-app requests are under **Customer App Requests**).
 Find each request by the REQ reference below, press **Convert**. Everything is named `TEST-28 B ...`.
 
 Customers: `cust-t28b-a` A (Nexus agreed 10.00) | `cust-t28b-b` B (Fire Ball: Red design 9.50, product-wide 11.00) | `cust-t28b-c` C (list prices) | `cust-t28b-d` D (Nexus agreement pending review).

@@ -1,0 +1,22 @@
+name: Hub CI
+on:
+  push:
+    branches: [android/**, feature/**]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      # Placeholders so the build can run; the CI build never talks to a database. Public Staging URL shape only.
+      NEXT_PUBLIC_SUPABASE_URL: https://adjjamiqwboawqedaapi.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: sb_publishable_ci_placeholder_not_a_real_key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run test:hub
+      - run: npx next build --webpack

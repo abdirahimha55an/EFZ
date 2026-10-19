@@ -46,3 +46,6 @@ next-env.d.ts
 /Dev/
 /supabase/06_data_import.sql
 **/06_data_import.sql
+
+# Supabase CLI local state (project link, CLI version)
+supabase/.temp/

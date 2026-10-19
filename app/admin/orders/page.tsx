@@ -12,6 +12,7 @@ import { AdminUser, Customer, Order, Product, ORDER_STATUS_TRANSITIONS, ORDER_ST
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { efzToday } from "@/lib/dates";
+import { isCustomerAppOrder, matchesChannel, type OrderChannelFilter } from "@/lib/orderChannel";
 
 /** Payments or paid commission: cancelling needs a Super Admin and a reason. */
 const isFinanciallyLocked = (order: Order) =>
@@ -71,6 +72,7 @@ export default function OrdersPage() {
 
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [channelFilter, setChannelFilter] = useState<OrderChannelFilter>("all");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
 
@@ -619,7 +621,7 @@ export default function OrdersPage() {
       order.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
       legacyMatches;
     const matchesStatus = statusFilter === "all" || order.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    return matchesSearch && matchesStatus && matchesChannel(order, channelFilter);
   }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const canChangeStatus = perms.editOrders;
@@ -723,13 +725,22 @@ export default function OrdersPage() {
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
-                <option value="all">All Channels</option>
+                <option value="all">All Statuses</option>
                 <option value="pending">Pending</option>
                 <option value="confirmed">Confirmed</option>
                 <option value="processing">Processing</option>
                 <option value="partially_delivered">Partially Delivered</option>
                 <option value="delivered">Delivered</option>
                 <option value="cancelled">Cancelled</option>
+              </select>
+              <select
+                aria-label="Order source"
+                className="h-9 w-full md:w-40 rounded-lg border-none bg-slate-50 px-3 text-xs font-bold text-slate-600 outline-none transition-all cursor-pointer"
+                value={channelFilter}
+                onChange={(e) => setChannelFilter(e.target.value as OrderChannelFilter)}
+              >
+                <option value="all">All Sources</option>
+                <option value="customer_app">Customer app</option>
               </select>
             </div>
           </div>
@@ -754,6 +765,9 @@ export default function OrdersPage() {
                       <td className="px-6 py-3">
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono text-[10px] font-bold text-slate-400">#{order.id}</span>
+                          {isCustomerAppOrder(order) && (
+                            <span className="rounded bg-sky-50 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wide text-sky-700" title="Placed by the customer in the Android app">App</span>
+                          )}
                           {order.commissionPaid && (
                             <div className="bg-orange-50 text-orange-600 p-0.5 rounded shadow-sm" title="Commission Processed & Locked">
                               <AlertCircle className="h-2.5 w-2.5" />
