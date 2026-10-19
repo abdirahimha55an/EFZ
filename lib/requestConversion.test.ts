@@ -8,8 +8,11 @@ import {
   isAgreedPrice,
   isAgreementOverride,
   isPriceChanged,
+  PRICE_LOOKUP_FAILED,
   lineBlock,
   overrideReasonMissing,
+  overrideSummary,
+  parsePriceInfo,
   toPayloadLine,
 } from "./requestConversion.ts";
 
@@ -55,10 +58,40 @@ test("a price waiting to be confirmed blocks the line and cannot be typed over",
   assert.equal(lineBlock(line()), null);
 });
 
-test("when the price could not be looked up the shown price is sent, exactly as before migration 28", () => {
-  const l = line({ info: null, price: "20" });
-  assert.deepEqual(toPayloadLine(l), { productId: "p1", quantity: 5, actualUnitPrice: 20 });
-  assert.equal(lineBlock(l), null);
+test("a failed price lookup BLOCKS the line; the displayed price is never sent as a fallback", () => {
+  const failed = line({ info: null, price: "" });
+  assert.equal(lineBlock(failed), PRICE_LOOKUP_FAILED);
+  // even if a price were somehow on screen (or typed), a line without a usable lookup is not an override and sends no price
+  const typed = line({ info: null, price: "20", priceEdited: true });
+  assert.equal(lineBlock(typed), PRICE_LOOKUP_FAILED);
+  assert.equal(isPriceChanged(typed), false);
+  assert.equal(isAgreementOverride(typed), false);
+  assert.deepEqual(toPayloadLine(typed), { productId: "p1", quantity: 5 });
+  // not asked yet is not a block (the dialog keeps Create disabled until the answer arrives), and never sends a price either
+  assert.equal(lineBlock(line({ info: undefined, price: "" })), null);
+  assert.deepEqual(toPayloadLine(line({ info: undefined, price: "20", priceEdited: true })), { productId: "p1", quantity: 5 });
+});
+
+test("an invalid lookup answer is treated as no answer (null), never guessed", () => {
+  assert.deepEqual(parsePriceInfo({ source: "agreement", price: 15, listPrice: 20, reason: null }), { source: "agreement", price: 15, listPrice: 20, reason: null });
+  assert.deepEqual(parsePriceInfo({ source: "list", price: 20, listPrice: 20 }), { source: "list", price: 20, listPrice: 20, reason: null });
+  assert.deepEqual(parsePriceInfo({ source: "review", price: null, listPrice: 20, reason: "pending" }), { source: "review", price: null, listPrice: 20, reason: "pending" });
+  assert.deepEqual(parsePriceInfo({ source: "review", price: 5, listPrice: 20, reason: "pending" }), { source: "review", price: null, listPrice: 20, reason: "pending" }, "a review answer never carries a price");
+  for (const bad of [null, undefined, "x", 3, [], {}, { source: "none", price: null }, { source: "agreement", price: null, listPrice: 20 }, { source: "list", price: "20", listPrice: 20 }, { source: "list", price: -1, listPrice: 20 }, { source: "list", price: Number.NaN, listPrice: 20 }, { source: "agreement", price: 15, listPrice: "20" }]) {
+    assert.equal(parsePriceInfo(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("the override summary shows the agreed price, the proposed price and what the difference comes to, per line and per unit", () => {
+  const over = line({ productId: "p1", designName: "Blue", quantity: "4", priceEdited: true, price: "18.50", info: agreement(15) });
+  const same = line({ productId: "p2", info: agreement(10), price: "10" });
+  const lower = line({ productId: "p3", quantity: "10", priceEdited: true, price: "9", info: agreement(10) });
+  const rows = overrideSummary([over, same, lower]);
+  assert.deepEqual(rows, [
+    { productId: "p1", designName: "Blue", quantity: 4, agreed: 15, proposed: 18.5, perUnit: 3.5, total: 14 },
+    { productId: "p3", designName: "", quantity: 10, agreed: 10, proposed: 9, perUnit: -1, total: -10 },
+  ]);
+  assert.deepEqual(overrideSummary([same]), []);
 });
 
 test("the design travels with the line: by id when known, by recorded name when the design was removed", () => {

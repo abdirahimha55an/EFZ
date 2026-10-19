@@ -30,6 +30,8 @@ import {
   linePrice,
   OVERRIDE_REASON_MIN,
   overrideReasonMissing,
+  overrideSummary,
+  parsePriceInfo,
   toPayloadLine,
 } from "@/lib/requestConversion";
 import type { AdminUser, Customer, CustomerMatch, Product, WebsiteRequest } from "@/lib/types";
@@ -75,6 +77,8 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
   const [belowCostReason, setBelowCostReason] = useState("");
   // 28: needed (10+ characters) when a line is charged a price other than the customer's agreed price.
   const [priceOverrideReason, setPriceOverrideReason] = useState("");
+  // 28: bumped by "Retry" to ask the database for the customer's prices again.
+  const [retryTick, setRetryTick] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
@@ -137,11 +141,16 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
   }, [choice?.kind, newCustomer.phone, request.id]);
 
   // 28: what price will the database apply to each line? Asked again when the customer, a product or a design changes. A brand-new customer has no
-  // agreements, so the list price applies. If the answer cannot be had (null), the dialog behaves as before and sends the price it shows.
+  // agreements, so the list price applies. If the answer cannot be had or is not usable (null) the line is BLOCKED with a Retry: a displayed price is never sent as
+  // a fallback, because a price that differs from an agreement the page could not see would silently become an override.
   // a different customer means different agreements: every line waits for its new answer (the effect below asks again)
   const chooseCustomer = (next: CustomerChoice) => {
     setChoice(next);
     setLines((c) => c.map((l) => ({ ...l, info: undefined })));
+  };
+  const retryLookups = () => {
+    setLines((c) => c.map((l) => (l.info === null ? { ...l, info: undefined } : l)));
+    setRetryTick((n) => n + 1);
   };
   const customerKey = choice?.kind === "existing" ? choice.customerId : choice?.kind ?? "";
   const resolveKey = lines.map((l) => `${l.key}:${l.productId}:${l.designName ?? ""}`).join(",") + "|" + customerKey;
@@ -153,23 +162,23 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
       const db = getDb();
       const answers = await Promise.all(targets.map(async (t) => {
         const p = products.find((x) => x.id === t.productId);
-        if (choice.kind === "new") return { t, info: p ? { source: "list" as const, price: p.sellingPrice, listPrice: p.sellingPrice, reason: null } : null };
-        return { t, info: await db.orders.resolvePrice(choice.customerId, t.productId, t.designName).catch(() => null) };
+        if (choice.kind === "new") return { t, info: parsePriceInfo(p ? { source: "list", price: p.sellingPrice, listPrice: p.sellingPrice, reason: null } : null) };
+        return { t, info: parsePriceInfo(await db.orders.resolvePrice(choice.customerId, t.productId, t.designName).catch(() => null)) };
       }));
       if (cancelled) return;
       setLines((c) => c.map((l) => {
         const a = answers.find((x) => x.t.key === l.key && x.t.productId === l.productId && x.t.designName === l.designName);
         if (!a) return l;
-        const fallback = products.find((x) => x.id === l.productId)?.sellingPrice;
-        const shown = a.info === null ? (fallback !== undefined ? String(fallback) : "") : a.info.price !== null ? String(a.info.price) : "";
-        return { ...l, info: a.info, price: l.priceEdited ? l.price : shown };
+        // no usable answer (null) leaves the price EMPTY and the line blocked: a shown price is never a fallback
+        const shown = a.info && a.info.price !== null ? String(a.info.price) : "";
+        return { ...l, info: a.info, price: l.priceEdited && a.info ? l.price : shown, priceEdited: a.info ? l.priceEdited : false };
       }));
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolveKey, products, choice?.kind]);
+  }, [resolveKey, products, choice?.kind, retryTick]);
 
   const officers = useMemo(() => staff.filter((s) => s.role === "Marketing Officer" && s.status === "active"), [staff]);
   const searchResults = useMemo(() => {
@@ -192,6 +201,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
     parsed.every((l) => l.productId && Number.isInteger(l.qty) && l.qty >= 1 && l.info !== undefined && !lineBlock(l) && l.unit !== null && l.unit >= 0) &&
     !hasDuplicateLines(lines);
   const overrideLines = lines.filter(isAgreementOverride);
+  const overrideRows = overrideSummary(lines);
 
   const customerValid =
     choice?.kind === "existing"
@@ -406,7 +416,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                     </label>
                     <label className="space-y-1">
                       <span className="text-[10px] text-slate-500">Unit price{p ? ` (list ${money(p.sellingPrice)})` : ""}</span>
-                      <input type="number" min={0} step="0.01" value={line.price} placeholder={choice ? "…" : "pick customer"} onChange={(e) => updateLine(line.key, { price: e.target.value, priceEdited: true })} className="w-full rounded-md border border-slate-200 p-2 font-mono" aria-label="Unit price" data-testid="convert-price" />
+                      <input type="number" min={0} step="0.01" value={line.price} placeholder={choice ? "…" : "pick customer"} disabled={!line.info || line.info.price === null} onChange={(e) => updateLine(line.key, { price: e.target.value, priceEdited: true })} className="w-full rounded-md border border-slate-200 p-2 font-mono" aria-label="Unit price" data-testid="convert-price" />
                     </label>
                     <button type="button" onClick={() => setLines((c) => c.filter((l) => l.key !== line.key))} disabled={lines.length === 1} aria-label="Remove line" className="mb-0.5 rounded-md p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30">
                       <Trash2 className="h-4 w-4" />
@@ -424,6 +434,9 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                       </>
                     )}
                     {blocked && <span className="font-bold text-red-600" data-testid="convert-line-blocked">{blocked}</span>}
+                    {line.info === null && (
+                      <button type="button" onClick={retryLookups} className="rounded border border-red-200 px-1.5 py-0.5 font-bold text-red-700 hover:bg-red-50" data-testid="convert-retry">Retry</button>
+                    )}
                   </div>
                   </div>
                 );
@@ -440,10 +453,29 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
             <p className="text-right font-bold text-slate-900">Order total: <span className="font-mono">{money(total)}</span></p>
             <p className="text-[10px] text-slate-400">Stock is checked again when you convert, against what open orders already promise. Stock leaves the shelf only when balls are delivered.</p>
             {overrideLines.length > 0 && (
-              <label className="block space-y-1 rounded-md border border-amber-200 bg-amber-50 p-2 text-amber-800" data-testid="override-reason">
-                <span className="font-bold">This order charges a price other than the customer&apos;s agreed price. Reason (at least {OVERRIDE_REASON_MIN} characters; it is recorded in the audit log):</span>
-                <input value={priceOverrideReason} onChange={(e) => setPriceOverrideReason(e.target.value)} className="w-full rounded-md border border-amber-200 p-2" aria-label="Price override reason" />
-              </label>
+              <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900" data-testid="override-reason">
+                <p className="font-bold">Price override: this order charges a price other than the customer&apos;s agreed price.</p>
+                <table className="w-full text-left" data-testid="override-summary">
+                  <thead>
+                    <tr className="text-[10px] uppercase text-amber-700"><th className="py-0.5 pr-2">Product</th><th className="pr-2">Qty</th><th className="pr-2">Agreed</th><th className="pr-2">Proposed</th><th className="text-right">Difference</th></tr>
+                  </thead>
+                  <tbody>
+                    {overrideRows.map((r, i) => (
+                      <tr key={i} className="font-mono">
+                        <td className="py-0.5 pr-2 font-sans">{productOf(r.productId)?.name ?? r.productId}{r.designName ? ` (${r.designName})` : ""}</td>
+                        <td className="pr-2">{r.quantity}</td>
+                        <td className="pr-2">{money(r.agreed)}</td>
+                        <td className="pr-2 font-bold">{money(r.proposed)}</td>
+                        <td className="text-right">{r.total >= 0 ? "+" : "-"}{money(Math.abs(r.total))} ({r.perUnit >= 0 ? "+" : "-"}{money(Math.abs(r.perUnit))} each)</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <label className="block space-y-1">
+                  <span className="font-bold">Reason (at least {OVERRIDE_REASON_MIN} characters; it is recorded in the audit log with the agreed and charged prices):</span>
+                  <input value={priceOverrideReason} onChange={(e) => setPriceOverrideReason(e.target.value)} className="w-full rounded-md border border-amber-200 bg-white p-2" aria-label="Price override reason" />
+                </label>
+              </div>
             )}
             {belowCost && (
               perms.approveBelowCost ? (
@@ -476,7 +508,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
           <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
           <Button onClick={convert} disabled={!canSubmit}>
             {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Create order
+            {overrideLines.length > 0 ? "Create order with price override" : "Create order"}
           </Button>
         </div>
       </div>
