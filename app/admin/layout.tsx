@@ -536,11 +536,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           nested ? "px-2 py-2" : "px-3 py-2.5",
           isActive
             ? "bg-brand-blue text-white shadow-lg shadow-brand-blue/20"
-            : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
+            : "text-slate-300 hover:bg-white/10 hover:text-white"
         )}
         onClick={() => setIsMobileOpen(false)}
       >
-        <div className={cn("shrink-0 p-1.5 rounded-lg transition-colors", isActive ? "bg-white/20" : "bg-slate-100 dark:bg-slate-800 group-hover:bg-white dark:group-hover:bg-slate-700")}>
+        <div className={cn("shrink-0 p-1.5 rounded-lg transition-colors", isActive ? "bg-white/20" : "bg-white/10 group-hover:bg-white/20")}>
           <Icon className="h-4 w-4" />
         </div>
         <span className="min-w-0 flex-1 break-words leading-snug" data-testid="nav-label">{link.name}</span>
@@ -821,7 +821,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         />
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar: a dark navy surface in BOTH themes, so its text colours must not depend on the theme */}
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-[70] w-[19rem] max-w-[88vw] bg-brand-blue-dark text-slate-300 transition-all duration-300 ease-in-out md:static md:translate-x-0 border-r border-slate-800 shadow-2xl md:shadow-none flex flex-col",
@@ -869,7 +869,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     aria-controls={`nav-group-${m.id}`}
                     className={cn(
                       "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/60",
-                      hasActive ? "text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
+                      hasActive ? "text-white" : "text-slate-300 hover:bg-white/10 hover:text-white"
                     )}
                   >
                     <ModIcon className="h-4 w-4 shrink-0" />
@@ -880,7 +880,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open ? "rotate-180" : "-rotate-90", !open && pending > 0 ? "" : "ml-auto")} aria-hidden="true" />
                   </button>
                   {open && (
-                    <div id={`nav-group-${m.id}`} role="group" aria-label={m.label} className="mt-1 ml-4 space-y-0.5 border-l border-slate-200 pl-1.5 dark:border-slate-700">
+                    <div id={`nav-group-${m.id}`} role="group" aria-label={m.label} className="mt-1 ml-4 space-y-0.5 border-l border-slate-700 pl-1.5">
                       {items.map((i) => renderNavItem(i, true))}
                     </div>
                   )}
