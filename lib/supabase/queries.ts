@@ -328,7 +328,11 @@ export type ConvertRequestInput = {
   customer:
     | { kind: "existing"; customerId: string }
     | { kind: "new"; name: string; phone: string; email?: string; notes?: string; ownerOfficerId?: string; confirmNoDuplicate?: boolean };
-  lines: { productId: string; quantity: number; actualUnitPrice: number }[];
+  /**
+   * 28: actualUnitPrice is OPTIONAL. Left out, the database prices the line (the customer's design agreement, else the product agreement, else the list price);
+   * send it only to charge something else, and then priceOverrideReason is required when the customer has an agreement. designId / designName carry the design.
+   */
+  lines: { productId: string; quantity: number; actualUnitPrice?: number; designId?: string; designName?: string }[];
   deliveryNotes?: string;
   belowCostReason?: string;
   /** Needed (10+ characters) when a confirmed price differs from the customer's agreed price (migration 27). */
@@ -1270,12 +1274,13 @@ export function createDb(client: EfzSupabaseClient) {
     }
     const linkRows = ((links as { data: { request_id: string; customer_id: string }[] | null }).data ?? []);
     if (linkRows.length === 0) return requests;
-    const lineRes = await client.from("customer_order_request_lines" as never).select("request_id, line_no, design_name").limit(20000);
-    const lineRows = ((lineRes as { data: { request_id: string; line_no: number; design_name: string }[] | null }).data ?? []);
+    const lineRes = await client.from("customer_order_request_lines" as never).select("request_id, line_no, design_id, design_name").limit(20000);
+    const lineRows = ((lineRes as { data: { request_id: string; line_no: number; design_id?: string | null; design_name: string }[] | null }).data ?? []);
     const customerOf = new Map(linkRows.map((l) => [l.request_id, l.customer_id]));
     const designOf = new Map(lineRows.map((l) => [`${l.request_id}#${l.line_no}`, l.design_name]));
+    const designIdOf = new Map(lineRows.map((l) => [`${l.request_id}#${l.line_no}`, l.design_id ?? undefined]));
     return requests.map((r) => customerOf.has(r.id)
-      ? { ...r, app: { customerId: customerOf.get(r.id) as string }, lines: r.lines.map((l) => ({ ...l, designName: designOf.get(`${r.id}#${l.lineNo}`) ?? "" })) }
+      ? { ...r, app: { customerId: customerOf.get(r.id) as string }, lines: r.lines.map((l) => ({ ...l, designName: designOf.get(`${r.id}#${l.lineNo}`) ?? "", designId: designIdOf.get(`${r.id}#${l.lineNo}`) })) }
       : r);
   }
 

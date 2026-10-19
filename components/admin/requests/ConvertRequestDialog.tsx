@@ -20,6 +20,18 @@ import { derivePermissions } from "@/lib/permissions";
 import { isAcceptedRequestPhone, PHONE_HINT } from "@/lib/phone";
 import { cn } from "@/lib/utils";
 import { describeDbError, getDb } from "@/lib/supabase/db";
+import {
+  type ConversionLine,
+  hasDuplicateLines,
+  isAgreedPrice,
+  isAgreementOverride,
+  isPriceChanged,
+  lineBlock,
+  linePrice,
+  OVERRIDE_REASON_MIN,
+  overrideReasonMissing,
+  toPayloadLine,
+} from "@/lib/requestConversion";
 import type { AdminUser, Customer, CustomerMatch, Product, WebsiteRequest } from "@/lib/types";
 
 type Props = {
@@ -30,7 +42,7 @@ type Props = {
   onConverted: () => Promise<void>;
 };
 
-type Line = { key: number; productId: string; quantity: string; price: string };
+type Line = ConversionLine & { key: number };
 type CustomerChoice = { kind: "existing"; customerId: string; label: string; archived: boolean } | { kind: "new" } | null;
 
 const money = (n: number) => `$${n.toFixed(2)}`;
@@ -58,11 +70,11 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
     [
       request.deliveryLocation,
       request.visitorNotes,
-      // 22: designs are not an order-line field yet, so they travel in the order's notes.
-      request.lines.some((l) => l.designName) ? `Designs: ${request.lines.map((l) => `${l.productName}${l.designName ? ` (${l.designName})` : ""} x${l.quantity}`).join(", ")}` : "",
     ].filter(Boolean).join(" - ")
   );
   const [belowCostReason, setBelowCostReason] = useState("");
+  // 28: needed (10+ characters) when a line is charged a price other than the customer's agreed price.
+  const [priceOverrideReason, setPriceOverrideReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
@@ -87,7 +99,8 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
         if (verified) setChoice({ kind: "existing", customerId: verified.id, label: verified.name, archived: verified.status === "archived" });
         const start = request.lines.map((l, i) => {
           const p = nextProducts.find((x) => x.id === l.productId);
-          return { key: i + 1, productId: p ? p.id : "", quantity: String(l.quantity), price: p ? String(p.sellingPrice) : "" };
+          // 28: the design chosen in the app travels with the line as structured data (no longer copied into the delivery notes).
+          return { key: i + 1, productId: p ? p.id : "", quantity: String(l.quantity), designId: l.designId, designName: l.designName || undefined, price: "", priceEdited: false, info: undefined } as Line;
         });
         setLines(start);
         setNextKey(start.length + 1);
@@ -123,6 +136,41 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
     };
   }, [choice?.kind, newCustomer.phone, request.id]);
 
+  // 28: what price will the database apply to each line? Asked again when the customer, a product or a design changes. A brand-new customer has no
+  // agreements, so the list price applies. If the answer cannot be had (null), the dialog behaves as before and sends the price it shows.
+  // a different customer means different agreements: every line waits for its new answer (the effect below asks again)
+  const chooseCustomer = (next: CustomerChoice) => {
+    setChoice(next);
+    setLines((c) => c.map((l) => ({ ...l, info: undefined })));
+  };
+  const customerKey = choice?.kind === "existing" ? choice.customerId : choice?.kind ?? "";
+  const resolveKey = lines.map((l) => `${l.key}:${l.productId}:${l.designName ?? ""}`).join(",") + "|" + customerKey;
+  useEffect(() => {
+    if (!choice || products.length === 0) return;
+    let cancelled = false;
+    const targets = lines.filter((l) => l.productId).map((l) => ({ key: l.key, productId: l.productId, designName: l.designName }));
+    (async () => {
+      const db = getDb();
+      const answers = await Promise.all(targets.map(async (t) => {
+        const p = products.find((x) => x.id === t.productId);
+        if (choice.kind === "new") return { t, info: p ? { source: "list" as const, price: p.sellingPrice, listPrice: p.sellingPrice, reason: null } : null };
+        return { t, info: await db.orders.resolvePrice(choice.customerId, t.productId, t.designName).catch(() => null) };
+      }));
+      if (cancelled) return;
+      setLines((c) => c.map((l) => {
+        const a = answers.find((x) => x.t.key === l.key && x.t.productId === l.productId && x.t.designName === l.designName);
+        if (!a) return l;
+        const fallback = products.find((x) => x.id === l.productId)?.sellingPrice;
+        const shown = a.info === null ? (fallback !== undefined ? String(fallback) : "") : a.info.price !== null ? String(a.info.price) : "";
+        return { ...l, info: a.info, price: l.priceEdited ? l.price : shown };
+      }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolveKey, products, choice?.kind]);
+
   const officers = useMemo(() => staff.filter((s) => s.role === "Marketing Officer" && s.status === "active"), [staff]);
   const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -131,17 +179,19 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
   }, [customers, search]);
 
   const productOf = (id: string) => products.find((p) => p.id === id);
-  const parsed = lines.map((l) => ({ ...l, qty: Math.round(Number(l.quantity)), unit: Number(l.price) }));
-  const total = parsed.reduce((s, l) => s + (Number.isFinite(l.qty) && Number.isFinite(l.unit) ? l.qty * l.unit : 0), 0);
+  const parsed = lines.map((l) => ({ ...l, qty: Math.round(Number(l.quantity)), unit: linePrice(l) }));
+  const total = parsed.reduce((s, l) => s + (Number.isFinite(l.qty) && l.unit !== null ? l.qty * l.unit : 0), 0);
+  // a line charged exactly its agreed price never asks for a below-cost reason (the agreement was approved when it was verified)
   const belowCost = parsed.some((l) => {
     const p = productOf(l.productId);
-    return p?.costPrice != null && Number.isFinite(l.unit) && l.unit < p.costPrice;
+    return p?.costPrice != null && l.unit !== null && l.unit < p.costPrice && !isAgreedPrice(l);
   });
   const linesValid =
     parsed.length > 0 &&
     parsed.length <= 20 &&
-    parsed.every((l) => l.productId && Number.isInteger(l.qty) && l.qty >= 1 && l.price !== "" && Number.isFinite(l.unit) && l.unit >= 0) &&
-    new Set(parsed.map((l) => l.productId)).size === parsed.length;
+    parsed.every((l) => l.productId && Number.isInteger(l.qty) && l.qty >= 1 && l.info !== undefined && !lineBlock(l) && l.unit !== null && l.unit >= 0) &&
+    !hasDuplicateLines(lines);
+  const overrideLines = lines.filter(isAgreementOverride);
 
   const customerValid =
     choice?.kind === "existing"
@@ -150,7 +200,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
         ? newCustomer.name.trim().length > 0 && isAcceptedRequestPhone(newCustomer.phone) && (newPhoneMatches.length === 0 || confirmNoDuplicate)
         : false;
 
-  const canSubmit = linesValid && customerValid && !busy && (!belowCost || (perms.approveBelowCost && belowCostReason.trim().length > 0));
+  const canSubmit = linesValid && customerValid && !busy && !overrideReasonMissing(lines, priceOverrideReason) && (!belowCost || (perms.approveBelowCost && belowCostReason.trim().length > 0));
 
   const updateLine = (key: number, patch: Partial<Line>) => setLines((current) => current.map((l) => (l.key === key ? { ...l, ...patch } : l)));
 
@@ -172,9 +222,10 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                 ownerOfficerId: newCustomer.ownerOfficerId || undefined,
                 confirmNoDuplicate,
               },
-        lines: parsed.map((l) => ({ productId: l.productId, quantity: l.qty, actualUnitPrice: l.unit })),
+        lines: lines.map(toPayloadLine),
         deliveryNotes: deliveryNotes.trim(),
         belowCostReason: belowCost ? belowCostReason.trim() : undefined,
+        priceOverrideReason: overrideLines.length > 0 ? priceOverrideReason.trim() : undefined,
       });
       setOrderId(id);
     } catch (e) {
@@ -227,7 +278,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                       type="radio"
                       name="customer"
                       checked={choice?.kind === "existing" && choice.customerId === m.customerId}
-                      onChange={() => { setChoice({ kind: "existing", customerId: m.customerId, label: m.name, archived: m.status === "archived" }); setArchivedConfirmed(false); }}
+                      onChange={() => { chooseCustomer({ kind: "existing", customerId: m.customerId, label: m.name, archived: m.status === "archived" }); setArchivedConfirmed(false); }}
                     />
                     <span className="flex-1">
                       <span className="font-bold text-slate-900">{m.name}</span>{" "}
@@ -248,7 +299,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => { setChoice({ kind: "existing", customerId: c.id, label: c.name, archived: c.status === "archived" }); setArchivedConfirmed(false); setSearch(""); }}
+                  onClick={() => { chooseCustomer({ kind: "existing", customerId: c.id, label: c.name, archived: c.status === "archived" }); setArchivedConfirmed(false); setSearch(""); }}
                   className="block w-full rounded-md px-2 py-1 text-left hover:bg-slate-50"
                 >
                   {c.name} <span className="font-mono text-slate-400">{c.id}</span>{c.status === "archived" && " (archived)"}
@@ -257,7 +308,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
             </div>
 
             <label className={cn("flex cursor-pointer items-center gap-3 rounded-lg border p-3", choice?.kind === "new" ? "border-brand-blue bg-blue-50/50" : "border-slate-200")}>
-              <input type="radio" name="customer" checked={choice?.kind === "new"} onChange={() => setChoice({ kind: "new" })} />
+              <input type="radio" name="customer" checked={choice?.kind === "new"} onChange={() => chooseCustomer({ kind: "new" })} />
               <span className="font-bold text-slate-900">New customer from this request</span>
             </label>
 
@@ -319,14 +370,19 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
 
           {/* 2. Lines and prices */}
           <section className="space-y-3">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">2. Products, quantities and the agreed price</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">2. Products, quantities and price</p>
+            <p className="text-[10px] text-slate-400">The price is the customer&apos;s agreed price when there is one (the design&apos;s own agreement first), otherwise the list price. Change it only to charge something else.</p>
             <div className="space-y-2">
               {lines.map((line) => {
                 const p = productOf(line.productId);
-                const taken = new Set(lines.filter((l) => l.key !== line.key).map((l) => l.productId));
+                // a changed product loses the design, so only lines without a design count as "taken"
+                const taken = new Set(lines.filter((l) => l.key !== line.key && !l.designId && !l.designName).map((l) => l.productId));
+                const blocked = lineBlock(line);
+                const changed = isPriceChanged(line);
                 const requested = request.lines.find((r) => r.productId && r.productId === line.productId);
                 return (
-                  <div key={line.key} className="grid grid-cols-[1fr_5rem_6rem_auto] items-end gap-2">
+                  <div key={line.key} className="space-y-1" data-testid="convert-line">
+                  <div className="grid grid-cols-[1fr_5rem_6rem_auto] items-end gap-2">
                     <label className="min-w-0 space-y-1">
                       <span className="text-[10px] text-slate-500">
                         Product{p ? ` · in stock ${p.stock}` : ""}{p && p.isActive === false ? " · hidden from the website" : ""}
@@ -335,7 +391,7 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                         value={line.productId}
                         onChange={(e) => {
                           const next = productOf(e.target.value);
-                          updateLine(line.key, { productId: e.target.value, price: next ? String(next.sellingPrice) : "" });
+                          updateLine(line.key, { productId: e.target.value, designId: undefined, designName: undefined, price: next && choice?.kind === "new" ? String(next.sellingPrice) : "", priceEdited: false, info: undefined });
                         }}
                         className="w-full rounded-md border border-slate-200 p-2"
                         aria-label="Product"
@@ -350,11 +406,25 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                     </label>
                     <label className="space-y-1">
                       <span className="text-[10px] text-slate-500">Unit price{p ? ` (list ${money(p.sellingPrice)})` : ""}</span>
-                      <input type="number" min={0} step="0.01" value={line.price} onChange={(e) => updateLine(line.key, { price: e.target.value })} className="w-full rounded-md border border-slate-200 p-2 font-mono" aria-label="Unit price" />
+                      <input type="number" min={0} step="0.01" value={line.price} placeholder={choice ? "…" : "pick customer"} onChange={(e) => updateLine(line.key, { price: e.target.value, priceEdited: true })} className="w-full rounded-md border border-slate-200 p-2 font-mono" aria-label="Unit price" data-testid="convert-price" />
                     </label>
                     <button type="button" onClick={() => setLines((c) => c.filter((l) => l.key !== line.key))} disabled={lines.length === 1} aria-label="Remove line" className="mb-0.5 rounded-md p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30">
                       <Trash2 className="h-4 w-4" />
                     </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                    {line.designName && <span className="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-600" data-testid="convert-design">Design: {line.designName}</span>}
+                    {line.info?.source === "agreement" && !changed && <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-bold text-emerald-700" data-testid="convert-price-source">Agreed price</span>}
+                    {line.info?.source === "list" && !changed && <span className="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-600" data-testid="convert-price-source">List price</span>}
+                    {line.info === undefined && line.productId && choice && <span className="text-slate-400">Checking the customer&apos;s price…</span>}
+                    {changed && (
+                      <>
+                        <span className="rounded bg-amber-50 px-1.5 py-0.5 font-bold text-amber-700" data-testid="convert-price-source">Price changed{line.info?.source === "agreement" ? ` (agreed ${line.info.price !== null ? money(line.info.price) : "-"})` : ""}</span>
+                        <button type="button" className="text-brand-blue underline" onClick={() => updateLine(line.key, { priceEdited: false, price: line.info?.price != null ? String(line.info.price) : "" })}>Use the {line.info?.source === "agreement" ? "agreed" : "standard"} price</button>
+                      </>
+                    )}
+                    {blocked && <span className="font-bold text-red-600" data-testid="convert-line-blocked">{blocked}</span>}
+                  </div>
                   </div>
                 );
               })}
@@ -362,13 +432,19 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
                 <p className="text-red-600">A requested product no longer exists ({request.lines.filter((l) => !l.productId).map((l) => l.productName).join(", ")}). Choose a replacement or remove that line.</p>
               )}
               {lines.length < 20 && (
-                <Button type="button" size="sm" variant="ghost" onClick={() => { setLines((c) => [...c, { key: nextKey, productId: "", quantity: "1", price: "" }]); setNextKey((k) => k + 1); }}>
+                <Button type="button" size="sm" variant="ghost" onClick={() => { setLines((c) => [...c, { key: nextKey, productId: "", quantity: "1", price: "", priceEdited: false, info: undefined }]); setNextKey((k) => k + 1); }}>
                   <Plus className="mr-1 h-3.5 w-3.5" /> Add a product
                 </Button>
               )}
             </div>
             <p className="text-right font-bold text-slate-900">Order total: <span className="font-mono">{money(total)}</span></p>
             <p className="text-[10px] text-slate-400">Stock is checked again when you convert, against what open orders already promise. Stock leaves the shelf only when balls are delivered.</p>
+            {overrideLines.length > 0 && (
+              <label className="block space-y-1 rounded-md border border-amber-200 bg-amber-50 p-2 text-amber-800" data-testid="override-reason">
+                <span className="font-bold">This order charges a price other than the customer&apos;s agreed price. Reason (at least {OVERRIDE_REASON_MIN} characters; it is recorded in the audit log):</span>
+                <input value={priceOverrideReason} onChange={(e) => setPriceOverrideReason(e.target.value)} className="w-full rounded-md border border-amber-200 p-2" aria-label="Price override reason" />
+              </label>
+            )}
             {belowCost && (
               perms.approveBelowCost ? (
                 <label className="block space-y-1 rounded-md border border-amber-200 bg-amber-50 p-2 text-amber-800">

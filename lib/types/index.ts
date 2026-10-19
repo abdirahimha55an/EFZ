@@ -315,6 +315,8 @@ export type WebsiteRequestLine = {
   legacy: boolean;
   /** 22: the design the customer chose in the Android app ("" when none). */
   designName?: string;
+  /** 28: the catalogue design id of that choice, when it still exists (kept so the conversion can carry the design as structured data). */
+  designId?: string;
 };
 
 export type WebsiteRequest = {
