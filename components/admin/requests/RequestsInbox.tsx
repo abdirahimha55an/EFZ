@@ -137,9 +137,12 @@ export function RequestsInbox({ source }: { source: RequestSource }) {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
-        <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
-        <p className="text-xs font-medium">{cfg.loading}</p>
+      <div>
+        <h1 className="font-heading text-2xl font-bold tracking-tight text-slate-900" data-testid="requests-title">{cfg.title}</h1>
+        <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+          <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+          <p className="text-xs font-medium">{cfg.loading}</p>
+        </div>
       </div>
     );
   }

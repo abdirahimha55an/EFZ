@@ -12,8 +12,11 @@ export default function WebsiteRequestsPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
-          <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+        <div>
+          <h1 className="font-heading text-2xl font-bold tracking-tight text-slate-900" data-testid="requests-title">Website Requests</h1>
+          <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+            <Loader2 className="h-6 w-6 animate-spin text-brand-blue" />
+          </div>
         </div>
       }
     >

@@ -170,9 +170,12 @@ export default function CustomersPage() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
-        <Loader2 className="h-6 w-6 animate-spin text-brand-green" />
-        <p className="text-xs font-medium">Loading customers…</p>
+      <div>
+        <h1 className="font-heading text-2xl font-bold text-slate-900 tracking-tight">Customer Database</h1>
+        <div className="flex flex-col items-center justify-center gap-3 py-32 text-slate-400">
+          <Loader2 className="h-6 w-6 animate-spin text-brand-green" />
+          <p className="text-xs font-medium">Loading customers…</p>
+        </div>
       </div>
     );
   }

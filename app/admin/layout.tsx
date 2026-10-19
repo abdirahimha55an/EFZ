@@ -485,6 +485,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const hasAnyPermission = (permissions: Permission[]) => canAny(profile, permissions);
 
   const currentLink = ALL_NAV_LINKS.find(link => link.href === pathname);
+  // Header title: from the route alone, so it is there before any page data (or the profile) has loaded.
+  const headerTitle = ALL_NAV_LINKS.filter(link => navIsActive(pathname, link.href)).sort((a, b) => b.href.length - a.href.length)[0]?.name;
 
   // Sidebar behaviour. Whether one entry is shown: the same rules the entries always had.
   const navAllowed = (link: NavItem): boolean => {
@@ -933,6 +935,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <Menu className="h-6 w-6" />
             </button>
             
+            {headerTitle && (
+              <p className="shrink-0 truncate text-sm font-bold text-slate-900 dark:text-white md:max-w-[14rem]" data-testid="header-title">{headerTitle}</p>
+            )}
+
             <div className="hidden md:flex relative max-w-md w-full" ref={searchRef}>
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
               <input 
