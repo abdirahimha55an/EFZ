@@ -34,20 +34,20 @@ Effects, read from the function:
 1. `orders.status = 'cancelled'`, `cancelled_at = now()`, `updated_at` bumped. No other column changes.
 2. Stock: none. This order is `at_delivery` and nothing was delivered (the stock-return branch is only for old `at_creation` orders).
 3. One `system_logs` row (INFO, category ORDER): "Order ORD-4877625 status changed from pending to cancelled", with the reason.
-4. `bonus_on_order_cancelled` runs `bonus_refresh(cust-t28-conc)`, which **inserts one `customer_bonus_entitlements` row** (status `undetermined`) for the test customer (the order was never confirmed, so no bonus is decided; no bonus event is written). This is a new, permanent history row.
+4. `bonus_on_order_cancelled` runs `bonus_refresh(cust-t28-conc)`. **Measured in the rollback rehearsal:** it inserts one `customer_bonus_entitlements` row for the test customer, already DECIDED as `not_eligible` (era `unconfirmed`, 1 ball ordered; no holder order, no commission), and writes **one `commission_bonus_events` row** (`determined`, undetermined -> not_eligible, no amount). Both are permanent history rows. (An earlier draft of this document wrongly predicted `undetermined` and no event.)
 5. Reporting: `product_sales` and `daily_sales` exclude cancelled orders again; promised-to-open-orders for Nexus drops 4 -> 3.
 6. The converted request keeps its link to the (now cancelled) order. History is preserved by design. The order stays visible in Order Tracking as cancelled.
 
 ## 3. Proposed cleanup (needs your approval; not executed)
 
-**Step 0 - rehearsal (no lasting change).** Run the cancellation inside a transaction that is rolled back, as the Manager, and print what it would write (rows added, committed quantity before/after). Confirms items 1-6 above on the real record.
+**Step 0 - rehearsal (DONE 2026-10-19, rolled back, 14/14 checks; script `supabase/checks/28_integration/rehearse_cancel.sql`).** Ran the Manager cancellation of the real record inside a transaction that was rolled back and measured it. Results: status pending -> cancelled with `cancelled_at`; Nexus promised units 4 -> 3, stock 62 unchanged, no stock movement; `product_sales` Nexus -1 unit / -12.00 / -6.70 cost / -1 order; `daily_sales` for 2026-10-19 disappears (the test order was that day's only active order); one INFO/ORDER log row by the Manager with the reason; one `not_eligible` entitlement row and one `determined` bonus event; order line, price resolution, request, request events, request logs and customer byte-for-byte unchanged; cancelling twice is a no-op; a Manager cannot reactivate it. Afterwards the order was still pending and the Staging fingerprint identical (19/19).
 
 **Step 1 - cancel the order (recommended).** As `u-stg-manager` (or in the Hub as a Manager on a preview): `update_order_status('ORD-4877625', 'cancelled', 'TEST-28 concurrency test order: synthetic, cancelled after the Migration 28 integration run')`.
-Expected net change: 1 order updated, 1 log row added, 1 bonus-entitlement row added. Nothing deleted.
+Expected net change (measured in the rehearsal): 1 order updated, 1 log row added, 1 bonus-entitlement row added, 1 bonus event added. Nothing deleted.
 
 **Step 2 - archive the test customer (optional).** Set `cust-t28-conc` to `archived` (the Hub's Archive action / `customers.update(status = 'archived')`; the app allows this and rejects deletion). It then drops out of the active customer list. The order and request stay linked to it.
 
-**Step 3 - verify (read-only).** Re-run `supabase/checks/28_fingerprint.sql`. Expected: schema values identical; `orders`, `system_logs` changed; a new `customer_bonus_entitlements` row; everything else identical. Re-run `28_post_deploy.sql`.
+**Step 3 - verify (read-only).** Re-run `supabase/checks/28_fingerprint.sql`. Expected: schema values identical; `orders`, `system_logs` changed; a new `customer_bonus_entitlements` row and a new `commission_bonus_events` row; everything else identical. Re-run `28_post_deploy.sql`.
 
 **Not proposed:** deleting any row, editing `status` directly, touching the request, price resolution, events or logs. Those records are the audit evidence of the test; leaving them (with the order cancelled and the customer archived) is the supported end state.
 Alternative: leave everything as is. Impact: 1 pending order keeps reserving 1 Nexus and counts 12.00 in Staging sales until someone cancels it.
