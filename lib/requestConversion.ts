@@ -69,10 +69,10 @@ export function lineBlock(l: ConversionLine): string | null {
 
 /** Staff typed a price that differs from the one the database would apply. Only meaningful once the price is known. */
 export function isPriceChanged(l: ConversionLine): boolean {
-  if (!l.priceEdited || !l.info || l.info.price === null) return false;
+  const applied = l.info?.price;
+  if (!l.priceEdited || applied == null) return false;
   const typed = linePrice(l);
-  if (typed === null) return false;
-  return cents(typed) !== cents(l.info.price);
+  return typed !== null && cents(typed) !== cents(applied);
 }
 
 /** The line is charged exactly the agreed price (any below-cost approval was given when the agreement was verified, so no below-cost reason is asked). */

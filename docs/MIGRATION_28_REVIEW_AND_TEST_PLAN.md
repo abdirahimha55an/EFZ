@@ -94,3 +94,9 @@ Setup (approval needed): 3 synthetic customers (A with a product agreement, B wi
 ## Rollback
 
 Hub: revert the commit. Database: `rollback/28_convert_request_designs_rollback.sql` (guarded: refuses unless the function is the 28 or the 27 text; restores the migration-27 text byte for byte). Nothing stored is lost; orders created while 28 was live keep their design and prices.
+
+## Addendum (cleanup before the Staging migration)
+
+* The Convert dialog never submits a displayed price as a fallback: a failed or malformed `resolve_order_price` answer blocks the line with a Retry; a price typed for one customer is dropped when another is chosen.
+* `supabase/checks/28_post_deploy.sql` now pins the five customer-app requests converted before migration 28 by their exact ids; the "all converted app requests" query is labelled as such (it grows after migration 28).
+* `supabase/checks/28_fingerprint.sql` (one read-only SELECT) hashes the full content of the historical tables and the schema (indexes, policies, columns, grants, triggers, every function body except `convert_website_request`). Run it immediately before and after the migration: all values must be identical except `convert_website_request`.

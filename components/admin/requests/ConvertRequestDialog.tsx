@@ -143,10 +143,11 @@ export function ConvertRequestDialog({ request, profile, staff, onClose, onConve
   // 28: what price will the database apply to each line? Asked again when the customer, a product or a design changes. A brand-new customer has no
   // agreements, so the list price applies. If the answer cannot be had or is not usable (null) the line is BLOCKED with a Retry: a displayed price is never sent as
   // a fallback, because a price that differs from an agreement the page could not see would silently become an override.
-  // a different customer means different agreements: every line waits for its new answer (the effect below asks again)
+  // a different customer means different agreements: every line waits for its new answer (the effect below asks again), and a price typed for the
+  // previous customer is dropped so it can never be compared with, or sent against, someone else's agreement
   const chooseCustomer = (next: CustomerChoice) => {
     setChoice(next);
-    setLines((c) => c.map((l) => ({ ...l, info: undefined })));
+    setLines((c) => c.map((l) => ({ ...l, info: undefined, price: "", priceEdited: false })));
   };
   const retryLookups = () => {
     setLines((c) => c.map((l) => (l.info === null ? { ...l, info: undefined } : l)));

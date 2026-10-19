@@ -8,6 +8,7 @@ import {
   isAgreedPrice,
   isAgreementOverride,
   isPriceChanged,
+  linePrice,
   PRICE_LOOKUP_FAILED,
   lineBlock,
   overrideReasonMissing,
@@ -114,4 +115,16 @@ test("a line charged exactly its agreed price is not a below-cost approval case"
   assert.equal(isAgreedPrice(line()), true);
   assert.equal(isAgreedPrice(line({ priceEdited: true, price: "14" })), false);
   assert.equal(isAgreedPrice(line({ info: list(), price: "20" })), false);
+});
+
+test("an emptied or non-numeric price box is not a change; the line then has no price and cannot be submitted", () => {
+  for (const price of ["", "  ", "abc"]) {
+    const l = line({ priceEdited: true, price });
+    assert.equal(isPriceChanged(l), false);
+    assert.equal(isAgreementOverride(l), false);
+    assert.deepEqual(toPayloadLine(l), { productId: "p1", quantity: 5 });
+  }
+  // the dialog's own validity rule is linePrice() !== null; an emptied box fails it
+  assert.equal(linePrice(line({ priceEdited: true, price: "" })), null);
+  assert.equal(linePrice(line({ priceEdited: true, price: "abc" })), null);
 });
