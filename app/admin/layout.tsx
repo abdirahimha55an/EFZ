@@ -907,6 +907,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <Link href="/" target="_blank" className="flex items-center justify-center gap-2 w-full py-2 bg-slate-700 hover:bg-slate-600 text-[11px] font-bold text-slate-200 rounded-lg transition-colors group">
                 Visit Website <ExternalLink className="h-3 w-3 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
               </Link>
+              <p className="mt-2 text-center text-[9px] font-medium text-slate-500" data-testid="build-stamp">Build {process.env.NEXT_PUBLIC_BUILD_SHA} · {process.env.NEXT_PUBLIC_BUILD_ENV}</p>
             </div>
 
             <div className="pt-4 border-t border-slate-800">

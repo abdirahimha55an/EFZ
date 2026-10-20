@@ -15,7 +15,12 @@ if (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== "production") {
   }
 }
 
+// Shown in the sidebar so anyone can see which deployment (commit and environment) they are using.
 const nextConfig: NextConfig = {
+  env: {
+    NEXT_PUBLIC_BUILD_SHA: (process.env.VERCEL_GIT_COMMIT_SHA ?? "local").slice(0, 7),
+    NEXT_PUBLIC_BUILD_ENV: process.env.VERCEL_ENV ?? "local",
+  },
   images: {
     remotePatterns: [
       {

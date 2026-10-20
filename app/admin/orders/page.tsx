@@ -13,6 +13,7 @@ import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { efzToday } from "@/lib/dates";
 import { isCustomerAppOrder, matchesChannel, type OrderChannelFilter } from "@/lib/orderChannel";
+import { statusMenu } from "@/lib/orderStatusMenu";
 
 /** Payments or paid commission: cancelling needs a Super Admin and a reason. */
 const isFinanciallyLocked = (order: Order) =>
@@ -200,23 +201,8 @@ export default function OrdersPage() {
   const describe = (error: unknown) => describeDbError(error, { hideCost });
 
   /** Statuses this user may move an order to, including overrides for a Super Admin. */
-  const statusOptionsFor = (order: Order): OrderStatus[] => {
-    if (!perms.editOrders) return [order.status];
-    // Once balls are delivered the status follows the deliveries: only
-    // "deliver the rest" remains (a Super Admin corrects quantities instead).
-    if (deliveredBalls(order) > 0) {
-      return order.status === 'delivered' ? [order.status] : [order.status, 'delivered'];
-    }
-    const normal = ORDER_STATUS_TRANSITIONS[order.status] ?? [];
-    const allowed = SELECTABLE_ORDER_STATUSES.filter(status => {
-      if (status === order.status) return true;
-      if (perms.overrideOrders) return true;
-      if (!normal.includes(status)) return false;
-      // Cancelling an order with payments or paid commission is Super Admin only.
-      return !(status === 'cancelled' && isFinanciallyLocked(order));
-    });
-    return allowed;
-  };
+  const statusOptionsFor = (order: Order): OrderStatus[] =>
+    statusMenu({ status: order.status, deliveredBalls: deliveredBalls(order), canEdit: perms.editOrders, canOverride: perms.overrideOrders, financiallyLocked: isFinanciallyLocked(order) }).map((o) => o.status);
 
   const handleStatusChange = async (id: string, newStatus: string) => {
     const order = orders.find(o => o.id === id);
