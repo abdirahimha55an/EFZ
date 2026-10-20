@@ -71,7 +71,7 @@ export type CustomerOwnershipChange = {
   changedAt: string;
 };
 
-export type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'partially_delivered' | 'delivered' | 'cancelled';
+export type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'dispatched' | 'partially_delivered' | 'delivered' | 'cancelled';
 export type OrderType = 'regular' | 'trial';
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded' | 'credit';
 
@@ -80,19 +80,21 @@ export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded' | 'credit
  * supabase/12_commission_model.sql. Anything not listed - reactivating a
  * cancelled order - is a Super Admin override with a reason.
  * 'partially_delivered' is never chosen: it follows from record_delivery().
+ * 'dispatched' (migration 29) sits between processing and delivered; processing -> delivered stays valid, so a dispatch is never forced.
  * Once balls are delivered the status follows the delivered quantities; only
  * delivering the rest (or a Super Admin correction) changes it.
  */
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending: ['confirmed', 'cancelled'],
   confirmed: ['processing', 'cancelled'],
-  processing: ['delivered', 'cancelled'],
+  processing: ['dispatched', 'delivered', 'cancelled'],
+  dispatched: ['delivered', 'cancelled'],
   partially_delivered: ['delivered'],
   delivered: [],
   cancelled: [],
 };
 
-export const ORDER_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'processing', 'partially_delivered', 'delivered', 'cancelled'];
+export const ORDER_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'processing', 'dispatched', 'partially_delivered', 'delivered', 'cancelled'];
 
 /** Statuses a user can pick in a status menu (partially_delivered comes from deliveries). */
 export const SELECTABLE_ORDER_STATUSES: OrderStatus[] = ORDER_STATUSES.filter(s => s !== 'partially_delivered');
@@ -171,6 +173,8 @@ export type Order = {
   grossProfit: number | null;
   /** Set by update_order_status() on first delivery; null for undelivered and pre-2026-09-29 orders. */
   deliveredAt: string | null;
+  /** Set by update_order_status() when the order is marked dispatched (migration 29); null = never recorded. */
+  dispatchedAt?: string | null;
   /** Follows the customer's owner; display only. */
   marketingOfficerName: string | null;
   commissionPaid?: boolean;

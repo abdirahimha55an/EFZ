@@ -422,6 +422,7 @@ export default function AdminDashboard() {
                           order.status === 'delivered' ? "bg-green-50 text-green-600" :
                           order.status === 'cancelled' ? "bg-red-50 text-red-600" :
                           order.status === 'processing' ? "bg-purple-50 text-purple-600" :
+                          order.status === 'dispatched' ? "bg-indigo-50 text-indigo-600" :
                           order.status === 'confirmed' ? "bg-blue-50 text-blue-600" : "bg-orange-50 text-orange-600"
                         )}>
                           {order.status}

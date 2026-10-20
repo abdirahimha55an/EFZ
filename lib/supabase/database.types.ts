@@ -25,7 +25,7 @@ export type DbUserRole =
 export type DbUserStatus = "active" | "inactive";
 export type DbCustomerStatus = "active" | "archived";
 export type DbProductCategory = "Football" | "Futsal" | "Accessories";
-export type DbOrderStatus = "pending" | "confirmed" | "processing" | "partially_delivered" | "delivered" | "cancelled";
+export type DbOrderStatus = "pending" | "confirmed" | "processing" | "dispatched" | "partially_delivered" | "delivered" | "cancelled";
 export type DbOrderType = "regular" | "trial";
 export type DbPaymentStatus = "unpaid" | "partial" | "paid" | "refunded" | "credit";
 export type DbStockMovementType =
@@ -148,6 +148,9 @@ export type OrderRow = {
   created_at: string;
   updated_at: string;
   delivered_at: string | null;
+  /** From migration 29: when the order was marked dispatched, and by whom. */
+  dispatched_at?: string | null;
+  dispatched_by?: string | null;
   /** From migration 12. */
   confirmed_at?: string | null;
   stock_mode?: "at_creation" | "at_delivery";
@@ -672,7 +675,9 @@ type Derived =
   | "earned_commission_total"
   | "pending_commission_total"
   | "paid_commission_total"
-  | "delivered_at";
+  | "delivered_at"
+  | "dispatched_at"
+  | "dispatched_by";
 
 type Writable<Row> = Omit<Row, Extract<keyof Row, Derived>>;
 

@@ -17,7 +17,7 @@
 import type { Customer, Order, OrderStatus, OrderType, Product } from "@/lib/types";
 import { inRange, type DateRange } from "./period";
 
-export const OPEN_STATUSES: OrderStatus[] = ["pending", "confirmed", "processing", "partially_delivered"];
+export const OPEN_STATUSES: OrderStatus[] = ["pending", "confirmed", "processing", "dispatched", "partially_delivered"];
 
 export type SalesLine = {
   orderId: string;

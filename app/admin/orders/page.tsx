@@ -24,7 +24,7 @@ const deliveredBalls = (order: Order) =>
 
 /** Statuses on which record_delivery() accepts a delivery. */
 const canReceiveDelivery = (order: Order) =>
-  order.status === 'processing' || order.status === 'partially_delivered';
+  order.status === 'processing' || order.status === 'dispatched' || order.status === 'partially_delivered';
 
 /** A fresh id per opened delivery form: a retried submit cannot record twice. */
 const newRequestId = () =>
@@ -249,6 +249,13 @@ export default function OrdersPage() {
     // the audit line says why.
     const reasonRequired = !isNormal || cancellingLocked;
     let reason = "";
+    if (targetStatus === 'dispatched' && !reasonRequired) {
+      // Optional delivery details (driver, vehicle, expected time). They go into the audit line; the customer only sees that it was dispatched, and when.
+      const input = prompt(`Mark order #${id} as dispatched (out for delivery)?
+Optional details for the audit log (driver, vehicle, expected time):`, "");
+      if (input === null) return;
+      reason = input.trim();
+    }
     if (targetStatus === 'delivered') {
       const remaining = order.items.reduce((sum, item) => sum + Number(item.remainingQuantity ?? item.quantity), 0);
       if (!confirm(`Mark order #${id} delivered? This records the delivery of all ${remaining} remaining ball(s) now. For a partial delivery use "Record delivery" instead.`)) return;
@@ -631,6 +638,7 @@ export default function OrdersPage() {
       case 'pending': return { label: 'Pending', color: "bg-orange-100 text-orange-700 border-orange-200", icon: <Clock className="h-3 w-3" /> };
       case 'confirmed': return { label: 'Confirmed', color: "bg-blue-100 text-blue-700 border-blue-200", icon: <CheckCircle2 className="h-3 w-3" /> };
       case 'processing': return { label: 'Processing', color: "bg-purple-100 text-purple-700 border-purple-200", icon: <Loader2 className="h-3 w-3" /> };
+      case 'dispatched': return { label: 'Dispatched', color: "bg-indigo-100 text-indigo-700 border-indigo-200", icon: <Truck className="h-3 w-3" /> };
       case 'partially_delivered': return { label: 'Partially Delivered', color: "bg-teal-100 text-teal-700 border-teal-200", icon: <PackageCheck className="h-3 w-3" /> };
       case 'delivered': return { label: 'Delivered', color: "bg-green-100 text-green-700 border-green-200", icon: <Truck className="h-3 w-3" /> };
       case 'cancelled': return { label: 'Cancelled', color: "bg-red-100 text-red-700 border-red-200", icon: <XCircle className="h-3 w-3" /> };
@@ -729,6 +737,7 @@ export default function OrdersPage() {
                 <option value="pending">Pending</option>
                 <option value="confirmed">Confirmed</option>
                 <option value="processing">Processing</option>
+                <option value="dispatched">Dispatched</option>
                 <option value="partially_delivered">Partially Delivered</option>
                 <option value="delivered">Delivered</option>
                 <option value="cancelled">Cancelled</option>
@@ -775,6 +784,11 @@ export default function OrdersPage() {
                           )}
                         </div>
                         <p className="text-[9px] text-slate-400 mt-0.5">{order.date}</p>
+                        {order.dispatchedAt && (
+                          <p className="text-[9px] text-indigo-600 mt-0.5 font-bold" title={new Date(order.dispatchedAt).toLocaleString()}>
+                            Dispatched {new Date(order.dispatchedAt).toLocaleDateString()}
+                          </p>
+                        )}
                         {order.deliveredAt && (
                           <p className="text-[9px] text-green-600 mt-0.5 font-bold" title={new Date(order.deliveredAt).toLocaleString()}>
                             Delivered {new Date(order.deliveredAt).toLocaleDateString()}

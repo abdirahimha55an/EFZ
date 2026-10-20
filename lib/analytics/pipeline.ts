@@ -76,6 +76,7 @@ export const STATUS_LABEL: Record<OrderStatus, string> = {
   pending: "Pending",
   confirmed: "Confirmed",
   processing: "Processing",
+  dispatched: "Dispatched",
   partially_delivered: "Partially delivered",
   delivered: "Delivered",
   cancelled: "Cancelled",

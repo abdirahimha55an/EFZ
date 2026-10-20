@@ -277,6 +277,7 @@ export function toOrder(row: OrderDetailsRow): Order {
     cost: numOrNull(row.cost),
     grossProfit: numOrNull(row.gross_profit),
     deliveredAt: row.delivered_at ?? null,
+    dispatchedAt: row.dispatched_at ?? null,
     confirmedAt: row.confirmed_at ?? null,
     stockMode: row.stock_mode ?? "at_creation",
     commissionModel: row.commission_model ?? null,
