@@ -22,9 +22,9 @@ const isFinanciallyLocked = (order: Order) =>
 const deliveredBalls = (order: Order) =>
   order.items.reduce((sum, item) => sum + Number(item.deliveredQuantity ?? 0), 0);
 
-/** Statuses on which record_delivery() accepts a delivery. */
+/** Statuses on which record_delivery() accepts a delivery (the database enforces the same rule). */
 const canReceiveDelivery = (order: Order) =>
-  order.status === 'processing' || order.status === 'dispatched' || order.status === 'partially_delivered';
+  order.status === 'dispatched' || order.status === 'partially_delivered';   // 29e: a processing order must be dispatched first
 
 /** A fresh id per opened delivery form: a retried submit cannot record twice. */
 const newRequestId = () =>

@@ -11,11 +11,17 @@ test("every normal transition", () => {
   const t = ORDER_STATUS_TRANSITIONS;
   assert.deepEqual(t.pending, ["confirmed", "cancelled"]);
   assert.deepEqual(t.confirmed, ["processing", "cancelled"]);
-  assert.deepEqual(t.processing, ["dispatched", "delivered", "cancelled"]);   // delivered stays valid: existing workflows never need a dispatch
+  assert.deepEqual(t.processing, ["dispatched", "cancelled"]);   // 29e: no direct processing -> delivered
   assert.deepEqual(t.dispatched, ["delivered", "cancelled"]);
   assert.deepEqual(t.partially_delivered, ["delivered"]);
   assert.deepEqual(t.delivered, []);
   assert.deepEqual(t.cancelled, []);
+});
+
+test("delivered is reachable only from dispatched or partially_delivered, never straight from processing", () => {
+  const from = ORDER_STATUSES.filter((s) => ORDER_STATUS_TRANSITIONS[s].includes("delivered"));
+  assert.deepEqual(from, ["dispatched", "partially_delivered"]);
+  assert.ok(!ORDER_STATUS_TRANSITIONS.processing.includes("delivered")); assert.ok(!ORDER_STATUS_TRANSITIONS.confirmed.includes("delivered")); assert.ok(!ORDER_STATUS_TRANSITIONS.pending.includes("delivered"));
 });
 
 test("dispatch is reachable only from processing, and a cancelled or delivered order can never be dispatched", () => {

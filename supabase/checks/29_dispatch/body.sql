@@ -12,7 +12,7 @@ begin
 end $f$;
 do $t$
 declare
-  res jsonb := '[]'::jsonb; a jsonb; o1 text; o2 text; o3 text; o4 text; o5 text; x record; n bigint; cs_auth uuid; b_auth uuid; accb uuid; acc uuid; lines jsonb; pl text;
+  res jsonb := '[]'::jsonb; a jsonb; o1 text; o2 text; o3 text; o4 text; o5 text; o6 text; x record; n bigint; cs_auth uuid; b_auth uuid; accb uuid; acc uuid; lines jsonb; pl text;
 begin
   perform pg_temp.t28_cust('cust-t29-a', 'Dispatch A', '+0002900001');
   perform pg_temp.t28_cust('cust-t29-b', 'Dispatch B', '+0002900002');
@@ -67,12 +67,36 @@ begin
   select count(*) into n from public.commissions where order_id = o1;
   res := pg_temp.t28_j(res, 'T4d delivery commission is still created for an order that was dispatched', n >= 1, n::text);
 
-  -- T5 the existing flow still works: processing -> delivered without dispatch (dispatched_at stays null, never invented)
+  -- T5 dispatch is enforced: a prepared (processing) order cannot be delivered by any ordinary path
   a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''confirmed'', '''')', o2));
   a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''processing'', '''')', o2));
   a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''delivered'', '''')', o2));
-  select status::text as st, dispatched_at into x from public.orders where id = o2;
-  res := pg_temp.t28_j(res, 'T5 processing -> delivered (no dispatch) still works and dispatched_at stays null', (a ->> 'ok')::boolean and x.st = 'delivered' and x.dispatched_at is null, to_jsonb(x)::text || coalesce(a ->> 'msg', ''));
+  select status::text as st, dispatched_at, delivered_at into x from public.orders where id = o2;
+  res := pg_temp.t28_j(res, 'T5 processing -> delivered is REFUSED for a Manager, with the dispatch message', not (a ->> 'ok')::boolean and (a ->> 'msg') like '%record it as dispatched before it can be delivered%' and x.st = 'processing' and x.delivered_at is null, coalesce(a ->> 'msg', 'allowed?'));
+  select jsonb_agg(jsonb_build_object('orderItemId', id, 'quantity', 1)) into lines from public.order_items where order_id = o2;
+  a := pg_temp.t28_try('u-stg-manager', format('public.record_delivery(%L, %L::jsonb, ''TEST-29'', null)', o2, lines::text));
+  select status::text as st, delivered_at into x from public.orders where id = o2;
+  res := pg_temp.t28_j(res, 'T5b record_delivery on a processing order is REFUSED too (the second bypass), nothing is recorded', not (a ->> 'ok')::boolean and (a ->> 'msg') like '%record it as dispatched before recording deliveries%' and x.st = 'processing' and not exists (select 1 from public.order_deliveries d where d.order_id = o2), coalesce(a ->> 'msg', 'allowed?'));
+  a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''delivered'', %L)', o2, 'trying with a reason'));
+  res := pg_temp.t28_j(res, 'T5c a Manager cannot bypass it even by giving a reason', not (a ->> 'ok')::boolean, coalesce(a ->> 'msg', 'allowed?'));
+  a := pg_temp.t28_try('u-stg-admin', format('public.update_order_status(%L, ''delivered'', '''')', o2));
+  res := pg_temp.t28_j(res, 'T5d a Super Admin override to delivered needs a written reason', not (a ->> 'ok')::boolean and (a ->> 'msg') like 'A reason is required%', coalesce(a ->> 'msg', 'allowed?'));
+  a := pg_temp.t28_try('u-stg-admin', format('public.update_order_status(%L, ''delivered'', %L)', o2, 'Delivered by hand before dispatch was recorded; owner approved'));
+  select status::text as st, dispatched_at, delivered_at into x from public.orders where id = o2;
+  res := pg_temp.t28_j(res, 'T5e ...with a reason the override works, delivered_at is set and dispatched_at stays null (never invented)', (a ->> 'ok')::boolean and x.st = 'delivered' and x.delivered_at is not null and x.dispatched_at is null, to_jsonb(x)::text || coalesce(a ->> 'msg', ''));
+  select count(*) into n from public.system_logs where target_id = o2 and severity::text = 'WARNING' and message like '%processing to delivered (Super Admin override)%' and metadata ->> 'reason' like 'Delivered by hand%' and metadata ->> 'override' = 'true';
+  res := pg_temp.t28_j(res, 'T5f the override is audited at WARNING level with its reason', n = 1, n::text);
+
+  -- T5g the full normal path, including finishing a partial delivery with record_delivery
+  a := pg_temp.t28_try('u-stg-manager', format('public.create_order(%L::jsonb)', jsonb_build_object('customerId', 'cust-t29-a', 'deliveryNotes', 'TEST-29 o6', 'items', jsonb_build_array(jsonb_build_object('productId', 'prod-stg-nexus', 'quantity', 2)))::text)); o6 := a ->> 'val';
+  a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''confirmed'', '''')', o6));
+  a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''processing'', '''')', o6));
+  a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''dispatched'', '''')', o6));
+  select jsonb_agg(jsonb_build_object('orderItemId', id, 'quantity', 1)) into lines from public.order_items where order_id = o6;
+  a := pg_temp.t28_try('u-stg-manager', format('public.record_delivery(%L, %L::jsonb, ''TEST-29'', null)', o6, lines::text));
+  a := pg_temp.t28_try('u-stg-manager', format('public.record_delivery(%L, %L::jsonb, ''TEST-29'', null)', o6, lines::text));
+  select status::text as st, dispatched_at, delivered_at into x from public.orders where id = o6;
+  res := pg_temp.t28_j(res, 'T5g pending -> confirmed -> processing -> dispatched -> (partial) -> delivered through record_delivery works end to end', (a ->> 'ok')::boolean and x.st = 'delivered' and x.dispatched_at is not null and x.delivered_at is not null, to_jsonb(x)::text || coalesce(a ->> 'msg', ''));
 
   -- T6 cancelled orders: cancel from dispatched; a cancelled order can never be dispatched
   a := pg_temp.t28_try('u-stg-manager', format('public.update_order_status(%L, ''confirmed'', '''')', o3));
@@ -98,9 +122,9 @@ begin
 
   -- T8 the customer's own data path
   a := pg_temp.t28_try('u-stg-cs', 'public.my_orders()');
-  res := pg_temp.t28_j(res, 'T9 my_orders returns only this customer''s 4 orders, dispatchedAt set on the dispatched one, null on the delivered-without-dispatch one, cancelled shown as cancelled',
+  res := pg_temp.t28_j(res, 'T9 my_orders returns only this customer''s 5 orders, dispatchedAt set on the dispatched one, null on the delivered-without-dispatch one, cancelled shown as cancelled',
     (a ->> 'ok')::boolean
-    and jsonb_array_length((a ->> 'val')::jsonb) = 4
+    and jsonb_array_length((a ->> 'val')::jsonb) = 5
     and not exists (select 1 from jsonb_array_elements((a ->> 'val')::jsonb) e where e ->> 'id' = o5)
     and (select (e ->> 'dispatchedAt') is not null from jsonb_array_elements((a ->> 'val')::jsonb) e where e ->> 'id' = o4)
     and (select (e ->> 'dispatchedAt') is null from jsonb_array_elements((a ->> 'val')::jsonb) e where e ->> 'id' = o2)

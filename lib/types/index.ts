@@ -80,14 +80,14 @@ export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded' | 'credit
  * supabase/12_commission_model.sql. Anything not listed - reactivating a
  * cancelled order - is a Super Admin override with a reason.
  * 'partially_delivered' is never chosen: it follows from record_delivery().
- * 'dispatched' (migration 29) sits between processing and delivered; processing -> delivered stays valid, so a dispatch is never forced.
+ * 'dispatched' (migration 29) sits between processing and delivered and, since 29e, is REQUIRED: processing -> delivered is no longer a normal step.
  * Once balls are delivered the status follows the delivered quantities; only
  * delivering the rest (or a Super Admin correction) changes it.
  */
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending: ['confirmed', 'cancelled'],
   confirmed: ['processing', 'cancelled'],
-  processing: ['dispatched', 'delivered', 'cancelled'],
+  processing: ['dispatched', 'cancelled'],   // 29e: delivery needs a recorded dispatch first (only a Super Admin can override, with a reason)
   dispatched: ['delivered', 'cancelled'],
   partially_delivered: ['delivered'],
   delivered: [],
