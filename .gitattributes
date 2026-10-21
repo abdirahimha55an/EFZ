@@ -9,3 +9,10 @@ supabase/staging/staging_checks_18.sql  text eol=lf
 supabase/20*.sql            text eol=lf
 supabase/rollback/20*.sql   text eol=lf
 supabase/checks/20*.sql     text eol=lf
+
+# Release 19-29: every migration, rollback, check and production script is applied byte for byte; keep LF everywhere (see docs/PRODUCTION_LAUNCH_PACKAGE.md, "line endings").
+supabase/*.sql              text eol=lf
+supabase/rollback/*.sql     text eol=lf
+supabase/checks/*.sql       text eol=lf
+supabase/production/*       text eol=lf
+supabase/production/rehearsal/* text eol=lf
