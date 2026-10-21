@@ -28,6 +28,6 @@ Windows checkout warning: apply the .sql files from LF copies (git autocrlf conv
 ## Remaining external setup (not code)
 - Supabase Production: Auth sign-up/email confirmation, SMTP + sender domain, Edge Functions (`register-customer`; `payments`/`credit-daily` only when enabled) and secrets; confirm `stg_test` payment method does not exist in Production.
 - Privacy policy URL and account-deletion page URL (owner content) -> `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_ACCOUNT_DELETION_URL`; EAS `production` variables.
-- Android: final package id (`so.efz.customer` provisional), Play Console account, Production keystore (Play App Signing), version (app.config 0.1.0 vs package 1.0.0), staged rollout.
-- Grant the new request permissions (`view/assign/convert/reject_website_requests`) to the staff who should handle requests; today Production has none.
+- Android: version is 1.0.0 (aligned, decided 2026-10-21). Still open: final package id (`so.efz.customer` provisional until the Play Console app exists), Play Console account, Production keystore (Play App Signing), staged rollout.
+- Website Requests: Super Admin only at launch (decided 2026-10-21). Do NOT grant the new request permissions to anyone else; revisit after launch.
 - Delete `C:\EFZ-restore-m29` when no longer needed (contains a copy of Production data).
