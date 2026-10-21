@@ -1,0 +1,99 @@
+{
+  "generated_by": "scripts/make_release_manifest.mjs",
+  "phases": {
+    "A": [
+      {
+        "file": "19_website_request_delegation.sql",
+        "sha256": "c0214ea6cfce89517d5d2d9dd10fe72a48a99bb55fecddedf838570fa3f2cb88",
+        "post": "to_regprocedure('public.assign_order_request(uuid,text)') is not null",
+        "post_is_unique": true
+      },
+      {
+        "file": "19b_permission_change_audit.sql",
+        "sha256": "829c3daef2325b34a63bc9ae4930003b939c2a7eab3743eef97958bf2e9da910",
+        "post": "to_regprocedure('public.log_permission_changes()') is not null",
+        "post_is_unique": true
+      },
+      {
+        "file": "21_customer_accounts.sql",
+        "sha256": "708da60216d28e1c5f88a498fffbaf40a185ee20d0e51e75b429f4cdb4a7ec65",
+        "post": "to_regclass('public.customer_accounts') is not null",
+        "post_is_unique": true
+      },
+      {
+        "file": "22_customer_ordering.sql",
+        "sha256": "f8e27e2eb1c34e38ab6fc1f38b2468e12ba10039b0e72f57ca9f916147338817",
+        "post": "to_regclass('public.customer_order_requests') is not null",
+        "post_is_unique": true
+      },
+      {
+        "file": "23_customer_checkout_credit.sql",
+        "sha256": "09cdfa61789b3f37f42dca65a29224693ec3436b5b8d8766d93094a674a4992a",
+        "post": "to_regclass('public.customer_checkouts') is not null",
+        "post_is_unique": true
+      },
+      {
+        "file": "24_credit_policy_refinement.sql",
+        "sha256": "830ee2bec56f7f54eeb402d676d08e16ca00b9a0eb925382a4f460314ed84b72",
+        "post": "exists(select 1 from information_schema.columns where table_schema='public' and table_name='credit_policy' and column_name='min_approved_days')",
+        "post_is_unique": true
+      },
+      {
+        "file": "25_credit_policy_v2.sql",
+        "sha256": "3f286b4e0d78694488978bea5e3e78c3554b44e5805f3bf6e6a08040a34ebbc0",
+        "post": "exists(select 1 from information_schema.columns where table_schema='public' and table_name='credit_policy' and column_name='company_cap_percent')",
+        "post_is_unique": true
+      },
+      {
+        "file": "26_customer_price_agreements.sql",
+        "sha256": "4cbd493b2ecd7c716f5d5c278e2e87b6aacf21d1e9e4c3e15ea260195d2d263e",
+        "post": "to_regclass('public.customer_price_agreements') is not null",
+        "post_is_unique": true
+      },
+      {
+        "file": "27_price_policy_no_expiry.sql",
+        "sha256": "3681569a5ce3a735c45c6b978e57be99064d288c8a571d790a99ceaa9daa579e",
+        "post": "md5(replace(pg_get_functiondef('public.create_order(jsonb)'::regprocedure), chr(13), '')) = '265e9745acb9418787e6d8cebfb450af'",
+        "post_is_unique": true
+      },
+      {
+        "file": "28_convert_request_designs.sql",
+        "sha256": "11543a05e9f9b28a65757da482a6176d2706611ac4b787a0cd2d996253da199d",
+        "post": "position('migration 28 marker' in pg_get_functiondef('public.convert_website_request(uuid,jsonb)'::regprocedure)) > 0",
+        "post_is_unique": true
+      },
+      {
+        "file": "29a_dispatch_enum.sql",
+        "sha256": "d3da40b23b0af2c0f7a196fae5956c97312b3e1b5616a0eb1d3df0b945d5d63d",
+        "post": "exists(select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='dispatched_at') and exists(select 1 from pg_enum e join pg_type t on t.oid=e.enumtypid where t.typname='order_status' and e.enumlabel='dispatched')",
+        "post_is_unique": true
+      },
+      {
+        "file": "production/29b_dispatch_and_live_orders.crtolerant.sql",
+        "sha256": "0219e09a833252bb559156951dae30f6eb8b4247ef8fdd2c456c68598aa06748",
+        "post": "(select md5(prosrc) from pg_proc where pronamespace='public'::regnamespace and proname='update_order_status') = 'cb9a5600965a3f0a89c2bf7aff3e708a'",
+        "post_is_unique": true
+      },
+      {
+        "file": "29c_order_details_dispatched.sql",
+        "sha256": "5d18794f840b39a7a9647dfc0ded544065ec16199c0aa0378bf9a85b2fdb370e",
+        "post": "exists(select 1 from information_schema.columns where table_schema='public' and table_name='order_details' and column_name='dispatched_at')",
+        "post_is_unique": true
+      },
+      {
+        "file": "29d_live_orders_topic_by_user.sql",
+        "sha256": "0b31107bb6486cfa8f1a18b63a18e2e7a0c306d3c63c855aa4d0b3ff773fda57",
+        "post": "true",
+        "post_is_unique": false
+      }
+    ],
+    "C": [
+      {
+        "file": "production/29e_enforce_dispatch.crtolerant.sql",
+        "sha256": "7dbc86c410e8ecc722a8140c772fbf8cf23874e38157424c1f1951d02cc90907",
+        "post": "(select md5(prosrc) from pg_proc where pronamespace='public'::regnamespace and proname='update_order_status') = 'e6548ff6bf1de8d5dfc7ed67343aa0fa'",
+        "post_is_unique": true
+      }
+    ]
+  }
+}

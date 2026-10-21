@@ -57,3 +57,8 @@ Apply with the single-transaction pattern used before: `psql --single-transactio
 | Last resort | Restore from the same-day sealed backup (destructive, owner decision, tested procedure `BACKUP_AND_RESTORE_DRILL.md` Part C into a scratch DB first) | |
 
 Line endings: the Hub repo's `.gitattributes` now forces LF for migrations, checks, rollbacks and production scripts, so a Windows checkout can no longer turn them into CRLF. The generated `*.crtolerant.sql` guards accept either form anyway.
+
+## Update (no domain purchase)
+- The repeatable procedure is now `docs/RELEASE_RUNBOOK.md` (scripts: `run_backup_and_seal.ps1`, `run_readonly_preflight.ps1`, `run_release_phase.ps1`, `production_post_checks_READONLY.sql`). It supersedes the "script is generated later" sentence in section 5.
+- No domain is needed for the legal pages: the Hub serves `/privacy` and `/account-deletion` (draft text, owner placeholders in `lib/legal/content.ts`). They return 404 in Production until every placeholder is filled; the privacy/deletion URLs for the app would then be `https://efz-one.vercel.app/privacy` and `/account-deletion`. For a Staging review set `NEXT_PUBLIC_LEGAL_PREVIEW=true` on the Preview (draft banner).
+- Email: custom-domain SMTP is not available without a domain, so customer email verification and email password recovery stay OFF for Production: the Android Production build hides "Forgot your password?" unless `EXPO_PUBLIC_EMAIL_RECOVERY_ENABLED=true`; `REQUIRE_EMAIL_VERIFICATION` stays unset. Customers who forget a password contact EFZ (a Super Admin resets it in Supabase). Revisit when a sender domain exists.
