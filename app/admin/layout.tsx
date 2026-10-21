@@ -77,10 +77,10 @@ const OVERVIEW_LINK: NavItem = { name: "Overview", href: "/admin", icon: LayoutD
 const NAV_MODULES: NavModule[] = [
   {
     id: "orders", label: "Orders & Requests", icon: Inbox, items: [
-      // 18: requests from the public order page. Super Admin and Managers (manage_website_requests).
-      { name: "Website Requests", href: "/admin/requests", icon: Globe, permission: 'manage_website_requests' as Permission },
+      // 18: requests from the public order page. Super Admin and Managers (view_website_requests).
+      { name: "Website Requests", href: "/admin/requests", icon: Globe, permission: 'view_website_requests' as Permission },
       // 22: requests placed in the Android customer app by approved accounts (the same order_requests pipeline, filtered by the customer-app link).
-      { name: "Customer App Requests", href: "/admin/customer-app-requests", icon: Smartphone, permission: 'manage_website_requests' as Permission },
+      { name: "Customer App Requests", href: "/admin/customer-app-requests", icon: Smartphone, permission: 'view_website_requests' as Permission },
       { name: "Order Tracking", href: "/admin/orders", icon: ShoppingBag, permission: 'view_orders' as Permission },
     ],
   },
@@ -165,7 +165,7 @@ const requestIdOfAlert = (n: Notification) => (n.id.startsWith("req-") && n.id.i
  * copies and an alert already read stays read. Returns the feed, newest first.
  */
 async function loadAlertFeed(db: ReturnType<typeof getDb>, me: AdminProfile, defaultThreshold: number): Promise<Notification[]> {
-  const handlesRequests = can(me, "manage_website_requests");
+  const handlesRequests = can(me, "view_website_requests");
   const [products, orders, existing, newRequests] = await Promise.all([
     db.products.list(),
     db.orders.list({ limit: 200 }),
@@ -290,7 +290,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
         setNotifications(feed);
 
-        if (can(nextProfile, "manage_website_requests")) {
+        if (can(nextProfile, "view_website_requests")) {
           const split = await db.orderRequests.openCounts();
           if (!cancelled) { setOpenRequestCount(split.total); setOpenRequestSplit({ web: split.web, app: split.app }); }
         }
@@ -357,7 +357,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             const feed = await loadAlertFeed(getDb(), me, alertThresholdRef.current);
             if (!stopped) setNotifications(feed);
             // 18: badge count, and tell the Website Requests page to re-read.
-            if (can(me, "manage_website_requests")) {
+            if (can(me, "view_website_requests")) {
               const split = await getDb().orderRequests.openCounts();
               if (!stopped) {
                 setOpenRequestCount(split.total);

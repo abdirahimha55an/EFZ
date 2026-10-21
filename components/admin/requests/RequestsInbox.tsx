@@ -232,13 +232,14 @@ export function RequestsInbox({ source }: { source: RequestSource }) {
                   <th className="px-4 py-3">Products</th>
                   <th className="px-4 py-3 text-right">Qty</th>
                   <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Assigned to</th>
                   <th className="px-4 py-3">Handled by</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {visible.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-slate-400">
+                    <td colSpan={9} className="px-4 py-12 text-center text-slate-400">
                       <Inbox className="mx-auto mb-2 h-6 w-6" />
                       {source === "app" ? "No customer app requests here." : "No requests here."}
                     </td>
@@ -278,6 +279,7 @@ export function RequestsInbox({ source }: { source: RequestSource }) {
                       <td className="px-4 py-3">
                         <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase", STATUS_CLASS[r.status])}>{STATUS_LABEL[r.status]}</span>
                       </td>
+                      <td className="px-4 py-3 text-slate-700" data-testid="request-assignee">{r.assignedTo ? staffName(r.assignedTo) : <span className="text-slate-400">Unassigned</span>}</td>
                       <td className="px-4 py-3 text-slate-500">{staffName(r.handledBy)}</td>
                     </tr>
                   );
