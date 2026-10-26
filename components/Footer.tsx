@@ -92,10 +92,12 @@ export function Footer() {
                 <Phone className="h-5 w-5 text-brand-green shrink-0" />
                 <span>{settings.whatsappNumber}</span>
               </li>
-              <li className="flex items-center gap-3">
-                <Mail className="h-5 w-5 text-brand-green shrink-0" />
-                <span>{settings.contactEmail}</span>
-              </li>
+              {settings.contactEmail.trim() && (
+                <li className="flex items-center gap-3">
+                  <Mail className="h-5 w-5 text-brand-green shrink-0" />
+                  <span>{settings.contactEmail}</span>
+                </li>
+              )}
             </ul>
           </div>
         </div>

@@ -2,11 +2,16 @@
 
 import Image from "next/image";
 import { CheckCircle, Factory, TrendingUp, Truck, ShieldCheck } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { WholesaleForm } from "@/components/public/WholesaleForm";
+import { getWhatsAppUrl, EFZ_WHATSAPP_NUMBER } from "@/lib/utils";
+import { usePublicSettings } from "@/lib/settings";
 
 export default function WholesalePage() {
+  const settings = usePublicSettings();
+  const whatsappNumber = settings.whatsappNumber.split("").filter((c) => c >= "0" && c <= "9").join("") || EFZ_WHATSAPP_NUMBER;
+  const waUrl = getWhatsAppUrl(whatsappNumber, "Hello EFZ, I would like a wholesale quote.");
+
   return (
     <div className="bg-slate-50 min-h-screen">
       {/* Header */}
@@ -62,48 +67,10 @@ export default function WholesalePage() {
           <Card className="shadow-lg border-none ring-1 ring-slate-200/50">
             <div className="bg-brand-blue rounded-t-xl p-6 text-white text-center">
               <h2 className="font-heading text-2xl font-bold">Request a Wholesale Quote</h2>
-              <p className="text-slate-300 text-sm mt-2">Fill out the form below and our B2B team will contact you within 24 hours.</p>
+              <p className="text-slate-300 text-sm mt-2">Tell us about your organization and what you need. Our wholesale team will review your inquiry and contact you.</p>
             </div>
-            <CardContent className="p-8">
-              <form className="space-y-6" onSubmit={(e) => e.preventDefault()}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">Organization / Arena Name *</label>
-                    <Input placeholder="E.g., Mogadishu Sports Arena" required />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">Contact Person *</label>
-                    <Input placeholder="Full Name" required />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">Phone Number *</label>
-                    <Input placeholder="E.g., +252 61..." required />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">Business Type</label>
-                    <select className="flex h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-green">
-                      <option>Futsal Arena</option>
-                      <option>Football Academy/School</option>
-                      <option>Sports Retailer</option>
-                      <option>Tournament Organizer</option>
-                      <option>Other</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-900">What products are you interested in?</label>
-                  <textarea 
-                    className="flex min-h-[100px] w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-green" 
-                    placeholder="E.g., We need 50 futsal balls per month..."
-                  />
-                </div>
-
-                <Button type="submit" size="lg" className="w-full">Submit Inquiry</Button>
-              </form>
+            <CardContent className="p-5 md:p-8">
+              <WholesaleForm whatsappUrl={waUrl} />
             </CardContent>
           </Card>
         </div>

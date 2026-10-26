@@ -11,7 +11,9 @@ export const OFFICIAL_PERMISSIONS = [
   'manage_customer_accounts',
   // 19: delegated website-request capabilities (granted explicitly, never by role)
   'view_website_requests', 'view_all_website_requests', 'assign_website_requests',
-  'reject_website_requests', 'convert_website_requests'
+  'reject_website_requests', 'convert_website_requests',
+  // 30: Contact / Wholesale inquiries (granted explicitly, never by role)
+  'view_inquiries', 'view_all_inquiries', 'manage_inquiries', 'assign_inquiries'
 ] as const;
 
 export type Permission = typeof OFFICIAL_PERMISSIONS[number];
@@ -372,6 +374,80 @@ export type WebsiteRequestEvent = {
   /** 19: for 'assigned' - who it went to; null when it was unassigned. */
   assignedToName: string | null;
   occurredAt: string;
+};
+
+// ---------------------------------------------------------------------------
+// Public inquiries (migration 30): the /contact and /wholesale forms
+// ---------------------------------------------------------------------------
+
+export type InquiryKind = 'contact' | 'wholesale';
+export type InquiryStatus = 'new' | 'contacted' | 'closed';
+
+/** Inquiries that still need staff action (the menu badge counts these). */
+export const OPEN_INQUIRY_STATUSES: InquiryStatus[] = ['new', 'contacted'];
+
+/** The moves set_public_inquiry_status() accepts. A closed inquiry can be reopened as contacted. */
+export const INQUIRY_TRANSITIONS: Record<InquiryStatus, InquiryStatus[]> = {
+  new: ['contacted', 'closed'],
+  contacted: ['closed'],
+  closed: ['contacted'],
+};
+
+export type PublicInquiry = {
+  id: string;
+  /** INQ-<first 8 of the id>, as in the audit trail. */
+  reference: string;
+  kind: InquiryKind;
+  name: string;
+  organization: string;
+  businessType: string;
+  phone: string;
+  phoneCanonical: string | null;
+  email: string;
+  subject: string;
+  message: string;
+  status: InquiryStatus;
+  assignedTo: string | null;
+  handledBy: string | null;
+  closedReason: string | null;
+  statusChangedAt: string | null;
+  createdAt: string;
+};
+
+export type PublicInquiryNote = {
+  id: string;
+  body: string;
+  authorId: string | null;
+  authorName: string;
+  editedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PublicInquiryEvent = {
+  seq: number;
+  event: 'submitted' | 'status_changed' | 'note_added' | 'note_edited' | 'assigned';
+  fromStatus: string | null;
+  toStatus: string | null;
+  actorName: string;
+  note: string | null;
+  assignedToName: string | null;
+  occurredAt: string;
+};
+
+/** What the public forms send to submit_public_inquiry(). */
+export type PublicInquiryInput = {
+  kind: InquiryKind;
+  name: string;
+  phone?: string;
+  email?: string;
+  organization?: string;
+  businessType?: string;
+  subject?: string;
+  message?: string;
+  /** Hidden honeypot field: a real visitor leaves it empty. */
+  hp?: string;
+  submissionKey?: string;
 };
 
 /** 19: staff a website request can be assigned to (active, allowed to view requests). */
