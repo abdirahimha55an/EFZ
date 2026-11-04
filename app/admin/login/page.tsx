@@ -174,7 +174,7 @@ function AdminLoginForm() {
                 cookie and rotates it on every request, so the choice no longer
                 exists to offer. */}
             <div className="flex items-center justify-end px-1">
-              <button type="button" className="text-xs font-bold text-brand-blue hover:underline">Forgot Access?</button>
+              <p className="text-xs text-slate-500">Forgot your password? Ask a Super Admin to reset your access.</p>
             </div>
 
             <Button type="submit" className="w-full h-14 bg-slate-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all flex items-center justify-center gap-2" disabled={isLoading}>
