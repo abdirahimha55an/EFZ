@@ -102,7 +102,7 @@ export const validateUser = (user: Partial<AdminUser>): { ok: boolean; error?: s
 
   if (user.permissions) {
     for (const p of user.permissions) {
-      if (!OFFICIAL_PERMISSIONS.includes(p as any)) {
+      if (!(OFFICIAL_PERMISSIONS as readonly string[]).includes(p)) {
         return { ok: false, error: `Invalid permission detected: ${p}.` };
       }
     }
