@@ -38,7 +38,7 @@ import {
   Moon,
   Wallet,
   Inbox,
-  Landmark, CreditCard, Tag, BadgeCheck } from "lucide-react";
+  Landmark, CreditCard, Tag, BadgeCheck, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -81,6 +81,8 @@ const NAV_MODULES: NavModule[] = [
       { name: "Website Requests", href: "/admin/requests", icon: Globe, permission: 'view_website_requests' as Permission },
       // 22: requests placed in the Android customer app by approved accounts (the same order_requests pipeline, filtered by the customer-app link).
       { name: "Customer App Requests", href: "/admin/customer-app-requests", icon: Smartphone, permission: 'view_website_requests' as Permission },
+      // 30: messages from the public Contact and Wholesale forms (view_inquiries; Super Admin until delegated).
+      { name: "Contact & Wholesale", href: "/admin/inquiries", icon: MessageSquare, permission: 'view_inquiries' as Permission },
       { name: "Order Tracking", href: "/admin/orders", icon: ShoppingBag, permission: 'view_orders' as Permission },
     ],
   },
@@ -147,6 +149,11 @@ const personalOrderAlertId = (orderId: string, profileId: string) => `order-${or
  */
 const isLegacySharedOrderAlert = (n: Notification) => n.id.startsWith("order-") && !n.id.includes("@");
 
+/** 30: "New inquiry" alerts are personal in the same way: `inq-<inquiryId>@<profileId>`. */
+const personalInquiryAlertId = (inquiryId: string, profileId: string) => `inq-${inquiryId}@${profileId}`;
+/** The inquiry an `inq-` alert points at, or null for any other alert. */
+const inquiryIdOfAlert = (n: Notification) => (n.id.startsWith("inq-") && n.id.includes("@") ? n.id.slice(4, n.id.indexOf("@")) : null);
+
 /** 18: "New website request" alerts are personal too: `req-<requestId>@<profileId>`. */
 const personalRequestAlertId = (requestId: string, profileId: string) => `req-${requestId}@${profileId}`;
 /** The request a `req-` alert points at, or null for any other alert. */
@@ -166,11 +173,13 @@ const requestIdOfAlert = (n: Notification) => (n.id.startsWith("req-") && n.id.i
  */
 async function loadAlertFeed(db: ReturnType<typeof getDb>, me: AdminProfile, defaultThreshold: number): Promise<Notification[]> {
   const handlesRequests = can(me, "view_website_requests");
-  const [products, orders, existing, newRequests] = await Promise.all([
+  const handlesInquiries = can(me, "view_inquiries");
+  const [products, orders, existing, newRequests, newInquiries] = await Promise.all([
     db.products.list(),
     db.orders.list({ limit: 200 }),
     db.notifications.list(),
     handlesRequests ? db.orderRequests.newForAlerts() : Promise.resolve([]),
+    handlesInquiries ? db.inquiries.newForAlerts() : Promise.resolve([]),
   ]);
 
   const derived: Array<Pick<Notification, "id" | "title" | "message" | "type"> & { userId?: string }> = [];
@@ -194,6 +203,17 @@ async function loadAlertFeed(db: ReturnType<typeof getDb>, me: AdminProfile, def
       id: personalRequestAlertId(r.id, me.id),
       title: "New website request",
       message: `${r.items} item(s), submitted ${new Date(r.createdAt).toLocaleString()}.`,
+      type: 'order',
+      userId: me.id,
+    });
+  });
+
+  // 30: one alert per inquiry still in status new; like the request alerts it carries no visitor details.
+  newInquiries.forEach(i => {
+    derived.push({
+      id: personalInquiryAlertId(i.id, me.id),
+      title: i.kind === "wholesale" ? "New wholesale inquiry" : "New contact message",
+      message: `Submitted ${new Date(i.createdAt).toLocaleString()}.`,
       type: 'order',
       userId: me.id,
     });
@@ -231,6 +251,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [openRequestCount, setOpenRequestCount] = useState<number | null>(null);
   // The two menu badges: open website requests and open customer-app requests (the sum is openRequestCount).
   const [openRequestSplit, setOpenRequestSplit] = useState<{ web: number; app: number }>({ web: 0, app: 0 });
+  // 30: open Contact / Wholesale inquiries (new, contacted) for the menu badge.
+  const [openInquiryCount, setOpenInquiryCount] = useState(0);
   // Sidebar modules the user opened or closed by hand (remembered in this browser). A module with no entry follows the page being viewed.
   const [navOpen, setNavOpen] = useState<Record<string, boolean>>(() => {
     try { const raw = typeof window === "undefined" ? null : window.localStorage.getItem("efz-hub-nav-v1"); const v = raw ? JSON.parse(raw) : {}; return v && typeof v === "object" ? v : {}; } catch { return {}; }
@@ -263,6 +285,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       setProfile(null);
       setNotifications([]);
       setOpenRequestCount(null);
+      setOpenInquiryCount(0);
       try {
         const db = getDb();
         const nextProfile = await db.auth.getProfile();
@@ -293,6 +316,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         if (can(nextProfile, "view_website_requests")) {
           const split = await db.orderRequests.openCounts();
           if (!cancelled) { setOpenRequestCount(split.total); setOpenRequestSplit({ web: split.web, app: split.app }); }
+        }
+        if (can(nextProfile, "view_inquiries")) {
+          const inquiries = await db.inquiries.openCount();
+          if (!cancelled) setOpenInquiryCount(inquiries);
         }
       } catch (error) {
         if (!cancelled) console.error("[ADMIN LAYOUT] Failed to load:", describeDbError(error));
@@ -365,6 +392,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 setRequestSignalVersion(v => v + 1);
               }
             }
+            // 30: inquiry badge, and tell the Inquiries page to re-read (it shares the request signal).
+            if (can(me, "view_inquiries")) {
+              const inquiries = await getDb().inquiries.openCount();
+              if (!stopped) {
+                setOpenInquiryCount(inquiries);
+                setRequestSignalVersion(v => v + 1);
+              }
+            }
           } catch (error) {
             if (!stopped) console.error("[ADMIN LAYOUT] Alert refresh failed:", describeDbError(error));
           }
@@ -404,6 +439,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "orders" }, onOrderChange)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "order_requests" }, onOrderChange)
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "order_requests" }, onOrderChange)
+      // 30: public_inquiries rides the same channel; RLS (public_inquiries_select) delivers its events to inquiry handlers only.
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "public_inquiries" }, onOrderChange)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "public_inquiries" }, onOrderChange)
       .subscribe(status => {
         // Changes made while the channel was down are not replayed: catch up on
         // every (re)join. Errors need nothing here - the client rejoins by
@@ -519,7 +557,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     setNavOpen(next);
     try { window.localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(next)); } catch { /* private mode: the state still works for this session */ }
   };
-  const navBadge = (href: string): number => (href === '/admin/requests' ? openRequestSplit.web : href === '/admin/customer-app-requests' ? openRequestSplit.app : 0);
+  const navBadge = (href: string): number => (href === '/admin/requests' ? openRequestSplit.web : href === '/admin/customer-app-requests' ? openRequestSplit.app : href === '/admin/inquiries' ? openInquiryCount : 0);
   const renderNavItem = (link: NavItem, nested: boolean) => {
     const Icon = link.icon;
     const isActive = navIsActive(pathname, link.href);
@@ -548,7 +586,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         {badge > 0 && (
           <span
             className={cn("ml-auto min-w-5 shrink-0 rounded-full px-1.5 text-center text-[10px] font-bold", isActive ? "bg-white text-brand-blue" : "bg-red-500 text-white")}
-            data-testid={link.href === '/admin/requests' ? "requests-badge" : "app-requests-badge"}
+            data-testid={link.href === '/admin/requests' ? "requests-badge" : link.href === '/admin/inquiries' ? "inquiries-badge" : "app-requests-badge"}
           >
             {badge}
           </span>
@@ -1040,13 +1078,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                       {notifications.length > 0 ? (
                         notifications.map(n => {
                           const requestId = requestIdOfAlert(n);
+                          const inquiryId = inquiryIdOfAlert(n);
+                          const alertHref = requestId ? `/admin/requests?id=${requestId}` : inquiryId ? `/admin/inquiries?id=${inquiryId}` : null;
                           const body = (
                             <div className="flex gap-3">
                               <div className={cn(
                                 "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
                                 n.type === 'stock' ? "bg-amber-100 text-amber-600" : "bg-blue-100 text-blue-600"
                               )}>
-                                {n.type === 'stock' ? <Package className="h-4 w-4" /> : requestId ? <Inbox className="h-4 w-4" /> : <ShoppingBag className="h-4 w-4" />}
+                                {n.type === 'stock' ? <Package className="h-4 w-4" /> : requestId ? <Inbox className="h-4 w-4" /> : inquiryId ? <MessageSquare className="h-4 w-4" /> : <ShoppingBag className="h-4 w-4" />}
                               </div>
                               <div className="min-w-0">
                                 <p className="text-xs font-bold text-slate-900">{n.title}</p>
@@ -1055,11 +1095,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                               </div>
                             </div>
                           );
-                          // 18: a website-request alert opens that request.
-                          return requestId ? (
+                          // 18: a website-request alert opens that request; 30: an inquiry alert opens that inquiry.
+                          return alertHref ? (
                             <Link
                               key={n.id}
-                              href={`/admin/requests?id=${requestId}`}
+                              href={alertHref}
                               onClick={() => {
                                 setIsNotificationsOpen(false);
                                 if (!n.read) {

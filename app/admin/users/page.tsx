@@ -69,6 +69,12 @@ const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = 
   { id: 'reject_website_requests', label: 'Reject Requests (with a reason)', category: 'Website Requests' },
   { id: 'convert_website_requests', label: 'Convert Requests to Orders (also needs Place New Orders)', category: 'Website Requests' },
 
+  // 30: Contact / Wholesale inquiries. Without "View all", a person sees only the inquiries assigned to them.
+  { id: 'view_inquiries', label: 'View Inquiries (assigned to them)', category: 'Inquiries' },
+  { id: 'view_all_inquiries', label: 'View All Inquiries', category: 'Inquiries' },
+  { id: 'manage_inquiries', label: 'Work Inquiries (notes, contacted, closed)', category: 'Inquiries' },
+  { id: 'assign_inquiries', label: 'Assign / Reassign Inquiries', category: 'Inquiries' },
+
   { id: 'view_customers', label: 'View Customer List', category: 'CRM' },
   { id: 'add_customers', label: 'Register New Customers', category: 'CRM' },
   { id: 'edit_customers', label: 'Edit Customer Info', category: 'CRM' },
@@ -907,7 +913,7 @@ export default function UsersPage() {
                     <div className="flex-1 bg-slate-900 rounded-2xl p-6 text-slate-300 overflow-y-auto max-h-[400px] shadow-2xl custom-scrollbar border border-slate-800">
                       <p className="text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-4 border-b border-slate-800 pb-1.5">Manual Override</p>
                       
-                      {['General', 'Inventory', 'Orders', 'Website Requests', 'CRM', 'Customer Visibility', 'Finance'].map(category => (
+                      {['General', 'Inventory', 'Orders', 'Website Requests', 'Inquiries', 'CRM', 'Customer Visibility', 'Finance'].map(category => (
                         <div key={category} className="mb-6">
                           <h4 className="text-[10px] font-bold text-brand-green uppercase tracking-wider mb-3 opacity-80">{category}</h4>
                           <div className="space-y-2">

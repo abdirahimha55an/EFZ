@@ -245,6 +245,55 @@ export type OrderRequestEventRow = {
   occurred_at: string;
 };
 
+/** 30: Contact / Wholesale inquiries. Read-only to clients: written only by the inquiry RPCs. */
+export type PublicInquiryRow = {
+  id: string;
+  kind: "contact" | "wholesale";
+  name: string;
+  organization: string;
+  business_type: string;
+  phone: string;
+  phone_canonical: string | null;
+  email: string;
+  subject: string;
+  message: string;
+  contact_key: string;
+  content_hash: string;
+  submission_key: string | null;
+  status: "new" | "contacted" | "closed";
+  assigned_to: string | null;
+  handled_by: string | null;
+  status_changed_at: string | null;
+  closed_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PublicInquiryNoteRow = {
+  id: string;
+  inquiry_id: string;
+  body: string;
+  author_id: string | null;
+  author_name: string;
+  edited_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PublicInquiryEventRow = {
+  id: string;
+  seq: number;
+  inquiry_id: string;
+  event: "submitted" | "status_changed" | "note_added" | "note_edited" | "assigned";
+  from_status: string | null;
+  to_status: string | null;
+  actor_id: string | null;
+  actor_name: string;
+  note: string | null;
+  details: Json;
+  occurred_at: string;
+};
+
 export type WebsiteRequestSettingsRow = {
   id: boolean;
   max_new_per_phone: number;
@@ -783,6 +832,10 @@ export type Database = {
       order_request_items: Table<Omit<OrderRequestLineRow, "legacy"> & { id: string; created_at: string }, Record<string, never>, Record<string, never>>;
       order_request_notes: Table<OrderRequestNoteRow, Record<string, never>, Record<string, never>>;
       order_request_events: Table<OrderRequestEventRow, Record<string, never>, Record<string, never>>;
+      // 30: Contact / Wholesale inquiries. No client write at all (only the inquiry RPCs write).
+      public_inquiries: Table<PublicInquiryRow, Record<string, never>, Record<string, never>>;
+      public_inquiry_notes: Table<PublicInquiryNoteRow, Record<string, never>, Record<string, never>>;
+      public_inquiry_events: Table<PublicInquiryEventRow, Record<string, never>, Record<string, never>>;
       // Readable by request handlers; only the Super Admin may change it (RLS).
       website_request_settings: Table<WebsiteRequestSettingsRow, Record<string, never>>;
       // 21: customer app accounts. No client write at all (only the review functions write).
@@ -863,6 +916,13 @@ export type Database = {
       set_order_request_status: { Args: { p_request_id: string; p_to: string; p_reason?: string | null }; Returns: undefined };
       add_order_request_note: { Args: { p_request_id: string; p_body: string }; Returns: string };
       edit_order_request_note: { Args: { p_note_id: string; p_body: string }; Returns: undefined };
+      // 30: Contact / Wholesale inquiries. submit is callable by visitors; the rest need the inquiry permissions.
+      submit_public_inquiry: { Args: { p_payload: Json }; Returns: string };
+      set_public_inquiry_status: { Args: { p_inquiry_id: string; p_to: string; p_reason?: string | null }; Returns: undefined };
+      add_public_inquiry_note: { Args: { p_inquiry_id: string; p_body: string }; Returns: string };
+      edit_public_inquiry_note: { Args: { p_note_id: string; p_body: string }; Returns: undefined };
+      assign_public_inquiry: { Args: { p_inquiry_id: string; p_assignee: string | null }; Returns: undefined };
+      public_inquiry_assignees: { Args: Record<string, never>; Returns: unknown };
       // 21: customer account review (manage_customer_accounts; every rule is enforced by the database).
       find_customers_for_account: { Args: { p_account_id: string }; Returns: CustomerAccountMatchRow[] };
       approve_customer_account: {

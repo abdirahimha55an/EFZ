@@ -1,9 +1,8 @@
 "use client";
 
 import { MapPin, Phone, Mail, Clock } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { ContactForm } from "@/components/public/ContactForm";
 import { getWhatsAppUrl, EFZ_WHATSAPP_NUMBER } from "@/lib/utils";
 import { usePublicSettings } from "@/lib/settings";
 import Link from "next/link";
@@ -13,6 +12,8 @@ export default function ContactPage() {
   const whatsappNumber = settings.whatsappNumber.replace(/\D/g, '') || EFZ_WHATSAPP_NUMBER;
 
   const waUrl = getWhatsAppUrl(whatsappNumber, "Hello EFZ, I have a general inquiry.");
+  // The same configured address the footer shows. No address is invented when none is set.
+  const contactEmail = settings.contactEmail.trim();
 
   return (
     <div className="bg-slate-50 min-h-screen py-12">
@@ -46,14 +47,15 @@ export default function ContactPage() {
                       </Link>
                     </div>
                   </div>
-                  <div className="flex items-start">
-                    <Mail className="h-6 w-6 text-brand-green mt-1 shrink-0" />
-                    <div className="ml-4">
-                      <h4 className="font-medium text-slate-900">Email</h4>
-                      <p className="text-slate-600 mt-1">info@efz.so</p>
-                      <p className="text-slate-600">sales@efz.so</p>
+                  {contactEmail && (
+                    <div className="flex items-start">
+                      <Mail className="h-6 w-6 text-brand-green mt-1 shrink-0" />
+                      <div className="ml-4">
+                        <h4 className="font-medium text-slate-900">Email</h4>
+                        <a href={`mailto:${contactEmail}`} className="text-slate-600 mt-1 inline-block hover:underline">{contactEmail}</a>
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className="flex items-start">
                     <Clock className="h-6 w-6 text-brand-green mt-1 shrink-0" />
                     <div className="ml-4">
@@ -71,31 +73,7 @@ export default function ContactPage() {
             <Card className="border-none shadow-sm">
               <CardContent className="p-6 md:p-8">
                 <h3 className="font-heading text-2xl font-semibold mb-6">Send us a Message</h3>
-                <form className="space-y-6" onSubmit={(e) => e.preventDefault()}>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-slate-900">Full Name *</label>
-                      <Input placeholder="John Doe" required />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-slate-900">Email Address</label>
-                      <Input type="email" placeholder="john@example.com" />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">Subject *</label>
-                    <Input placeholder="How can we help you?" required />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">Message *</label>
-                    <textarea 
-                      className="flex min-h-[150px] w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-green" 
-                      placeholder="Your message here..."
-                      required
-                    />
-                  </div>
-                  <Button type="submit" size="lg" className="w-full md:w-auto">Send Message</Button>
-                </form>
+                <ContactForm whatsappUrl={waUrl} />
               </CardContent>
             </Card>
           </div>

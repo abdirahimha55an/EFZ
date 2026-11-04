@@ -119,6 +119,16 @@ export function derivePermissions(profile: AdminProfile | null | undefined) {
     /** The order itself is still create_order() (create_orders; add_customers for a new customer). */
     convertWebsiteRequests: can("view_website_requests") && can("convert_website_requests") && can("create_orders"),
 
+    /**
+     * 30: Contact / Wholesale inquiries, the same model as website requests: every capability is granted explicitly (never by role),
+     * Super Admin has all. Without "view all" a delegate sees only the inquiries assigned to them.
+     */
+    viewInquiries: can("view_inquiries"),
+    viewAllInquiries: can("view_inquiries") && can("view_all_inquiries"),
+    /** Notes, and every status move. */
+    workInquiries: can("view_inquiries") && can("manage_inquiries"),
+    assignInquiries: can("view_inquiries") && can("assign_inquiries"),
+
     /** 21: review customer app accounts. UI convenience only: the review functions check the permission themselves. */
     manageCustomerAccounts: can("manage_customer_accounts"),
 

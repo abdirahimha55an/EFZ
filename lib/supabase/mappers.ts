@@ -20,6 +20,9 @@ import type {
   StockMovement,
   SystemIssue,
   SystemLog,
+  PublicInquiry,
+  PublicInquiryEvent,
+  PublicInquiryNote,
   WebsiteRequest,
   WebsiteRequestEvent,
   WebsiteRequestNote,
@@ -36,6 +39,9 @@ import type {
   OrderRequestNoteRow,
   OrderRequestRow,
   ProductUpdate,
+  PublicInquiryEventRow,
+  PublicInquiryNoteRow,
+  PublicInquiryRow,
   StaffProductRow,
   ProfileRow,
   ProfileUpdate,
@@ -413,6 +419,60 @@ export function toWebsiteRequestEvent(row: OrderRequestEventRow): WebsiteRequest
     orderId: row.order_id,
     note: row.note,
     // 19: 'assigned' events carry the assignee in details (database-written)
+    assignedToName:
+      row.event === "assigned" && row.details && typeof row.details === "object" && !Array.isArray(row.details)
+        ? ((row.details as { toName?: string }).toName || null)
+        : null,
+    occurredAt: row.occurred_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public inquiries (migration 30)
+// ---------------------------------------------------------------------------
+
+export function toPublicInquiry(row: PublicInquiryRow): PublicInquiry {
+  return {
+    id: row.id,
+    reference: "INQ-" + row.id.replace(/-/g, "").slice(0, 8).toUpperCase(),
+    kind: row.kind,
+    name: row.name,
+    organization: row.organization,
+    businessType: row.business_type,
+    phone: row.phone,
+    phoneCanonical: row.phone_canonical,
+    email: row.email,
+    subject: row.subject,
+    message: row.message,
+    status: row.status,
+    assignedTo: row.assigned_to,
+    handledBy: row.handled_by,
+    closedReason: row.closed_reason,
+    statusChangedAt: row.status_changed_at,
+    createdAt: row.created_at,
+  };
+}
+
+export function toPublicInquiryNote(row: PublicInquiryNoteRow): PublicInquiryNote {
+  return {
+    id: row.id,
+    body: row.body,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    editedBy: row.edited_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function toPublicInquiryEvent(row: PublicInquiryEventRow): PublicInquiryEvent {
+  return {
+    seq: num(row.seq),
+    event: row.event,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    actorName: row.actor_name,
+    note: row.note,
     assignedToName:
       row.event === "assigned" && row.details && typeof row.details === "object" && !Array.isArray(row.details)
         ? ((row.details as { toName?: string }).toName || null)

@@ -36,6 +36,10 @@ import type {
   LogSeverity,
   UserRole,
   CustomerMatch,
+  PublicInquiry,
+  PublicInquiryEvent,
+  PublicInquiryInput,
+  PublicInquiryNote,
   WebsiteRequest,
   WebsiteRequestAssignee,
   WebsiteRequestEvent,
@@ -88,6 +92,9 @@ import {
   toSystemLog,
   toTestimonial,
   toWebsiteRequest,
+  toPublicInquiry,
+  toPublicInquiryEvent,
+  toPublicInquiryNote,
   toWebsiteRequestEvent,
   toWebsiteRequestNote,
   type Testimonial,
@@ -114,6 +121,8 @@ export class EfzDbError extends Error {
     this.hint = error.hint ?? "";
   }
 }
+
+import { postInquiry, InquirySubmitError } from "@/lib/inquirySubmit";
 
 /** The database's own sentence, without the "orders.create: " context prefix. */
 const dbSentence = (error: EfzDbError) => error.message.replace(/^[^:]+:\s*/, "");
@@ -1467,6 +1476,94 @@ export function createDb(client: EfzSupabaseClient) {
   };
 
   // -------------------------------------------------------------------------
+  // Public inquiries (migration 30): the /contact and /wholesale forms
+  // -------------------------------------------------------------------------
+  const inquiries = {
+    /**
+     * Called from the public Contact and Wholesale forms; works for signed-out visitors. One database call validates, rate-limits,
+     * de-duplicates (same submissionKey, or the same message again) and stores the inquiry. Returns its id.
+     */
+    async submit(input: PublicInquiryInput): Promise<string> {
+      // Through the server route, which signs the visitor's network address for the database's rate limits.
+      try {
+        return await postInquiry(input);
+      } catch (e) {
+        if (e instanceof InquirySubmitError) {
+          throw new EfzDbError("inquiries.submit", { message: e.message, code: e.code, details: "", hint: "" } as PostgrestError);
+        }
+        throw e;
+      }
+    },
+
+    /** Every inquiry this user may read (RLS), newest first. */
+    async list(): Promise<PublicInquiry[]> {
+      const rows = unwrapList(
+        "inquiries.list",
+        await client.from("public_inquiries").select("*").order("created_at", { ascending: false }).limit(1000)
+      );
+      return rows.map(toPublicInquiry);
+    },
+
+    /** Inquiries still in status new (for the personal alert feed): id, time and kind. */
+    async newForAlerts(): Promise<{ id: string; createdAt: string; kind: PublicInquiry["kind"] }[]> {
+      const rows = unwrapList(
+        "inquiries.newForAlerts",
+        await client.from("public_inquiries").select("id, created_at, kind").eq("status", "new").order("created_at", { ascending: false }).limit(200)
+      );
+      return rows.map((r) => ({ id: r.id, createdAt: r.created_at, kind: r.kind }));
+    },
+
+    /** Open inquiries (new, contacted) this user may read - the menu badge. */
+    async openCount(): Promise<number> {
+      const { count, error } = await client
+        .from("public_inquiries")
+        .select("id", { count: "exact", head: true })
+        .in("status", ["new", "contacted"]);
+      if (error) throw new EfzDbError("inquiries.openCount", error);
+      return count ?? 0;
+    },
+
+    /** Timeline and staff notes of one inquiry. */
+    async activity(inquiryId: string): Promise<{ notes: PublicInquiryNote[]; events: PublicInquiryEvent[] }> {
+      const [notes, events] = await Promise.all([
+        unwrapList("inquiries.notes", await client.from("public_inquiry_notes").select("*").eq("inquiry_id", inquiryId).order("created_at")),
+        unwrapList("inquiries.events", await client.from("public_inquiry_events").select("*").eq("inquiry_id", inquiryId).order("seq")),
+      ]);
+      return { notes: notes.map(toPublicInquiryNote), events: events.map(toPublicInquiryEvent) };
+    },
+
+    /** new -> contacted / closed, contacted -> closed, closed -> contacted (reopen). A reason is optional and kept when closing. */
+    async setStatus(inquiryId: string, to: "contacted" | "closed", reason?: string): Promise<void> {
+      const { error } = await client.rpc("set_public_inquiry_status", { p_inquiry_id: inquiryId, p_to: to, p_reason: reason ?? null });
+      if (error) throw new EfzDbError("inquiries.setStatus", error);
+    },
+
+    /** Assign, reassign or (null) unassign. Recorded on the timeline; the assignee is notified. */
+    async assign(inquiryId: string, assigneeId: string | null): Promise<void> {
+      const { error } = await client.rpc("assign_public_inquiry", { p_inquiry_id: inquiryId, p_assignee: assigneeId });
+      if (error) throw new EfzDbError("inquiries.assign", error);
+    },
+
+    /** Who an inquiry can be assigned to (active staff allowed to view inquiries). Needs assign_inquiries. */
+    async assignees(): Promise<WebsiteRequestAssignee[]> {
+      const { data, error } = await client.rpc("public_inquiry_assignees");
+      if (error) throw new EfzDbError("inquiries.assignees", error);
+      return (data ?? []) as WebsiteRequestAssignee[];
+    },
+
+    async addNote(inquiryId: string, body: string): Promise<string> {
+      const { data, error } = await client.rpc("add_public_inquiry_note", { p_inquiry_id: inquiryId, p_body: body });
+      if (error) throw new EfzDbError("inquiries.addNote", error);
+      return data as string;
+    },
+
+    async editNote(noteId: string, body: string): Promise<void> {
+      const { error } = await client.rpc("edit_public_inquiry_note", { p_note_id: noteId, p_body: body });
+      if (error) throw new EfzDbError("inquiries.editNote", error);
+    },
+  };
+
+  // -------------------------------------------------------------------------
   // Commissions
   // -------------------------------------------------------------------------
   const commissions = {
@@ -2088,6 +2185,7 @@ export function createDb(client: EfzSupabaseClient) {
     inventory,
     orders,
     orderRequests,
+    inquiries,
     customerAccounts,
     financeAdmin,
     pricing,
