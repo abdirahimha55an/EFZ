@@ -61,5 +61,24 @@ test("route: bad bodies and database errors map to clean responses", async () =>
   assert.equal((await handleInquiry("[1]", H({}), ok)).status, 400);
   assert.equal((await handleInquiry("x".repeat(MAX_BODY_BYTES + 1), H({}), ok)).status, 413);
   const r = await handleInquiry("{}", H({}), ok);
-  assert.deepEqual(r, { status: 400, body: { message: "Too many messages", code: "WR429" } });
+  assert.deepEqual(r, { status: 429, body: { message: "Too many messages", code: "WR429" } });
+});
+
+test("route: an error without a database code is reported as unavailable and its text is not echoed", async () => {
+  const down = { rpc: async () => ({ data: null, error: { message: "TypeError: fetch failed" } }), secret: SECRET };
+  const r = await handleInquiry("{}", H({}), down);
+  assert.equal(r.status, 502);
+  assert.equal((r.body as { code: string }).code, "WR502");
+  assert.ok(!JSON.stringify(r.body).includes("fetch failed"));
+});
+
+test("route: the submission key is signed in canonical lower-case form; a non-uuid key is forwarded unsigned", async () => {
+  let sent: Record<string, unknown> = {};
+  const rpc = async (p: Record<string, unknown>) => ((sent = p), { data: "abc", error: null });
+  const h = H({ "x-real-ip": "203.0.113.9" });
+  await handleInquiry(JSON.stringify({ kind: "contact", submissionKey: KEY.toUpperCase() }), h, { rpc, secret: SECRET, nowMs: NOW });
+  assert.equal(sent.submissionKey, KEY);
+  assert.ok(verifyClientProof(sent as never, KEY, SECRET, NOW));
+  await handleInquiry(JSON.stringify({ kind: "contact", submissionKey: "not-a-uuid" }), h, { rpc, secret: SECRET, nowMs: NOW });
+  assert.ok(!("_sig" in sent));
 });

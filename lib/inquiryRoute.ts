@@ -2,7 +2,7 @@
  * The request logic behind POST /api/inquiries, kept free of Next and Supabase imports so it can be unit-tested.
  * The route file supplies the real `rpc`; tests supply a stub.
  */
-import { clientProof, trustedClientIp } from "./inquirySignature";
+import { clientProof, normalizedSubmissionKey, trustedClientIp } from "./inquirySignature";
 
 export const MAX_BODY_BYTES = 16 * 1024;
 
@@ -12,6 +12,8 @@ export type InquiryRouteDeps = {
   secret: string | undefined;
   nowMs?: number;
 };
+
+export const UNAVAILABLE = "This form is temporarily unavailable. Please try again shortly or contact us on WhatsApp.";
 
 const json = (body: unknown, status: number) => ({ status, body });
 
@@ -30,10 +32,14 @@ export async function handleInquiry(rawBody: string, headers: Pick<Headers, "get
   delete payload._ip;
   delete payload._ts;
   delete payload._sig;
-  const key = typeof payload.submissionKey === "string" ? payload.submissionKey : null;
+  // Sign and forward the key in canonical (lower-case uuid) form so the database computes the same signature.
+  const key = normalizedSubmissionKey(payload.submissionKey);
+  if (key) payload.submissionKey = key;
   const proof = clientProof({ secret: deps.secret, ip: trustedClientIp(headers), submissionKey: key, nowMs: deps.nowMs });
 
   const { data, error } = await deps.rpc(proof ? { ...payload, ...proof } : payload);
-  if (error) return json({ message: error.message ?? "Request failed", code: error.code ?? null }, 400);
+  // An error with no code never came from the database function (the database was unreachable): do not echo its text.
+  if (error && !error.code) return json({ message: UNAVAILABLE, code: "WR502" }, 502);
+  if (error) return json({ message: error.message ?? "Request failed", code: error.code ?? null }, error.code === "WR429" ? 429 : 400);
   return json({ id: data }, 200);
 }

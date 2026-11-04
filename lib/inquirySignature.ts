@@ -25,6 +25,13 @@ export function trustedClientIp(headers: Pick<Headers, "get">): string | null {
   return null;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The submission key in the exact text the database will sign over (it casts the key to uuid), or null if it is not a uuid. */
+export function normalizedSubmissionKey(key: unknown): string | null {
+  return typeof key === "string" && UUID.test(key) ? key.toLowerCase() : null;
+}
+
 function mac(secret: string, ip: string, ts: number, submissionKey: string): string {
   return createHmac("sha256", secret).update(`${ip}|${ts}|${submissionKey}`).digest("hex");
 }

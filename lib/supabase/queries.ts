@@ -122,6 +122,8 @@ export class EfzDbError extends Error {
   }
 }
 
+import { postInquiry, InquirySubmitError } from "@/lib/inquirySubmit";
+
 /** The database's own sentence, without the "orders.create: " context prefix. */
 const dbSentence = (error: EfzDbError) => error.message.replace(/^[^:]+:\s*/, "");
 
@@ -1482,22 +1484,15 @@ export function createDb(client: EfzSupabaseClient) {
      * de-duplicates (same submissionKey, or the same message again) and stores the inquiry. Returns its id.
      */
     async submit(input: PublicInquiryInput): Promise<string> {
-      const { data, error } = await client.rpc("submit_public_inquiry", {
-        p_payload: {
-          kind: input.kind,
-          name: input.name,
-          phone: input.phone ?? "",
-          email: input.email ?? "",
-          organization: input.organization ?? "",
-          businessType: input.businessType ?? "",
-          subject: input.subject ?? "",
-          message: input.message ?? "",
-          hp: input.hp ?? "",
-          submissionKey: input.submissionKey ?? null,
-        } as unknown as Json,
-      });
-      if (error) throw new EfzDbError("inquiries.submit", error);
-      return data as string;
+      // Through the server route, which signs the visitor's network address for the database's rate limits.
+      try {
+        return await postInquiry(input);
+      } catch (e) {
+        if (e instanceof InquirySubmitError) {
+          throw new EfzDbError("inquiries.submit", { message: e.message, code: e.code, details: "", hint: "" } as PostgrestError);
+        }
+        throw e;
+      }
     },
 
     /** Every inquiry this user may read (RLS), newest first. */
