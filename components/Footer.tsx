@@ -3,6 +3,11 @@
 import Link from "next/link";
 import { MapPin, Phone, Mail } from "lucide-react";
 import { usePublicSettings } from "@/lib/settings";
+import { SOCIAL_LABELS, visibleSocialLinks } from "@/lib/socialLinks";
+import { FacebookIcon, InstagramIcon, XIcon } from "@/components/SocialIcons";
+
+const SOCIAL_ICONS = { facebook: FacebookIcon, instagram: InstagramIcon, x: XIcon } as const;
+const socialLinks = visibleSocialLinks();
 
 export function Footer() {
   // The spinner this used to show has gone: the defaults are real content, so
@@ -23,6 +28,18 @@ export function Footer() {
             <p className="text-sm leading-relaxed">
               {settings.businessName} is Somalia&apos;s premier supplier of high-quality footballs and futsal balls for arenas, schools, and professional organizers.
             </p>
+            {socialLinks.length > 0 && (
+              <div className="flex space-x-4 pt-2">
+                {socialLinks.map(({ network, url }) => {
+                  const Icon = SOCIAL_ICONS[network];
+                  return (
+                    <a key={network} href={url} target="_blank" rel="noopener noreferrer" aria-label={`${settings.businessName} on ${SOCIAL_LABELS[network]}`} className="hover:text-brand-green transition-colors">
+                      <Icon />
+                    </a>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Quick Links */}
