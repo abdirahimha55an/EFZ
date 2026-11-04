@@ -4,9 +4,9 @@ import Link from "next/link";
 import { MapPin, Phone, Mail } from "lucide-react";
 import { usePublicSettings } from "@/lib/settings";
 import { SOCIAL_LABELS, visibleSocialLinks } from "@/lib/socialLinks";
-import { FacebookIcon, InstagramIcon, XIcon } from "@/components/SocialIcons";
+import { FacebookIcon, InstagramIcon, TikTokIcon, XIcon } from "@/components/SocialIcons";
 
-const SOCIAL_ICONS = { facebook: FacebookIcon, instagram: InstagramIcon, x: XIcon } as const;
+const SOCIAL_ICONS = { facebook: FacebookIcon, instagram: InstagramIcon, x: XIcon, tiktok: TikTokIcon } as const;
 const socialLinks = visibleSocialLinks();
 
 export function Footer() {
@@ -88,10 +88,12 @@ export function Footer() {
                   <span>{settings.whatsappNumber}</span>
                 </li>
               )}
-              <li className="flex items-center gap-3">
-                <Mail className="h-5 w-5 text-brand-green shrink-0" />
-                <span>{settings.contactEmail}</span>
-              </li>
+              {settings.contactEmail.trim() && (
+                <li className="flex items-center gap-3">
+                  <Mail className="h-5 w-5 text-brand-green shrink-0" />
+                  <span>{settings.contactEmail}</span>
+                </li>
+              )}
             </ul>
           </div>
         </div>
