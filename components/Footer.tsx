@@ -36,6 +36,9 @@ export function Footer() {
                 <Link href="/wholesale" className="hover:text-white transition-colors">Wholesale & Arenas</Link>
               </li>
               <li>
+                <Link href="/about" className="hover:text-white transition-colors">About Us</Link>
+              </li>
+              <li>
                 <Link href="/contact" className="hover:text-white transition-colors">Contact</Link>
               </li>
             </ul>
@@ -62,10 +65,12 @@ export function Footer() {
                 <MapPin className="h-5 w-5 text-brand-green shrink-0" />
                 <span>Maka Al Mukarama Road<br />Mogadishu, Somalia</span>
               </li>
-              <li className="flex items-center gap-3">
-                <Phone className="h-5 w-5 text-brand-green shrink-0" />
-                <span>{settings.whatsappNumber}</span>
-              </li>
+              {settings.whatsappNumber.trim() && (
+                <li className="flex items-center gap-3">
+                  <Phone className="h-5 w-5 text-brand-green shrink-0" />
+                  <span>{settings.whatsappNumber}</span>
+                </li>
+              )}
               <li className="flex items-center gap-3">
                 <Mail className="h-5 w-5 text-brand-green shrink-0" />
                 <span>{settings.contactEmail}</span>

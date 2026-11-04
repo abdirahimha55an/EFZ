@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 
-const FILES = ["components/Footer.tsx", "components/Navbar.tsx", "components/FloatingWhatsApp.tsx", "app/page.tsx", "app/products/page.tsx", "app/order/page.tsx", "app/contact/page.tsx", "app/wholesale/page.tsx"];
+const FILES = ["components/Footer.tsx", "components/Navbar.tsx", "components/FloatingWhatsApp.tsx", "app/page.tsx", "app/about/page.tsx", "app/products/page.tsx", "app/order/page.tsx", "app/contact/page.tsx", "app/wholesale/page.tsx"];
 
 const routeExists = (path: string) => (path === "/" ? existsSync("app/page.tsx") : existsSync(`app${path}/page.tsx`));
 
