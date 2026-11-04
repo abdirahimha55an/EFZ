@@ -1,11 +1,42 @@
 # EFZ Hub - Project status
 
+## Current status (2026-11-04)
+
+Every line says where it comes from. "Recorded" means the owner's or Claude's release evidence in the project notes. Nothing here was re-read from Production today, because Production is unreachable (see Supabase availability).
+
+### Production
+- Hub `4b9bca2` is live (Vercel deployment from 2026-10-21 09:30Z). Recorded.
+- Migrations 19, 19b, 21-28 and 29a-29d were applied on 2026-10-21 (09:22Z), and 29e on 2026-10-21 09:48Z after a logged-in smoke test (6/6). The 19-29e release is complete. Recorded.
+- Edge Function `register-customer` is deployed; `payments`, `credit-daily` and `staging-test-payment` are not. Payment methods and credit are off; customer email verification and recovery are off (no sender domain). Recorded (2026-10-21/22).
+- `/privacy` and `/account-deletion` return 404 until the owner fills the placeholders in `lib/legal/content.ts`. Recorded.
+- The website and the Android app are not open to customers.
+- Not on Production: migration 30 (public inquiries) and everything on the branches below.
+
+### Supabase availability (found 2026-11-04)
+Both Supabase projects (Production `rodmdvfjashiohgwople`, Staging `adjjamiqwboawqedaapi`) report `INACTIVE` (paused) and their hosts do not resolve. A pause keeps the data; the dashboard restore window is limited (documented as about 90 days, confirm in the dashboard). The newest sealed Production backup is `C:/EFZ-backups/20261021-085210Z`, taken before Phase A, so it does not include Phase C or anything later. Restore Staging first for development. Restore Production before the window closes and take a fresh backup straight afterwards (`supabase/production/` backup and preflight tooling, `docs/RELEASE_RUNBOOK.md`).
+
+### Work waiting on branches (pushed, none merged, none deployed)
+| Branch | What | State |
+| --- | --- | --- |
+| `feature/public-inquiries` (8f32c5f) | Working Contact and Wholesale forms, migration 30, `/admin/inquiries` inbox | Staging-tested earlier (83 unit, 100 SQL, 34 E2E, jsdom 34+24). The real-browser run is pending a restored Staging. |
+| `fix/public-site-dead-links` (22cae06) | Footer `/about` 404, dead `#` links, ignored category links, no-op "Forgot Access?"; link regression test | tsc, 76 unit tests, build pass |
+| `feature/about-page` (25dd187) | About page from facts already published on the site | Stacked on the branch above; viewed in a browser |
+| `feature/social-links` (e1efc74) | Footer social links, shown only for verified https URLs (none configured) | Stacked on the About branch; 79 unit tests |
+| `chore/remove-legacy-code` (0a67666) | Removes code with no importer (`backend/`, `lib/storage`, `lib/data.ts`, `lib/services`, `lib/diagnostics/logger.ts`) | tsc, 74 unit tests, build pass, lint errors 11 to 5 |
+
+### Known gaps
+Owner decisions and accounts are listed in `docs/REMAINING_BEFORE_PRODUCTION.md`. Planned but not built: stronger inquiry rate limiting (a signed trusted client address and separate buckets; needs a Staging migration), the `?category=` product filter, and the social account URLs. `database/` holds legacy T-SQL reference scripts that the app does not use.
+
+---
+
+## Earlier status (2026-10-17, historical)
+
 Last verified: 2026-10-17 (branch `android/customer-accounts`, based on `origin/main` = `c1e873b`).
 Sources: the repository, git history, the migration files and the recorded evidence of earlier releases. Production
 state below is **as last reported by the owner's and Claude's read-only checks**, not re-inspected for this document.
 This file did not exist before; the repository's only other status file, `PROJECT_STATE.md.txt`, is empty and was left untouched.
 
-## Live in Production (`main` = `c1e873b`)
+## Live in Production as of 2026-10-17 (`main` = `c1e873b`), superseded by the section above
 
 | Area | State |
 | --- | --- |
