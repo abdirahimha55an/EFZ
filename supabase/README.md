@@ -281,8 +281,9 @@ read only what anon is allowed:
 2026-09-01 backup JSON that no longer exists, which broke `next build`. They
 remain in git history.
 
-Still unused but harmless: `lib/data.ts`, `lib/storage/`, the rest of
-`lib/services/`, `lib/diagnostics/logger.ts` and `backend/`.
+Removed later (2026-11, branch `chore/remove-legacy-code`, no importer anywhere): `lib/data.ts`,
+`lib/storage/`, `lib/services/`, `lib/diagnostics/logger.ts` and `backend/`. They remain in git history.
+`database/` (Microsoft T-SQL reference scripts, not used by the app) is kept until the owner decides.
 
 `lib/financial.ts` and `lib/validators/` are **still in use** and should stay.
 

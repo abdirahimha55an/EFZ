@@ -259,7 +259,7 @@ export type SystemLog = {
   userId?: string;
   username?: string;
   targetId?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   /** Who wrote the line: the database, a browser, or unknown (null: written before migration 11). */
   origin?: 'database' | 'client' | null;
 };

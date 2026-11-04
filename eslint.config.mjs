@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Deno Edge Functions: not part of the web app (own runtime, own tests).
     "supabase/functions/**",
+    // One-off Node helper scripts for the Migration 28 integration run (CommonJS by design).
+    "supabase/checks/28_integration/**/*.cjs",
   ]),
 ]);
 
