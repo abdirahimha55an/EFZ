@@ -25,7 +25,7 @@ Both Supabase projects (Production `rodmdvfjashiohgwople`, Staging `adjjamiqwboa
 | `chore/remove-legacy-code` (0a67666) | Removes code with no importer (`backend/`, `lib/storage`, `lib/data.ts`, `lib/services`, `lib/diagnostics/logger.ts`) | tsc, 74 unit tests, build pass, lint errors 11 to 5 |
 
 ### Known gaps
-Owner decisions and accounts are listed in `docs/REMAINING_BEFORE_PRODUCTION.md`. Planned but not built: stronger inquiry rate limiting (a signed trusted client address and separate buckets; needs a Staging migration), the `?category=` product filter, and the social account URLs. `database/` holds legacy T-SQL reference scripts that the app does not use.
+Owner decisions and accounts are listed in `docs/REMAINING_BEFORE_PRODUCTION.md`. Stronger inquiry rate limiting is built on `feature/inquiry-rate-limit-hardening` (route + migration 31) but migration 31 has only been syntax-parsed. Not built: the `?category=` product filter, and the social account URLs. `database/` holds legacy T-SQL reference scripts that the app does not use.
 
 ---
 

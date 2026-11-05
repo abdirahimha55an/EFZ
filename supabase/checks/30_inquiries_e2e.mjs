@@ -1,7 +1,7 @@
 // EFZ-STAGING ONLY. End-to-end check of migration 30 through the Hub's real data layer (lib/supabase/queries.ts) over PostgREST,
 // signed in as real Staging staff, plus a Realtime delivery check.
 //
-//   node --import ./scripts/register-test-loader.mjs supabase/checks/30_inquiries_e2e.mjs
+//   E2E_BASE_URL=http://localhost:3000 node --import ./scripts/register-test-loader.mjs supabase/checks/30_inquiries_e2e.mjs   (Hub running against Staging)
 //
 // Reads .env.local (must be EFZ-Staging) and the staff passwords from the file named by E2E_ENV (the git-ignored .env.e2e).
 // Prints PASS/FAIL lines and never prints a key or a password.
@@ -30,6 +30,13 @@ if (!url || !anonKey || !url.includes(STAGING_REF) || url.includes(PROD_REF)) {
   console.error("REFUSED: .env.local is not the EFZ-Staging project");
   process.exit(2);
 }
+
+// Submissions go through the Hub route POST /api/inquiries (relative URL in the browser). Node needs an absolute base: run the Hub
+// locally against Staging (`npm run dev` or `npm run build && npm start` with .env.local = Staging) and point E2E_BASE_URL at it
+// (default http://localhost:3000). A Vercel Preview is also fine once it is confirmed to use Staging.
+const BASE = (process.env.E2E_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+const realFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => realFetch(typeof input === "string" && input.startsWith("/") ? BASE + input : input, init);
 
 const results = [];
 const check = (id, name, ok, info = "") => {

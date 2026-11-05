@@ -619,7 +619,7 @@ export default function UsersPage() {
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2.5">
                         <div className="h-8 w-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400 overflow-hidden shrink-0">
-                          {user.avatar ? <img src={user.avatar} className="h-full w-full object-cover" /> : <User className="h-4 w-4" />}
+                          {user.avatar ? <img src={user.avatar} alt="" className="h-full w-full object-cover" /> : <User className="h-4 w-4" />}
                         </div>
                         <div className="min-w-0">
                           <p className="font-bold text-slate-900 truncate">{user.name}</p>
