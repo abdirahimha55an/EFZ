@@ -19,3 +19,11 @@ test("every internal link on the public site resolves to a page", () => {
     for (const h of hrefs) assert.ok(routeExists(h), `${f} links to ${h}, which has no page`);
   }
 });
+
+test("the footer's About Us link reaches an About page that has a heading and links onward", () => {
+  assert.ok(/href="\/about"[^>]*>\s*About Us/.test(readFileSync("components/Footer.tsx", "utf8")), "the footer has no About Us link to /about");
+  assert.ok(routeExists("/about"), "/about has no page");
+  const page = readFileSync("app/about/page.tsx", "utf8");
+  assert.ok(/<h1\b/.test(page), "the About page has no <h1>");
+  for (const onward of ["/products", "/wholesale", "/contact", "/order"]) assert.ok(page.includes(`href="${onward}"`), `the About page does not link to ${onward}`);
+});
