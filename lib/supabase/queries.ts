@@ -45,6 +45,8 @@ import type {
   WebsiteRequestEvent,
   WebsiteRequestNote,
   WebsiteRequestStatus,
+  ProductDesign,
+  PublicDesign,
 } from "@/lib/types";
 
 import type {
@@ -328,7 +330,8 @@ export type OrderRequestInput = {
   organization?: string;
   deliveryLocation?: string;
   notes?: string;
-  lines: { productId: string; quantity: number }[];
+  /** 32: designId is optional; when sent it must be an active design of that product (the database checks). */
+  lines: { productId: string; quantity: number; designId?: string }[];
   /** Made once per form; the same key again returns the first request (double submit). */
   submissionKey?: string;
 };
@@ -732,6 +735,70 @@ export function createDb(client: EfzSupabaseClient) {
         "products.listPublic",
         await client.from("public_products").select("*").order("name")
       );
+    },
+
+    /**
+     * 32: the active designs of active products, for the public order form (any visitor). An empty list on a database without
+     * migration 32 or on any failure: the form then simply offers no design choice, exactly as before.
+     */
+    async listPublicDesigns(): Promise<PublicDesign[]> {
+      const { data, error } = await (client as unknown as { rpc: (fn: string) => PromiseLike<{ data: unknown; error: unknown }> }).rpc("public_product_designs");
+      if (error || !Array.isArray(data)) return [];
+      return (data as { id: string; product_id: string; name: string; image_url: string }[]).map((d) => ({
+        id: d.id, productId: d.product_id, name: d.name, imageUrl: d.image_url ?? "",
+      }));
+    },
+  };
+
+  // -------------------------------------------------------------------------
+  // Product designs (32): managed by staff with edit_products; the table's row rules and triggers are the protection
+  // -------------------------------------------------------------------------
+  type DesignRow = { id: string; product_id: string; name: string; image_url: string; sort_order: number; is_active: boolean; created_at: string; updated_at: string };
+  type LooseTable = {
+    select: (c: string) => { order: (c: string) => { order: (c: string) => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }> } };
+    insert: (v: Record<string, unknown>) => { select: (c: string) => { single: () => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }> } };
+    update: (v: Record<string, unknown>) => { eq: (c: string, v: string) => { select: (c: string) => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }> } };
+  };
+  const designTable = () => (client as unknown as { from: (t: string) => LooseTable }).from("product_designs");
+  const DESIGN_COLUMNS = "id, product_id, name, image_url, sort_order, is_active, created_at, updated_at";
+  const toDesign = (r: DesignRow): ProductDesign => ({
+    id: r.id, productId: r.product_id, name: r.name, imageUrl: r.image_url ?? "", sortOrder: r.sort_order, isActive: r.is_active,
+    createdAt: r.created_at, updatedAt: r.updated_at,
+  });
+  const designs = {
+    /** Every design, active or not (staff read; the table's row rules decide who may). */
+    async list(): Promise<ProductDesign[]> {
+      const { data, error } = await designTable().select(DESIGN_COLUMNS).order("product_id").order("sort_order");
+      if (error) throw new EfzDbError("designs.list", error as never);
+      return ((data as DesignRow[] | null) ?? []).map(toDesign);
+    },
+    /** Needs edit_products: any other caller is refused by the table's policy. The database trims the name and checks the image link. */
+    async create(input: { productId: string; name: string; imageUrl?: string; sortOrder?: number; isActive?: boolean }): Promise<ProductDesign> {
+      const { data, error } = await designTable()
+        .insert({ product_id: input.productId, name: input.name, image_url: input.imageUrl ?? "", sort_order: input.sortOrder ?? 0, is_active: input.isActive ?? true })
+        .select(DESIGN_COLUMNS).single();
+      if (error) throw new EfzDbError("designs.create", error as never);
+      return toDesign(data as DesignRow);
+    },
+    /** Name, image link and display order. A design never moves to another product (the database refuses). */
+    async update(id: string, patch: { name?: string; imageUrl?: string; sortOrder?: number }): Promise<ProductDesign> {
+      const row: Record<string, unknown> = {};
+      if (patch.name !== undefined) row.name = patch.name;
+      if (patch.imageUrl !== undefined) row.image_url = patch.imageUrl;
+      if (patch.sortOrder !== undefined) row.sort_order = patch.sortOrder;
+      const { data, error } = await designTable().update(row).eq("id", id).select(DESIGN_COLUMNS);
+      if (error) throw new EfzDbError("designs.update", error as never);
+      const first = ((data as DesignRow[] | null) ?? [])[0];
+      if (!first) throw new EfzDbError("designs.update", { message: "Permission denied: you may not change designs, or the design no longer exists", code: "42501" } as never);
+      return toDesign(first);
+    },
+    /** Deactivating hides the design from the order form at once; it stays on requests and orders that already use it. */
+    async setActive(id: string, isActive: boolean): Promise<ProductDesign> {
+      const { data, error } = await designTable().update({ is_active: isActive }).eq("id", id).select(DESIGN_COLUMNS);
+      if (error) throw new EfzDbError("designs.setActive", error as never);
+      const first = ((data as DesignRow[] | null) ?? [])[0];
+      if (!first) throw new EfzDbError("designs.setActive", { message: "Permission denied: you may not change designs, or the design no longer exists", code: "42501" } as never);
+      return toDesign(first);
     },
   };
 
@@ -1284,15 +1351,21 @@ export function createDb(client: EfzSupabaseClient) {
       throw new EfzDbError("orderRequests.appInfo", linkError as PostgrestError);
     }
     const linkRows = ((links as { data: { request_id: string; customer_id: string }[] | null }).data ?? []);
-    if (linkRows.length === 0) return requests;
+    // 32: a line's design can sit on ANY request, not only an app request: the public order form records its designs in the same table.
+    // Only requests with a customer-app link get the "app" marker; a website request that carries designs gets the designs and nothing else.
     const lineRes = await client.from("customer_order_request_lines" as never).select("request_id, line_no, design_id, design_name").limit(20000);
     const lineRows = ((lineRes as { data: { request_id: string; line_no: number; design_id?: string | null; design_name: string }[] | null }).data ?? []);
+    if (linkRows.length === 0 && lineRows.length === 0) return requests;
     const customerOf = new Map(linkRows.map((l) => [l.request_id, l.customer_id]));
+    const withDesigns = new Set(lineRows.map((l) => l.request_id));
     const designOf = new Map(lineRows.map((l) => [`${l.request_id}#${l.line_no}`, l.design_name]));
     const designIdOf = new Map(lineRows.map((l) => [`${l.request_id}#${l.line_no}`, l.design_id ?? undefined]));
-    return requests.map((r) => customerOf.has(r.id)
-      ? { ...r, app: { customerId: customerOf.get(r.id) as string }, lines: r.lines.map((l) => ({ ...l, designName: designOf.get(`${r.id}#${l.lineNo}`) ?? "", designId: designIdOf.get(`${r.id}#${l.lineNo}`) })) }
-      : r);
+    return requests.map((r) => {
+      const isApp = customerOf.has(r.id);
+      if (!isApp && !withDesigns.has(r.id)) return r;
+      const lines = r.lines.map((l) => ({ ...l, designName: designOf.get(`${r.id}#${l.lineNo}`) ?? "", designId: designIdOf.get(`${r.id}#${l.lineNo}`) }));
+      return isApp ? { ...r, app: { customerId: customerOf.get(r.id) as string }, lines } : { ...r, lines };
+    });
   }
 
   const orderRequests = {
@@ -1309,7 +1382,7 @@ export function createDb(client: EfzSupabaseClient) {
           organization: input.organization ?? "",
           deliveryLocation: input.deliveryLocation ?? "",
           notes: input.notes ?? "",
-          lines: input.lines.map((l) => ({ productId: l.productId, quantity: Math.round(l.quantity) })),
+          lines: input.lines.map((l) => ({ productId: l.productId, ...(l.designId ? { designId: l.designId } : {}), quantity: Math.round(l.quantity) })),
           submissionKey: input.submissionKey ?? null,
         } as unknown as Json,
       });
@@ -2182,6 +2255,7 @@ export function createDb(client: EfzSupabaseClient) {
     users,
     customers,
     products,
+    designs,
     inventory,
     orders,
     orderRequests,

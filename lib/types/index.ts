@@ -246,6 +246,22 @@ export type Product = {
   isActive?: boolean;
 };
 
+/** 32: a ball design of a product, as managed by staff (migration 22 table; migration 32 triggers). */
+export type ProductDesign = {
+  id: string;
+  productId: string;
+  name: string;
+  /** Empty, or an https:// link (the database refuses anything else). */
+  imageUrl: string;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 32: what a visitor may see of a design (public_product_designs()). */
+export type PublicDesign = { id: string; productId: string; name: string; imageUrl: string };
+
 /** Football is the only active category (enforced by the database since 12). */
 export const ACTIVE_PRODUCT_CATEGORIES = ["Football"] as const;
 

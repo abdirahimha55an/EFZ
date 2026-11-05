@@ -38,7 +38,7 @@ import {
   Moon,
   Wallet,
   Inbox,
-  Landmark, CreditCard, Tag, BadgeCheck, MessageSquare } from "lucide-react";
+  Landmark, CreditCard, Tag, BadgeCheck, MessageSquare, Palette } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -115,6 +115,8 @@ const NAV_MODULES: NavModule[] = [
   {
     id: "products", label: "Products & Inventory", icon: Package, items: [
       { name: "Inventory Control", href: "/admin/products", icon: Package, permission: 'view_products' as Permission },
+      // 32: the ball designs offered on the public order form (edit_products; the database enforces it and audits every change).
+      { name: "Product Designs", href: "/admin/product-designs", icon: Palette, permission: 'edit_products' as Permission },
     ],
   },
   {

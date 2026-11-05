@@ -36,6 +36,7 @@ The Android app is a separate repository; its commercial-model question (open re
 | Production schema | Recorded at migration 29e; migrations 30 and 31 are **not** on Production |
 | Migration 30 | **DONE on Staging**: identical to the repo file; checks **100 PASS, 0 FAIL** (2026-11-05) |
 | Migration 31 | **DONE on Staging only**: applied 2026-11-05, checks **19 PASS, 0 FAIL** (after fixing two defects in check E1), signed path proven. **Not applied to Production.** Production readiness still needs the Preview proof and your approval |
+| Migration 32 (order designs) | **DONE on Staging only** (applied, 60/60 checks, 39/39 end-to-end, rollback proven). **Not applied to Production.** Production has no designs until staff add some in the new screen; separate approval and a fresh backup needed first. See `docs/ORDER_DESIGNS.md` |
 | Execution order | 30, 30 checks, 31, 31 checks, E2E, then the secret (`docs/STAGING_VERIFICATION_INQUIRIES.md` sections 2 and 5 to 8); rollback in reverse (section 10) |
 | Supabase CLI | **DONE**: installed, logged in; `db query` needs `--linked --project-ref`; this PC reported an IPv6 error, so run `supabase link --project-ref adjjamiqwboawqedaapi` in the worktree first |
 

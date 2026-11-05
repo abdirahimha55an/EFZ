@@ -1,6 +1,6 @@
 # Proposal: per-line design selection on the website order form
 
-Written 2026-11-05. **Status: awaiting owner approval. Nothing here is built, applied or deployed.** Reason for stopping: this needs a database migration, which the brief forbids without approval.
+Written 2026-11-05. **Status: APPROVED by the owner the same day and implemented on Staging only; see `docs/ORDER_DESIGNS.md` for what was built, the evidence and the Production steps (not approved yet).** The text below is the original proposal, kept for the record.
 
 ## What was asked
 Each order line gets its own product *and design* selector; one order may contain several designs, including several designs of the same product; each line keeps its own quantity and price; the chosen design is stored with the request and visible in the Hub.
