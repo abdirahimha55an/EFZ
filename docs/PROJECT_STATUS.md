@@ -13,6 +13,9 @@ Release candidate: all eight branches (public-inquiries, dead-links, about-page,
 - Design risk to settle on Staging: with migration 30 only, requests reach PostgREST from Vercel, so the per-network limit may be keyed on Vercel's address for every visitor. Do not ship the route without migration 31 and its secret.
 - Second review (same day): `docs/STAGING_VERIFICATION_INQUIRIES.md` re-checked against the scripts and the installed Supabase CLI and corrected (Production guards, `supabase link`, check scripts need an empty inquiry table and no stored secret, secret handling without printing, local signed-path proof). New: `docs/LAUNCH_READINESS_CHECKLIST.md` (website, Android, Supabase, Vercel, security, orders, admin) with the outstanding external dependencies.
 
+### Staging verification of inquiries (2026-11-05)
+Migration 30 checks 100/100; migration 31 applied to Staging only, checks 19/19 (after two defects in check E1 were fixed); legacy E2E 34/34 on the second run (33/34 on the first: intermittent Realtime check RT1); signed path proven (verified rows get an address hash, unsigned, forged-body and forged-header rows do not); cleanup done; Staging is left in strict mode with a stored secret. The 3 owner test inquiries were deleted with approval. No real-browser run was possible. Vercel Preview: URL and publishable key are Staging, but `INQUIRY_HMAC_SECRET` is missing and the service-role and anon keys are shared with Production scope; corrections proposed, not applied. Details: `docs/STAGING_VERIFICATION_INQUIRIES.md`. Production was not touched.
+
 ### Production
 - Hub `4b9bca2` is live (Vercel deployment from 2026-10-21 09:30Z). Recorded.
 - Migrations 19, 19b, 21-28 and 29a-29d were applied on 2026-10-21 (09:22Z), and 29e on 2026-10-21 09:48Z after a logged-in smoke test (6/6). The 19-29e release is complete. Recorded.

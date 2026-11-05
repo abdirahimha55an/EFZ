@@ -202,3 +202,32 @@ Both check scripts start with a guard that refuses to run unless `public.public_
 
 Deleting them also removes their 3 `submitted` events (cascade). **Not done: needs the owner's explicit approval.** The statement, once approved, is
 `delete from public.public_inquiries where id in ('8e1b6db9-38be-4e13-a444-8021abe93c02','8b5b38cc-2abc-4d85-ab4b-7924b57ac52d','57840cfb-34fa-417b-a383-2722cb84286f')` on Staging only.
+
+## Verification results, 2026-11-05 (Staging `adjjamiqwboawqedaapi`, owner-approved)
+Every database step was preceded by a check that the worktree link and the Staging markers identified Staging. Nothing was run against Production.
+| Step | Result |
+| --- | --- |
+| Delete the 3 approved test inquiries | Done in one guarded transaction (aborts unless the table holds exactly those 3 rows and their 3 events). Afterwards only `public_inquiries` and `public_inquiry_events` differ from the pre-delete baseline; every other table fingerprint is identical. The 23 audit-log lines about inquiries were kept. |
+| Section 5, migration 30 checks | **100 PASS, 0 FAIL** |
+| Section 6a, apply migration 31 | Applied cleanly. State verified: signing-secret table exists (0 rows), `ip_verified` column present, function updated, `anon`/`authenticated` cannot read the secret, `anon` can submit. |
+| Section 6b, migration 31 checks | First run **18 PASS, 1 FAIL (E1)**; after fixing two defects in the check itself, **19 PASS, 0 FAIL** (details below). |
+| Section 6, legacy E2E through `/api/inquiries` | Run 1: **33 PASS, 1 FAIL (RT1, Realtime)**. Run 2: **34 PASS, 0 FAIL**. See below. |
+| Section 7, secret | 64-hex secret generated without printing; database and `.env.local` values proved identical by sha256; scratch files deleted; local server restarted. |
+| Section 8, signed path | Request with a trusted address header: stored `ip_verified = true` with an address hash; a different address gives a different hash. No header, forged proof fields in the body, and a forged `x-forwarded-for` were all stored `ip_verified = false` with **no** hash. |
+| Section 8, browser matrix | **Not run in a real browser** (no browser automation was available). Substituted by: jsdom form tests 34/34 and admin inbox 24/24, the E2E, and a crawl of the served pages (below). |
+| Section 9, cleanup | 16 synthetic E2E/proof rows deleted (the table had been verified empty before the runs; the transaction aborts on any non-`E2E-INQ` row) and the two temporary `u-stg-delivery` grants revoked. The signing secret stays stored, so Staging is in strict mode. |
+
+**Defects found in `31_inquiry_rate_limits_checks.sql` (fixed; the assertion was strengthened, not weakened).** Check E1 had never run before. (1) B1 deliberately fills the 20-per-hour unverified bucket, so E1's unsigned submissions were refused by the *bucket* before the email rule could apply; the script now deletes B1's filler rows first. (2) E1 compared `left(result, 4)` with `'OK|,OK|,OK|,WR42'`, which can never match (`OK|` is followed by a UUID character); it now maps each result to `OK|` or its first five characters and requires exactly `OK|,OK|,OK|,WR429`, so a phone-validation error (`WR422`) can no longer pass for a limit refusal. Nothing in the migration changed.
+
+**RT1 (Realtime) failed once in two runs.** A standalone probe on Staging showed Realtime working (the event arrived 0.3 s after the submission) and the second full run passed 34/34, so this is intermittent, not a service or policy fault. The likely cause is that the check does not wait for the channel's `SUBSCRIBED` status before submitting (it only races an 8-second timeout and ignores the result). Not yet changed; worth hardening so a failure says which it was. Treat the E2E as 34/34 on the second run, 33/34 on the first.
+
+**Served-page crawl** (local Hub on Staging, GET only): 7 pages return 200; 6 internal and 4 external links, none dead, none `#`; Facebook and TikTok anchors open in a new tab with `rel="noopener noreferrer"`; no Instagram or X links; "Forgot Access" absent on `/admin/login`; both forms present with the honeypot field; `/privacy` and `/account-deletion` return 404 while the legal placeholders are open.
+
+**Legacy-mode observation.** All rows submitted from the local server share one `ip_hash` (they all come from one machine), so this run cannot show whether, on Vercel, the database would see the visitor's address or the platform's. That still needs a Preview run with the secret in place.
+
+### Vercel Preview inspection (read-only; project `efz`, team `efz1`, Hobby plan)
+- Preview deployments exist for `396152d` and `db1d452` and are behind Vercel Deployment Protection.
+- **Correct:** `NEXT_PUBLIC_SUPABASE_URL` has its own Preview entry and points at **Staging**. The Preview-only `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` is **accepted by Staging (HTTP 200) and rejected by Production (HTTP 401)**. The app prefers the publishable key, so the Preview talks to Staging.
+- **Missing:** `INQUIRY_HMAC_SECRET` is **not set in any scope**. Until it is, the route forwards unsigned requests and the Preview would run in the weaker legacy path (and, with migration 31 now on Staging and a secret stored, every Preview visitor would fall into the 20-per-hour unverified bucket).
+- **Risk:** `SUPABASE_SERVICE_ROLE_KEY` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are each **one Sensitive entry scoped to both Production and Preview**, i.e. the same value in both. Sensitive values cannot be read back, so whether they are Production's cannot be proved from here, but a shared entry cannot hold two different projects' keys. The service-role key bypasses row-level security. The application code does not import it (only `lib/supabase/admin.ts` references it and nothing imports that file), so it is not used at runtime today, but it should not be present in Preview.
+- **Proposed corrections (not applied, awaiting your approval):** (1) add `INQUIRY_HMAC_SECRET` for Preview only, marked Sensitive, using the Staging value that is stored in the Staging database (it exists only in the git-ignored worktree `.env.local`); (2) remove `Preview` from the shared `SUPABASE_SERVICE_ROLE_KEY` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` entries (leaving their Production scope untouched) and, only if the app needs it there, add Staging-valued Preview entries; (3) redeploy the Preview of `integration/pre-launch` and repeat the signed-path proof against it with a *Preview-only* test submission (the Preview is Staging-backed, so it writes only to Staging).

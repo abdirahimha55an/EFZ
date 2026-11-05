@@ -148,10 +148,12 @@ begin
 
   -- the same email is limited even when the phone changes
   perform m31check.as_('owner');
+  -- B1 filled the unverified bucket on purpose; free those filler rows so E1 exercises the EMAIL rule and not the bucket limit
+  delete from public.public_inquiries where name = 'Unv';
   perform set_config('request.headers', '', true);
   perform m31check.as_('anon');
-  perform m31check.ok('E1', 'email limit: the same email with four different phones, the fourth is refused', (select string_agg(r, ',') from (
-      select left(m31check.try(format($j$select public.submit_public_inquiry('{"kind":"wholesale","name":"E","phone":"06190001%s","organization":"O","businessType":"Other","email":"Same@Example.com"}'::jsonb)$j$, lpad(g::text, 2, '0'))), 4) r from generate_series(1, 4) g) q), 'OK|,OK|,OK|,WR42');
+  perform m31check.ok('E1', 'email limit: the same email with four different phones, the first three are accepted and the fourth is refused WR429', (select string_agg(case when starts_with(res, 'OK|') then 'OK|' else left(res, 5) end, ',' order by g) from (
+      select g, m31check.try(format($j$select public.submit_public_inquiry('{"kind":"wholesale","name":"E","phone":"06190001%s","organization":"O","businessType":"Other","email":"Same@Example.com"}'::jsonb)$j$, lpad(g::text, 2, '0'))) res from generate_series(1, 4) g) q), 'OK|,OK|,OK|,WR429');
   perform m31check.as_('owner');
 end
 $run$;

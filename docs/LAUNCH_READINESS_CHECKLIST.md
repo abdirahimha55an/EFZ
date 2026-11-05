@@ -34,23 +34,23 @@ The Android app is a separate repository; its commercial-model question (open re
 | Production backup | **BLOCKED (owner)**: newest sealed backup is `20261021-085210Z` (15 days old, one PC, checksums verified). A fresh sealed backup needs the owner to type the Production database password (`supabase/production/run_backup_and_seal.ps1`; its dry run passes). The encrypted off-machine copy needs the owner's passphrase and a destination (`C:\EFZ-checks\M19\truncate_hardening\closeout\encrypt_backup_copy.ps1`); the existing encrypted copy only covers folders up to about 2026-10-04. |
 | Platform backups / PITR | **OPEN (owner)**: CLI shows PITR off and no managed backups for either project; check the plan and dashboard settings. |
 | Production schema | Recorded at migration 29e; migrations 30 and 31 are **not** on Production |
-| Migration 30 | Applied on Staging and identical to the repo file (8 of 8 functions); the 100-check script is blocked until 3 test inquiries are cleared (owner approval) |
-| Migration 31 | **OPEN**: syntax-parsed only, never executed. It is not tested and not production-ready |
+| Migration 30 | **DONE on Staging**: identical to the repo file; checks **100 PASS, 0 FAIL** (2026-11-05) |
+| Migration 31 | **DONE on Staging only**: applied 2026-11-05, checks **19 PASS, 0 FAIL** (after fixing two defects in check E1), signed path proven. **Not applied to Production.** Production readiness still needs the Preview proof and your approval |
 | Execution order | 30, 30 checks, 31, 31 checks, E2E, then the secret (`docs/STAGING_VERIFICATION_INQUIRIES.md` sections 2 and 5 to 8); rollback in reverse (section 10) |
 | Supabase CLI | **DONE**: installed, logged in; `db query` needs `--linked --project-ref`; this PC reported an IPv6 error, so run `supabase link --project-ref adjjamiqwboawqedaapi` in the worktree first |
 
 ## 4. Vercel Preview
 | Item | State |
 | --- | --- |
-| Preview uses Staging URL and key, not Production | **OPEN**: Vercel CLI is not installed or logged in here; the owner or Claude with a login checks Settings, Environment Variables (Preview scope only; nothing Production-valued under "All Environments") |
-| `INQUIRY_HMAC_SECRET` (Preview, Sensitive, Staging-only value) | **OPEN**: created in section 7 of the verification procedure |
+| Preview uses Staging URL and key, not Production | **PARTLY DONE**: URL is Staging and the Preview publishable key is accepted by Staging and rejected by Production. **Issue:** `SUPABASE_SERVICE_ROLE_KEY` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are single Sensitive entries scoped to Production **and** Preview (see `docs/STAGING_VERIFICATION_INQUIRIES.md`); correction proposed, awaiting approval |
+| `INQUIRY_HMAC_SECRET` (Preview, Sensitive, Staging-only value) | **OPEN, issue found**: not set in any Vercel scope. Staging itself is in strict mode with a stored secret, so the Preview must receive the same Staging value (awaiting approval) |
 | Preview built from `integration/pre-launch` | **OPEN**: confirm a deployment exists for commit and that its Network tab calls only the Staging ref |
 
 ## 5. Security
 | Item | State |
 | --- | --- |
 | `/api/inquiries`: size limit, proof fields stripped, HMAC-SHA256 over `ip|ts|submissionKey`, 5-minute window, constant-time compare, trusted-address headers only, no service-role key | **DONE** (code review, unit tests); database half **OPEN** until the 31 checks run |
-| Legacy-mode caveat: route without migration 31 and its secret shares one per-network bucket (Vercel's address) | **OPEN**: confirm on Staging; rule is "ship route + 31 + secret together" |
+| Legacy-mode caveat: route without migration 31 and its secret shares one per-network bucket (Vercel's address) | **OPEN**: a local run cannot show it (one machine, one address); settle with a Preview run once the secret is set. Rule stays: ship route + 31 + secret together |
 | Secret handling (generated unprinted, ignored scratch files, Vercel Sensitive, different value per environment, rotation = upsert + Vercel) | **DONE** as procedure; **OPEN** until exercised |
 | RLS and grants on inquiry tables and functions (anon may only submit; staff via permissions) | **DONE** in migration text and earlier Staging checks; re-verify after restore |
 | Procedure cannot target Production by accident | **DONE** as far as possible: environment checks, `--linked`/`--project-ref` rules, check scripts that refuse non-Staging, E2E that refuses a Production env or a non-local base. The two migration files themselves have no environment guard. |
