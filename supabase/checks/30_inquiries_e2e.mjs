@@ -35,6 +35,12 @@ if (!url || !anonKey || !url.includes(STAGING_REF) || url.includes(PROD_REF)) {
 // locally against Staging (`npm run dev` or `npm run build && npm start` with .env.local = Staging) and point E2E_BASE_URL at it
 // (default http://localhost:3000). A Vercel Preview is also fine once it is confirmed to use Staging.
 const BASE = (process.env.E2E_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+// The Hub at BASE decides which database the visitor submissions reach, and this script cannot see that. Only a local server (started
+// with .env.local = Staging) is accepted by default; a remote one needs E2E_ALLOW_REMOTE_BASE=1 after you confirmed it uses Staging.
+if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(BASE) && process.env.E2E_ALLOW_REMOTE_BASE !== "1") {
+  console.error("REFUSED: E2E_BASE_URL is not localhost (a remote Hub may be connected to Production). Set E2E_ALLOW_REMOTE_BASE=1 only for a Preview confirmed to use Staging.");
+  process.exit(2);
+}
 const realFetch = globalThis.fetch;
 globalThis.fetch = (input, init) => realFetch(typeof input === "string" && input.startsWith("/") ? BASE + input : input, init);
 

@@ -1,125 +1,185 @@
 # Staging verification: public inquiries (migrations 30 + 31) on `integration/pre-launch`
 
-Written 2026-11-05. **Staging only** (`adjjamiqwboawqedaapi`). Nothing here is to be run against Production
-(`rodmdvfjashiohgwople`); every script that connects refuses a Production URL, and you must still check the ref yourself.
-Migration 31 has so far only been **parsed**, never executed. Treat the first run of step 4 as the real test and expect to fix mistakes.
+Written 2026-11-05, reviewed and corrected the same day (second pass). **Staging only** (`adjjamiqwboawqedaapi`).
+Production is `rodmdvfjashiohgwople`: nothing here is ever run against it.
+Migration 31 has so far only been **parsed**, never executed. Treat the first run of section 6 as the real test and expect to fix mistakes.
+Commands are written for Git Bash. The `node -e` lines work unchanged in PowerShell; for `VAR=value command` lines use `$env:VAR="value"; command` there.
 
-## 0. Preconditions
+## 0. Safety: how this procedure is kept away from Production
+
+**Neither `30_public_inquiries.sql` nor `31_inquiry_rate_limits.sql` checks which project it runs in.** Their only guards are dependency checks, so applied to the
+wrong project they would succeed. The protection is therefore the following, in this order. Do not skip any line.
+
+1. **Work only in a worktree of this branch, never in the main checkout.** The main checkout's `.env.local` points at **Production**. Never copy it. Create a new
+   `.env.local` in the worktree from the Staging dashboard (Project Settings, API).
+2. **Prove the env file is Staging-only** (prints no values; exits non-zero otherwise):
+   ```bash
+   node -e "const s=require('fs').readFileSync('.env.local','utf8');const a=s.includes('adjjamiqwboawqedaapi'),b=s.includes('rodmdvfjashiohgwople');console.log(a&&!b?'OK: Staging only':'REFUSED: not Staging-only');process.exit(a&&!b?0:1)"
+   ls -a | grep "^\.env"      # only .env.local (and .env.e2e / .env.example). No .env.production.local, .env.development.local or .env
+   ```
+   Next.js also reads those other `.env*` files and shell variables, which override `.env.local`. Make sure `NEXT_PUBLIC_SUPABASE_URL` is not set in your shell
+   (`echo "$NEXT_PUBLIC_SUPABASE_URL"` prints nothing).
+3. **Supabase CLI.** `--project-ref` is accepted only together with `--linked` (the CLI rejects it alone), so every command below uses
+   `--linked --project-ref adjjamiqwboawqedaapi`. If a directory was ever linked to Production, `--linked` could resolve to it, so link **this worktree** to Staging first
+   and confirm:
+   ```bash
+   supabase link --project-ref adjjamiqwboawqedaapi          # may ask for the database password; also the fix if db query reports "IPv6 is not supported on your current network" (seen on this PC)
+   cat supabase/.temp/project-ref                            # must print exactly: adjjamiqwboawqedaapi   (the folder is git-ignored)
+   supabase projects list                                     # Staging must show ACTIVE_HEALTHY; leave Production alone
+   ```
+   Re-read the ref in the command before pressing Enter, every time.
+4. **Second line of defence, built in:** both SQL check scripts abort with `REFUSED` unless Staging's synthetic markers exist (`prod-stg-*` products, `u-stg-admin`
+   Super Admin) and Production's markers are absent (`prod-1787244881309`, `u-1`). The E2E script refuses a `.env.local` that is not the Staging project, and
+   refuses an `E2E_BASE_URL` that is not `localhost`/`127.0.0.1` unless you set `E2E_ALLOW_REMOTE_BASE=1` (only for a Preview you have confirmed uses Staging).
+   These guard the **checks and the test script**, not the two migration files, which is why points 1 to 3 matter.
+5. **Never `git add -A` blindly** after secret handling in section 7: secret scratch files are ignored by `.gitignore` (`.inquiry-secret*`), but check `git status` before committing.
+
+## 1. Preconditions (all read-only)
 | Needed | How to confirm |
 | --- | --- |
-| Staging restored (status ACTIVE) | Supabase dashboard, project `adjjamiqwboawqedaapi`. Owner action. |
-| Staging at migrations through 29e | `supabase db query --linked --project-ref adjjamiqwboawqedaapi "select to_regprocedure('public.submit_order_request(jsonb)') is not null"` and the guards in `supabase/staging/RUNBOOK.md` |
-| Staging synthetic data present (`u-stg-*` profiles) | `select count(*) from public.profiles where id like 'u-stg-%'` is 8 or more |
-| Working tree on `integration/pre-launch` | `git rev-parse --short HEAD` equals the commit named in `docs/PROJECT_STATUS.md` |
-| `.env.local` = Staging; `.env.e2e` holds staff passwords | `grep -c adjjamiqwboawqedaapi .env.local` is 1. Never print the values. |
+| Staging restored | Dashboard shows the project active; `supabase projects list` shows `ACTIVE_HEALTHY`. **Owner action.** |
+| Branch and commit | `git rev-parse --short HEAD` equals the release candidate named in `docs/PROJECT_STATUS.md`; `git status --short` is empty |
+| Staging identity | `supabase db query --linked --project-ref adjjamiqwboawqedaapi "select (select count(*) from public.products where id like 'prod-stg-%') as stg_products, (select count(*) from public.profiles where id = 'u-1') as prod_marker"` expects `stg_products` of 1 or more and `prod_marker` 0. Anything else: **stop, you may be on the wrong project.** |
+| Migration state | `supabase db query --linked --project-ref adjjamiqwboawqedaapi "select to_regprocedure('public.submit_public_inquiry(jsonb)') is not null as m30, to_regclass('public.inquiry_signing_secret') is not null as m31, (select count(*) from public.public_inquiries) as inquiries"` (the last column needs M30; if M30 is missing the query errors, which also answers the question) |
+| Empty inquiry table | `inquiries` must be 0 before **each** run of a check script (both scripts refuse otherwise). Clean up per section 9 first. |
+| No stored secret | Before the 31 checks only (section 6): `select count(*) from public.inquiry_signing_secret` (after M31) must be 0. The 31 checks do a plain `insert` into this one-row table and fail on a duplicate; they also test "no secret stored" behaviour. |
+| Staff passwords | `.env.e2e` (git-ignored) holds them; never print it |
 
-## 1. Environment variables (names only; values come from the dashboards)
+## 2. Execution order and dependencies
+| Row | Step | Depends on | Notes |
+| --- | --- | --- | --- |
+| A | Staging active, identity confirmed (sections 0 and 1) | owner restores Staging | |
+| B | `30_public_inquiries.sql` | the 18b website-request objects and base helpers: `submit_order_request(jsonb)`, `validate_request_phone(text)`, `has_permission(text)`, `current_profile_id()`, tables `website_request_settings`, `notifications`, `permissions`. Its own pre-guard refuses if any is missing. | Idempotent. Staging already had it in early November per the project notes; confirm with the state query, re-apply is harmless. |
+| C | `30_public_inquiries_checks.sql` | row B, empty `public_inquiries`, Staging synthetic data | expects `M30 CHECKS: 100 PASS, 0 FAIL` |
+| D | `31_inquiry_rate_limits.sql` | **row B** (its own pre-guard: "migration 30 is not applied - refusing"); `pgcrypto` in schema `extensions` (the file creates it if missing; if pgcrypto already lives in another schema the signature code cannot find `extensions.hmac` and the 31 checks will say so) | Idempotent, one transaction, forward only. Behaves exactly like 30 until a secret is stored. |
+| E | `31_inquiry_rate_limits_checks.sql` | row D, empty table, **no stored secret** | expects `M31 CHECKS: <n> PASS, 0 FAIL` |
+| F | E2E `30_inquiries_e2e.mjs` in legacy mode | rows B and D, a local Hub on Staging | 34 PASS. Run **before** storing the secret (see section 6). |
+| G | Store the secret, set `INQUIRY_HMAC_SECRET`, restart/redeploy | row E passed with 0 FAIL | strict mode starts |
+| H | Signed-path proof, then browser run | row G | |
+| Rollback | the reverse: **31 first, then 30** | | section 10 |
+
+## 3. Environment variables (names only; values come from the dashboards)
 | Variable | Where | Value |
 | --- | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | local `.env.local`, Vercel **Preview** | the **Staging** project URL (contains `adjjamiqwboawqedaapi`) |
+| `NEXT_PUBLIC_SUPABASE_URL` | worktree `.env.local`; Vercel **Preview** scope | the **Staging** project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` (or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, which wins when both are set) | same | the **Staging** public key |
-| `INQUIRY_HMAC_SECRET` | same, server-only, never `NEXT_PUBLIC_` | 32+ random characters, a **Staging-only** value, identical to the one stored in step 5 |
-| `SUPABASE_SERVICE_ROLE_KEY` | not needed by the inquiry feature | leave unset on Preview |
-| `E2E_ENV` | shell, path to the git-ignored `.env.e2e` | staff passwords for the E2E script |
-| `E2E_BASE_URL` | shell | URL of the Hub that talks to Staging (default `http://localhost:3000`) |
+| `INQUIRY_HMAC_SECRET` | same two places; server-only, never `NEXT_PUBLIC_`; Vercel Preview scope only (optionally limited to branch `integration/pre-launch`), marked **Sensitive** | 64 hex characters generated in section 7, Staging-only, identical to the database value |
+| `SUPABASE_SERVICE_ROLE_KEY` | not used by the inquiry feature | leave unset on Preview and out of `.env.local` for this work |
+| `E2E_ENV` | shell | path to the git-ignored `.env.e2e` |
+| `E2E_BASE_URL` | shell | default `http://localhost:3000`; remote only with `E2E_ALLOW_REMOTE_BASE=1` |
 
-**Preview must not point at Production.** Vercel dashboard, Project, Settings, Environment Variables: the `Preview` scope must list the
-Staging URL/key and `INQUIRY_HMAC_SECRET`; the `Production` scope keeps the Production URL/key. Anything set for "All Environments" with a
-Production URL is a defect. (Claude could not check this: the Vercel CLI is not installed or logged in on this machine.)
-After a Preview deploys, `view-source` of any page, search for the Supabase ref in the bundled JS, and confirm it is `adjjamiqwboawqedaapi`.
+`NEXT_PUBLIC_*` values are **baked into the build**. Before running a production-mode server for section 6, `rm -rf .next` and rebuild with `.env.local` = Staging; a stale build
+(including the placeholder-value builds made during code review) would talk to the wrong URL.
 
-## 2. Local checks (no database; repeat after any change)
+**Vercel Preview must not point at Production.** Vercel, Project, Settings, Environment Variables: the `Preview` scope lists the Staging URL/key and `INQUIRY_HMAC_SECRET`;
+the `Production` scope keeps the Production values. Anything under "All Environments" that holds a Production URL is a defect. Claude could not check this (no Vercel login on
+this PC). After a Preview deploys, confirm it from the outside: open the Preview, DevTools, Network, any request to `*.supabase.co` must be `adjjamiqwboawqedaapi`.
+
+## 4. Local checks (no database; repeat after any change)
 ```bash
-npx tsc --noEmit                       # expect no output
-npm run test:hub                       # expect: tests 102, pass 102, fail 0
-npx eslint app components lib proxy.ts # expect: 0 errors (41 cosmetic warnings: unused imports, <img>)
-npx next build --webpack               # expect: lists /about /admin/inquiries /contact /wholesale and /api/inquiries (dynamic)
+npx tsc --noEmit                        # expect no output
+npm run test:hub                        # expect: tests 102, pass 102, fail 0
+npx eslint app components lib proxy.ts  # expect 0 errors (41 cosmetic warnings: unused imports, <img>)
+npx next build --webpack                # expect the route list incl. /about /admin/inquiries /contact /wholesale and /api/inquiries (dynamic); needs no database
+npm i --no-save jsdom esbuild           # only if missing; then:
+node scripts/inquiry-forms-dom-test/run.mjs && node scripts/inquiry-forms-dom-test/admin-run.mjs   # DOM: 34 PASS / ADMIN DOM: 24 PASS
 ```
 (`next build` with Turbopack fails in a git worktree whose `node_modules` is a junction to another folder; use `--webpack` there. A normal clone and Vercel are unaffected.)
 
-## 3. Migration 30 on Staging
+## 5. Migration 30 (skip the apply if the state query showed m30 = true)
 ```bash
-supabase db query --linked --project-ref adjjamiqwboawqedaapi -f supabase/30_public_inquiries.sql           # skip if already applied
+supabase db query --linked --project-ref adjjamiqwboawqedaapi -f supabase/30_public_inquiries.sql
 supabase db query --linked --project-ref adjjamiqwboawqedaapi -f supabase/checks/30_public_inquiries_checks.sql
 ```
-Expected: the check script ends in an error whose text is the report: **`M30 CHECKS: 100 PASS, 0 FAIL`** (the transaction always rolls back).
+Expected: the check script always ends in an error whose text is the report: `M30 CHECKS: 100 PASS, 0 FAIL` (the transaction rolls back everything it did).
+`REFUSED: ...` means a precondition (Staging markers, M30 applied, empty table) failed: read the message, do not work around it.
 
-## 4. Migration 31 (first real execution)
+## 6. Migration 31 (first real execution)
 ```bash
-# 4a. back up the table you are about to alter (Staging data is synthetic, so a copy of the inquiries is enough)
-supabase db query --linked --project-ref adjjamiqwboawqedaapi "create table if not exists public.zz_inquiries_pre31 as select * from public.public_inquiries"
-# 4b. apply (idempotent, one transaction, refuses unless 30 is applied)
+# 6a. apply: idempotent, one transaction, refuses unless 30 is applied. Expected notice: "31: inquiry rate limits installed (legacy mode: no secret stored yet)"
 supabase db query --linked --project-ref adjjamiqwboawqedaapi -f supabase/31_inquiry_rate_limits.sql
-# 4c. SQL checks. Run BEFORE storing a secret (the script inserts and rolls back its own)
+# 6b. SQL checks: inquiry table empty, no stored secret
 supabase db query --linked --project-ref adjjamiqwboawqedaapi -f supabase/checks/31_inquiry_rate_limits_checks.sql
 ```
-Expected 4b: notice `31: inquiry rate limits installed (legacy mode: no secret stored yet)`.
-Expected 4c: error text `M31 CHECKS: <n> PASS, 0 FAIL`. Any FAIL: stop, read the line, decide whether the check or the migration is wrong, fix, re-run
-(4b is idempotent). Do not continue to step 5 until 0 FAIL.
-Behavioural expectations the checks cover: legacy mode behaves exactly like 30; a valid signature is accepted and marked `ip_verified`; wrong,
-expired, other-key or other-secret signatures are accepted into the unverified bucket (20/h) with the address ignored; a forged `x-forwarded-for`
-is ignored once a secret exists; replay is idempotent; the same email is limited across different phones; `anon`/`authenticated` cannot read
-`inquiry_signing_secret`.
+No data backup is taken first: 31 only adds a column, two indexes and a table and replaces one function, drops nothing, and its rollback restores migration 30's
+function. (Do not copy the inquiry table into `public` as a backup: new `public` tables are exposed through the API by default privileges.)
+Expected 6b: error text `M31 CHECKS: <n> PASS, 0 FAIL`. Any FAIL: stop, read the line, decide whether the check or the migration is wrong, fix, rerun (6a is idempotent). Do not continue until 0 FAIL.
+Covered: legacy mode equals migration 30; a valid signature is accepted and marked `ip_verified`; wrong, expired, other-key and other-secret signatures go to the unverified bucket (20/h)
+with the address ignored; a forged `x-forwarded-for` is ignored once a secret exists; replay is idempotent; the same email is limited across phones; `anon`/`authenticated` cannot read `inquiry_signing_secret`.
 
-## 5. Store a Staging secret and turn on strict mode
+**E2E in legacy mode** (still no secret stored). Start the Hub locally against Staging, then run the script from a second terminal:
 ```bash
-# generate locally, do not paste it into chat or commit it
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-supabase db query --linked --project-ref adjjamiqwboawqedaapi "insert into public.inquiry_signing_secret (secret) values ('<THE VALUE>') on conflict (id) do update set secret = excluded.secret, updated_at = now()"
-```
-Put the same value in `.env.local` and the Vercel Preview as `INQUIRY_HMAC_SECRET`, then restart the local server / redeploy the Preview.
-
-## 6. End to end through the real route
-```bash
-npm run build && npm start              # Hub on http://localhost:3000 with .env.local = Staging (or use a Preview and set E2E_BASE_URL)
+rm -rf .next && npm run build && npm start                    # terminal 1: .env.local = Staging (section 0), http://localhost:3000
 # grant u-stg-delivery view_inquiries + manage_inquiries first (plain INSERT into user_permissions; see docs/PUBLIC_INQUIRIES.md)
 E2E_ENV=<path to .env.e2e> E2E_BASE_URL=http://localhost:3000 node --import ./scripts/register-test-loader.mjs supabase/checks/30_inquiries_e2e.mjs
 ```
-Expected: **34 PASS, 0 FAIL**. This is the first time the E2E goes through `/api/inquiries` (earlier runs called the RPC directly).
-Then confirm the verified path really is used:
-```sql
-select ip_verified, count(*) from public.public_inquiries where name like 'E2E-INQ%' group by 1;   -- expect true for all rows when run from a Vercel Preview; on localhost there is no x-vercel-forwarded-for, so rows are false (unverified) and that is correct
-```
-**Open question to settle here:** on a Vercel Preview, `ip_verified` must be `true` and `ip_hash` must differ between two different networks
-(e.g. Wi-Fi and a phone on mobile data). If every row is unverified, `x-vercel-forwarded-for` is not reaching the route; fix before anything else.
-Also confirm the legacy-mode concern: with a secret **not** stored, requests via the route reach PostgREST from Vercel, so `x-forwarded-for` is
-Vercel's address and all visitors may share one `ip_hash` (30/h cap for everyone). If `select count(distinct ip_hash)` over rows from two networks is 1,
-that is why migration 31 and the secret must go live together with this route (see rollout rule below).
+Expected: **34 PASS, 0 FAIL**, the first run of this script through `/api/inquiries` (earlier runs called the database function directly). Once the secret is stored, unsigned
+localhost traffic falls into the 20-per-hour unverified bucket, so rerun the E2E in strict mode at most once an hour.
 
-## 7. Browser run (Chrome, against the Staging-backed Hub or Preview)
+## 7. Store a Staging secret and turn on strict mode
+Generates the secret into git-ignored scratch files **without printing it** and without putting it on a command line (command lines land in shell history and process lists):
+```bash
+node -e "const c=require('crypto'),f=require('fs'),q=String.fromCharCode(39),s=c.randomBytes(32).toString('hex');f.writeFileSync('.inquiry-secret.tmp',s);f.writeFileSync('.inquiry-secret.sql.tmp','insert into public.inquiry_signing_secret (secret) values ('+q+s+q+') on conflict (id) do update set secret = excluded.secret, updated_at = now();')"
+supabase db query --linked --project-ref adjjamiqwboawqedaapi -f .inquiry-secret.sql.tmp      # database side
+rm .inquiry-secret.sql.tmp
+node -e "const f=require('fs');f.appendFileSync('.env.local','INQUIRY_HMAC_SECRET='+f.readFileSync('.inquiry-secret.tmp','utf8')+'\n')"   # local server side
+```
+Then the Vercel Preview: dashboard, Environment Variables, add `INQUIRY_HMAC_SECRET`, scope **Preview** only, **Sensitive** on; open `.inquiry-secret.tmp` in an editor and paste the single line
+(no spaces, no newline). Redeploy: variables apply to new deployments only. Finally `rm .inquiry-secret.tmp` (the value then lives only in the database, `.env.local` and Vercel).
+Properties: 64 hex characters (256 bits; the database requires 32 or more and the route ignores shorter), generated by the OS random source, never printed, never committed, never the same as a Production value.
+**Mismatch is silent but safe:** if the three copies differ (a stray space, an old value), signatures fail and every visitor lands in the 20-per-hour unverified bucket instead of failing open.
+That is why section 8 proves the signed path. **Rotation:** run the same commands again (the insert upserts) and update Vercel in the same sitting; requests in flight for up to 5 minutes use the unverified bucket.
+Restart the local server after changing `.env.local`.
+
+## 8. Proof that the signed path works, then the browser run
+Local server restarted with the secret. The route trusts `x-real-ip` (on Vercel the platform sets `x-vercel-forwarded-for` instead), so a header sent from here exercises the same code:
+```bash
+node -e "fetch('http://localhost:3000/api/inquiries',{method:'POST',headers:{'content-type':'application/json','x-real-ip':'203.0.113.50'},body:JSON.stringify({kind:'contact',name:'E2E-INQ signed',email:'signed@example.com',subject:'s',message:'m',submissionKey:crypto.randomUUID()})}).then(async r=>console.log(r.status,await r.text()))"
+supabase db query --linked --project-ref adjjamiqwboawqedaapi "select name, ip_verified, ip_hash is not null as has_hash from public.public_inquiries where name = 'E2E-INQ signed'"
+```
+Expected: `200 {"id":"<uuid>"}`, then `ip_verified = true, has_hash = true`. Repeat with the `x-real-ip` header removed (and a new name, `E2E-INQ unsigned`): `ip_verified = false, has_hash = false`.
+If the first request is `false/false`, the secret does not match between `.env.local` and the database (or the server was not restarted): fix this before anything else.
+On a Vercel Preview the same result is expected from a normal browser submission, and `ip_hash` must differ between two networks (Wi-Fi vs mobile data).
+
+**Legacy-mode concern to settle (section 6 data):** with only migration 30 (or 31 without a secret) the database sees the route's own address in `x-forwarded-for`, not the visitor's. Compare
+`select count(distinct ip_hash)` over E2E rows submitted from the local server: one value for all of them confirms the per-network limit is shared by every visitor in that mode, which is why migration 31 and
+the secret must go live together with this route.
+
+**Browser run** (Chrome, against the Staging-backed Hub or Preview):
 | # | Do | Expect |
 | --- | --- | --- |
 | 1 | `/contact`, submit empty | field errors, nothing sent, focus on first invalid field |
 | 2 | submit a valid message (phone `061 234 5678`) | success state; row appears in `/admin/inquiries` for Super Admin within seconds; bell and menu badge increment |
 | 3 | double-click Send / press Enter twice | one inquiry only |
 | 4 | repeat the same message | no second row |
-| 5 | send 4 different messages from one phone | the 4th shows the "already have your recent messages" sentence and `WR429` |
+| 5 | send 4 different messages from one phone | the 4th shows the "already have your recent messages" sentence (`WR429`) |
 | 6 | `/wholesale` valid and invalid (missing business type) | success / inline errors |
-| 7 | stop the Staging database (or set a wrong URL on a throwaway Preview) | generic "temporarily unavailable" message, no technical text |
-| 8 | `/admin/inquiries` as Super Admin: open, change status, add and edit a note, assign | each action recorded in the timeline; deep link to an inquiry opens it |
+| 7 | restart the local server with `NEXT_PUBLIC_SUPABASE_URL=https://invalid.invalid` set in the shell (use `npm run dev`; throwaway, never in `.env.local`), submit | generic "temporarily unavailable" message (502), no technical text; restart normally afterwards |
+| 8 | `/admin/inquiries` as Super Admin: open, change status, add and edit a note, assign | each action recorded in the timeline; a deep link to an inquiry opens it |
 | 9 | as `u-stg-delivery` without `view_inquiries` | menu item absent, `/admin/inquiries` shows no data |
-| 10 | footer on desktop and 375px width | Facebook and TikTok icons open the owner's pages in a new tab; no Instagram/X icons; Quick Links all resolve (no 404) |
-| 11 | `/about`, navbar and footer links, "Forgot Access" absent on `/admin/login` | all pages load; no dead `#` links |
+| 10 | footer on desktop and at 375px width | Facebook and TikTok icons open the owner's pages in a new tab; no Instagram/X icons; Quick Links all resolve |
+| 11 | `/about`, navbar and footer links, `/admin/login` | all pages load; no dead `#` links; no "Forgot Access" button |
 
-## 8. Cleanup
+## 9. Cleanup (Staging only)
 ```sql
-delete from public.public_inquiries where name like 'E2E-INQ%';   -- notes and events cascade
-delete from public.user_permissions where user_id = 'u-stg-delivery' and permission_code in ('view_inquiries','manage_inquiries');  -- only if you granted them
-drop table if exists public.zz_inquiries_pre31;
+delete from public.public_inquiries where name like 'E2E-INQ%';     -- notes and events cascade; also delete any row you created by hand in the browser run
+delete from public.user_permissions where user_id = 'u-stg-delivery' and permission_code in ('view_inquiries','manage_inquiries');   -- only if you granted them
 ```
-Also delete the test inquiries made by hand in step 7 (any row you created from the browser).
+Before **re-running either check script** the table must be empty again (`select count(*) from public.public_inquiries` is 0) and, for the 31 checks, no secret may be stored
+(`delete from public.inquiry_signing_secret;` returns to legacy mode, then store a secret again in section 7).
 
-## 9. Rollback (Staging; the same files are the Production rollback)
+## 10. Rollback (Staging; the same files are the Production rollback)
 | Situation | Action | Result |
 | --- | --- | --- |
-| Migration 31 misbehaves | `supabase db query ... -f supabase/rollback/31_inquiry_rate_limits_rollback.sql` | the migration 30 function is restored, `inquiry_signing_secret` dropped. `ip_verified` and two indexes stay (additive, harmless). No inquiry rows are lost. The app keeps working: the route sends proof fields that migration 30 ignores. |
-| Migration 30 must go too | roll back **31 first**, then `supabase/rollback/30_public_inquiries_rollback.sql` | removes the inquiry tables, functions and policies; **deletes stored inquiries**, so export first: `copy public.public_inquiries to ...` |
-| App problem on the Preview | redeploy the previous Preview / delete the branch deployment | Production untouched |
-| Secret leaked or rotated | store a new secret in the table and in Vercel together | requests in flight for up to 5 minutes land in the unverified bucket |
+| Strict mode misbehaves (everyone throttled, wrong signatures) | `delete from public.inquiry_signing_secret;` and remove `INQUIRY_HMAC_SECRET` from Vercel/`.env.local` | legacy mode at once, no restart of the database; the route forwards unsigned. Nothing else changes. |
+| Migration 31 misbehaves | `supabase db query --linked --project-ref adjjamiqwboawqedaapi -f supabase/rollback/31_inquiry_rate_limits_rollback.sql` | migration 30's function restored, `inquiry_signing_secret` dropped. `ip_verified` and two indexes stay (additive, harmless). No inquiry rows lost. The app keeps working: the route sends proof fields that migration 30 ignores. |
+| Migration 30 must go too | roll back **31 first**, then `supabase/rollback/30_public_inquiries_rollback.sql` | removes the inquiry tables, functions and policies; **deletes stored inquiries**, so export them first |
+| App problem on the Preview | redeploy the previous Preview or delete the branch deployment | Production untouched |
+| Secret leaked or rotated | section 7 again, database and Vercel together | requests in flight for up to 5 minutes use the unverified bucket |
 
-## 10. Rollout rule for later (not authorised now)
-Production would need, in this order, with explicit owner approval: fresh sealed backup, migration 30, migration 31 **and** the secret stored, `INQUIRY_HMAC_SECRET` set
-in the Production scope, then the app deploy. Do not ship the app with only migration 30: the per-network limit would then be keyed on Vercel's address (see step 6).
+## 11. Rollout rule for later (not authorised now)
+Production would need, in this order, with explicit owner approval: fresh sealed backup, migration 30, migration 31 **and** the secret stored, `INQUIRY_HMAC_SECRET` in the Production scope, then the app deploy.
+Do not ship the app with only migration 30 (the per-network limit would be keyed on Vercel's address). The Production secret must be a **different** value from Staging's.
 
 ## Pass criteria for "ready for Production review"
-Steps 3, 4 (0 FAIL), 6 (34/34 and verified rows on a Preview) and 7 (all 11 rows) complete, Preview environment confirmed to be Staging-only, cleanup done, results recorded in `docs/PROJECT_STATUS.md`.
+Sections 5 (100/100), 6 (0 FAIL, E2E 34/34), 8 (signed proof true/false pair, browser table complete), Preview confirmed Staging-only, cleanup done, results recorded in `docs/PROJECT_STATUS.md`.

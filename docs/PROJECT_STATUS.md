@@ -4,6 +4,15 @@
 
 Every line says where it comes from. "Recorded" means the owner's or Claude's release evidence in the project notes. Nothing here was re-read from Production today, because Production is unreachable (see Supabase availability).
 
+### Integration review of `integration/pre-launch` (2026-11-05)
+
+Release candidate: all eight branches (public-inquiries, dead-links, about-page, social-links, remove-legacy-code, lint-errors, rate-limit-hardening, docs) are merged into `integration/pre-launch`, based on `origin/main` 4b9bca2. Nothing is on `main` or Production.
+- Verified locally: `tsc` clean; `npm run test:hub` 102/102; jsdom forms 34/34 and admin inbox 24/24; lint 0 errors (41 cosmetic warnings in tracked code: unused imports, `<img>`; git-ignored test bundles add about 2400 more); `next build --webpack` passes and lists `/about`, `/admin/inquiries`, `/contact`, `/wholesale`, `/api/inquiries`. A Turbopack build fails only in a worktree whose `node_modules` is a junction to another folder (environment, not code).
+- Fixed in review: the M30 E2E script could not run through the new route (relative `/api/inquiries` in Node): it now takes `E2E_BASE_URL` and refuses a non-local base unless `E2E_ALLOW_REMOTE_BASE=1`; `INQUIRY_HMAC_SECRET` added to `.env.example`; missing `alt` on the user avatar `<img>`; `.inquiry-secret*` git-ignored.
+- **Not verified (no database was reachable; both Supabase projects are INACTIVE):** migration 30 re-run, migration 31 (syntax-parsed only, never executed, not production-ready), the 31 checks, E2E 34/34 through the route, any browser run, and that the Vercel Preview uses Staging (no Vercel login on this PC).
+- Design risk to settle on Staging: with migration 30 only, requests reach PostgREST from Vercel, so the per-network limit may be keyed on Vercel's address for every visitor. Do not ship the route without migration 31 and its secret.
+- Second review (same day): `docs/STAGING_VERIFICATION_INQUIRIES.md` re-checked against the scripts and the installed Supabase CLI and corrected (Production guards, `supabase link`, check scripts need an empty inquiry table and no stored secret, secret handling without printing, local signed-path proof). New: `docs/LAUNCH_READINESS_CHECKLIST.md` (website, Android, Supabase, Vercel, security, orders, admin) with the outstanding external dependencies.
+
 ### Production
 - Hub `4b9bca2` is live (Vercel deployment from 2026-10-21 09:30Z). Recorded.
 - Migrations 19, 19b, 21-28 and 29a-29d were applied on 2026-10-21 (09:22Z), and 29e on 2026-10-21 09:48Z after a logged-in smoke test (6/6). The 19-29e release is complete. Recorded.

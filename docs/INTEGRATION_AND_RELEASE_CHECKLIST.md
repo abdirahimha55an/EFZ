@@ -20,7 +20,7 @@ Last updated 2026-11-04. Nothing below is merged to `main` or deployed to Produc
 Suggested merge order after owner review (each is a fast-forward or clean merge of its stack; re-run tests after each): dead-links, about-page, social-links, remove-legacy-code, lint-errors, public-inquiries (with its migration), rate-limit-hardening. Expect small conflicts in `package.json` (`test:hub` list) and `components/Footer.tsx` between the first group and `public-inquiries`; resolve by keeping both test lists.
 
 ## 2. Blocked on Staging (owner restores it, then Claude runs all of this)
-Step-by-step with expected results and rollback: `docs/STAGING_VERIFICATION_INQUIRIES.md`.
+Step-by-step with expected results and rollback: `docs/STAGING_VERIFICATION_INQUIRIES.md`. Cross-area status and external dependencies: `docs/LAUNCH_READINESS_CHECKLIST.md`.
 - [ ] `supabase link`, confirm migrations through 29e and 30 on Staging.
 - [ ] `30_public_inquiries_checks.sql` = 100/100, `30_inquiries_e2e.mjs` = 34/34.
 - [ ] Chrome run of `/contact`, `/wholesale`, `/admin/inquiries` (script ready); fix defects.

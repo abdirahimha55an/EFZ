@@ -55,3 +55,6 @@ supabase/.temp/
 
 # test run output
 supabase/checks/*/_run.*
+
+# scratch files holding a generated secret during Staging verification (docs/STAGING_VERIFICATION_INQUIRIES.md)
+.inquiry-secret*
