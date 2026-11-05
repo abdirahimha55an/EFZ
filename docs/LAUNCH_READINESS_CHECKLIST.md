@@ -30,10 +30,11 @@ The Android app is a separate repository; its commercial-model question (open re
 ## 3. Supabase
 | Item | State |
 | --- | --- |
-| Staging `adjjamiqwboawqedaapi` and Production `rodmdvfjashiohgwople` | **BLOCKED**: both `INACTIVE` (confirmed with `supabase projects list` on 2026-11-05). Owner restores them in the dashboard. Pause keeps the data; the restore window is limited (documented as about 90 days from the pause; it was found paused on 2026-11-04, the actual pause date is unknown; confirm in the dashboard). |
-| Production backup | **BLOCKED**: newest sealed backup (`C:/EFZ-backups/20261021-085210Z`) predates the 19 to 29e release; take a fresh one right after restore, before any change |
+| Staging `adjjamiqwboawqedaapi` and Production `rodmdvfjashiohgwople` | **DONE**: both `ACTIVE_HEALTHY` since 2026-11-05. Read-only integrity audit: no data loss (see `docs/PROJECT_STATUS.md`). |
+| Production backup | **BLOCKED (owner)**: newest sealed backup is `20261021-085210Z` (15 days old, one PC, checksums verified). A fresh sealed backup needs the owner to type the Production database password (`supabase/production/run_backup_and_seal.ps1`; its dry run passes). The encrypted off-machine copy needs the owner's passphrase and a destination (`C:\EFZ-checks\M19\truncate_hardening\closeout\encrypt_backup_copy.ps1`); the existing encrypted copy only covers folders up to about 2026-10-04. |
+| Platform backups / PITR | **OPEN (owner)**: CLI shows PITR off and no managed backups for either project; check the plan and dashboard settings. |
 | Production schema | Recorded at migration 29e; migrations 30 and 31 are **not** on Production |
-| Migration 30 | Passed on Staging earlier (100 SQL, 34 E2E, jsdom); re-run after restore |
+| Migration 30 | Applied on Staging and identical to the repo file (8 of 8 functions); the 100-check script is blocked until 3 test inquiries are cleared (owner approval) |
 | Migration 31 | **OPEN**: syntax-parsed only, never executed. It is not tested and not production-ready |
 | Execution order | 30, 30 checks, 31, 31 checks, E2E, then the secret (`docs/STAGING_VERIFICATION_INQUIRIES.md` sections 2 and 5 to 8); rollback in reverse (section 10) |
 | Supabase CLI | **DONE**: installed, logged in; `db query` needs `--linked --project-ref`; this PC reported an IPv6 error, so run `supabase link --project-ref adjjamiqwboawqedaapi` in the worktree first |

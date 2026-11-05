@@ -2,14 +2,14 @@
 
 ## Current status (2026-11-04)
 
-Every line says where it comes from. "Recorded" means the owner's or Claude's release evidence in the project notes. Nothing here was re-read from Production today, because Production is unreachable (see Supabase availability).
+Every line says where it comes from. "Recorded" means the owner's or Claude's release evidence in the project notes. The Production state below the 2026-11-05 sections is as recorded earlier; the 2026-11-05 audit (see Supabase availability) re-read Production read-only.
 
 ### Integration review of `integration/pre-launch` (2026-11-05)
 
 Release candidate: all eight branches (public-inquiries, dead-links, about-page, social-links, remove-legacy-code, lint-errors, rate-limit-hardening, docs) are merged into `integration/pre-launch`, based on `origin/main` 4b9bca2. Nothing is on `main` or Production.
 - Verified locally: `tsc` clean; `npm run test:hub` 102/102; jsdom forms 34/34 and admin inbox 24/24; lint 0 errors (41 cosmetic warnings in tracked code: unused imports, `<img>`; git-ignored test bundles add about 2400 more); `next build --webpack` passes and lists `/about`, `/admin/inquiries`, `/contact`, `/wholesale`, `/api/inquiries`. A Turbopack build fails only in a worktree whose `node_modules` is a junction to another folder (environment, not code).
 - Fixed in review: the M30 E2E script could not run through the new route (relative `/api/inquiries` in Node): it now takes `E2E_BASE_URL` and refuses a non-local base unless `E2E_ALLOW_REMOTE_BASE=1`; `INQUIRY_HMAC_SECRET` added to `.env.example`; missing `alt` on the user avatar `<img>`; `.inquiry-secret*` git-ignored.
-- **Not verified (no database was reachable; both Supabase projects are INACTIVE):** migration 30 re-run, migration 31 (syntax-parsed only, never executed, not production-ready), the 31 checks, E2E 34/34 through the route, any browser run, and that the Vercel Preview uses Staging (no Vercel login on this PC).
+- **Not verified at the time of this review (both Supabase projects were paused; they were resumed later, see "Supabase availability"):** migration 30 re-run, migration 31 (syntax-parsed only, never executed, not production-ready), the 31 checks, E2E 34/34 through the route, any browser run, and that the Vercel Preview uses Staging (no Vercel login on this PC).
 - Design risk to settle on Staging: with migration 30 only, requests reach PostgREST from Vercel, so the per-network limit may be keyed on Vercel's address for every visitor. Do not ship the route without migration 31 and its secret.
 - Second review (same day): `docs/STAGING_VERIFICATION_INQUIRIES.md` re-checked against the scripts and the installed Supabase CLI and corrected (Production guards, `supabase link`, check scripts need an empty inquiry table and no stored secret, secret handling without printing, local signed-path proof). New: `docs/LAUNCH_READINESS_CHECKLIST.md` (website, Android, Supabase, Vercel, security, orders, admin) with the outstanding external dependencies.
 
@@ -21,8 +21,12 @@ Release candidate: all eight branches (public-inquiries, dead-links, about-page,
 - The website and the Android app are not open to customers.
 - Not on Production: migration 30 (public inquiries) and everything on the branches below.
 
-### Supabase availability (found 2026-11-04)
-Both Supabase projects (Production `rodmdvfjashiohgwople`, Staging `adjjamiqwboawqedaapi`) report `INACTIVE` (paused) and their hosts do not resolve. A pause keeps the data; the dashboard restore window is limited (documented as about 90 days, confirm in the dashboard). The newest sealed Production backup is `C:/EFZ-backups/20261021-085210Z`, taken before Phase A, so it does not include Phase C or anything later. Restore Staging first for development. Restore Production before the window closes and take a fresh backup straight afterwards (`supabase/production/` backup and preflight tooling, `docs/RELEASE_RUNBOOK.md`).
+### Supabase availability (restored 2026-11-05)
+Both projects were found paused on 2026-11-04 and resumed by the owner on 2026-11-05; both are now `ACTIVE_HEALTHY` (Production `rodmdvfjashiohgwople`, Staging `adjjamiqwboawqedaapi`).
+- **Read-only integrity audit (2026-11-05):** no data loss in either project. Production: 0 rows deleted against the sealed backup `20261021-085210Z` (captured 2026-10-21 08:54 UTC); all 30 orders, 48 items, 28 payments, 27 commissions, 4 profiles and 48 permissions are field-for-field identical; 8 existing rows changed for reasons the audit log explains; all 30 money and relationship checks pass. Staging: 0 rows deleted against `20261018-083311Z`. Latest recorded Production activity: 2026-10-26/27.
+- **Backups:** newest Production backup is still 2026-10-21 08:54 UTC (15 days old, plain files on one PC); all 27 sealed folders pass their checksums. A fresh backup and a newer encrypted copy need the owner (database password and passphrase are typed by the owner by design). The only encrypted copy covers folders up to about 2026-10-04 and was made 2026-10-11.
+- **Platform protection (CLI, 2026-11-05):** point-in-time recovery is **off** and the platform lists **no** managed backups for either project (`walg_enabled: true`, `pitr_enabled: false`, `backups: []`). Local pg_dump backups are the only protection. Plan tier and dashboard backup settings need a dashboard check by the owner.
+- **Migration history:** no ledger in the database. Migrations 11 and 12 (Production history) were untracked in git; recovered and committed with a provenance record (`docs/MIGRATIONS_11_12_PROVENANCE.md`). Not executed.
 
 ### Work waiting on branches (pushed, none merged, none deployed)
 | Branch | What | State |

@@ -183,3 +183,22 @@ Do not ship the app with only migration 30 (the per-network limit would be keyed
 
 ## Pass criteria for "ready for Production review"
 Sections 5 (100/100), 6 (0 FAIL, E2E 34/34), 8 (signed proof true/false pair, browser table complete), Preview confirmed Staging-only, cleanup done, results recorded in `docs/PROJECT_STATUS.md`.
+
+## Preflight record, 2026-11-05 (Staging restored; nothing written to any database)
+- **Identity:** worktree linked to `adjjamiqwboawqedaapi` (`supabase/.temp/project-ref`); read-only transaction on; 5 `prod-stg-*` products; `u-1` and `prod-1787244881309` absent; `u-stg-admin` is a Super Admin.
+- **`.env.local`** for the worktree: Staging URL and the Staging **anon** key only, produced from the CLI key listing without printing it; the token's own claims were checked (`role=anon`, `ref=adjjamiqwboawqedaapi`) and the file passes the section 0 guard. No service-role key is present anywhere in the worktree.
+- **State:** migration 30 present and **identical to the repo file** (8 of 8 functions); migration 31 absent (`inquiry_signing_secret` does not exist); `u-stg-delivery` holds no inquiry permission yet (the section 6 grant is a write, done after approval). All `u-stg-*` profiles needed by the checks have logins except `u-stg-nologin` (by design).
+- **Local checks on this tree:** tsc clean; 102/102 unit tests; jsdom 34/34 and 24/24; lint 0 errors (40 cosmetic warnings); `next build --webpack` passes with the Staging URL baked in and no Production reference in the build output.
+- **Vercel Preview:** deployments for `396152d` and `db1d452` succeeded, but the Preview is behind Vercel Deployment Protection (every request redirects to the Vercel login), so its environment cannot be inspected from outside. It needs a Vercel login (or the owner reading Settings, Environment Variables).
+- **Not verifiable yet:** whether the Staging passwords in `.env.e2e` (written 2026-10-03) are still valid (first sign-in is part of the E2E run).
+
+### The one blocker: three leftover test inquiries
+Both check scripts start with a guard that refuses to run unless `public.public_inquiries` is empty (`REFUSED: public_inquiries is not empty`), because their limit assertions count rows. These three rows (the owner's own browser tests of 2026-10-26, submitted while signed in as the Staging Test Super Admin, status `new`, no notes) are the only thing in the way:
+| id | kind | created (UTC) |
+| --- | --- | --- |
+| `8e1b6db9-38be-4e13-a444-8021abe93c02` | contact | 2026-10-26 12:26:41 |
+| `8b5b38cc-2abc-4d85-ab4b-7924b57ac52d` | contact | 2026-10-26 12:28:42 |
+| `57840cfb-34fa-417b-a383-2722cb84286f` | wholesale | 2026-10-26 12:29:46 |
+
+Deleting them also removes their 3 `submitted` events (cascade). **Not done: needs the owner's explicit approval.** The statement, once approved, is
+`delete from public.public_inquiries where id in ('8e1b6db9-38be-4e13-a444-8021abe93c02','8b5b38cc-2abc-4d85-ab4b-7924b57ac52d','57840cfb-34fa-417b-a383-2722cb84286f')` on Staging only.
