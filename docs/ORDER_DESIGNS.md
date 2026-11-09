@@ -1,5 +1,7 @@
 # Ball designs on the order form (migration 32)
 
+> **Update 2026-11-09 (owner decision): the public `/order` page was restored to its pre-migration-32 version (`4b9bca2`).** Visitors see no design choice, no line cards, no price summary and no estimated total; the original one-line-per-product rule is back. Everything below that describes a *visitor* design selector or order-form totals is therefore NOT in the shipped app. Designs are managed in the Admin Hub (`/admin/product-designs`) only. Migration 32 and its public function are unchanged; the order form simply no longer calls `public_product_designs()`.
+
 Implemented 2026-11-05 on `integration/pre-launch`. **Applied to EFZ-Staging only. Not applied to Production, not deployed to Production, not merged to `main`.**
 Approval for Production is a separate step the owner has not given. This document is the record of what was built, how it was tested, and exactly what Production would need.
 

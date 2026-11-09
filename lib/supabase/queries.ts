@@ -46,7 +46,6 @@ import type {
   WebsiteRequestNote,
   WebsiteRequestStatus,
   ProductDesign,
-  PublicDesign,
 } from "@/lib/types";
 
 import type {
@@ -735,18 +734,6 @@ export function createDb(client: EfzSupabaseClient) {
         "products.listPublic",
         await client.from("public_products").select("*").order("name")
       );
-    },
-
-    /**
-     * 32: the active designs of active products, for the public order form (any visitor). An empty list on a database without
-     * migration 32 or on any failure: the form then simply offers no design choice, exactly as before.
-     */
-    async listPublicDesigns(): Promise<PublicDesign[]> {
-      const { data, error } = await (client as unknown as { rpc: (fn: string) => PromiseLike<{ data: unknown; error: unknown }> }).rpc("public_product_designs");
-      if (error || !Array.isArray(data)) return [];
-      return (data as { id: string; product_id: string; name: string; image_url: string }[]).map((d) => ({
-        id: d.id, productId: d.product_id, name: d.name, imageUrl: d.image_url ?? "",
-      }));
     },
   };
 
