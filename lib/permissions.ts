@@ -129,6 +129,21 @@ export function derivePermissions(profile: AdminProfile | null | undefined) {
     workInquiries: can("view_inquiries") && can("manage_inquiries"),
     assignInquiries: can("view_inquiries") && can("assign_inquiries"),
 
+    /**
+     * 33: expense management, granted explicitly (never by role); Super Admin has all. Submitting also lets a person see their own
+     * expenses; seeing everyone's, approving and paying each need their own permission. Nobody approves their own (the database refuses).
+     */
+    submitExpenses: can("submit_expenses"),
+    viewExpenses: can("view_expenses"),
+    approveExpenses: can("approve_expenses"),
+    payExpenses: can("pay_expenses"),
+    /** Any expense permission: the Expenses page is offered. */
+    accessExpenses: hasAnyPermission(profile, ["submit_expenses", "view_expenses", "approve_expenses", "pay_expenses"]),
+    /** The Financial page may show expense-based profit: reports plus explicit expense access (finance_expense_costs() enforces it). */
+    seeExpenseProfit: can("view_reports") && (can("view_expenses") || can("approve_expenses")),
+    /** ...and commission costs (finance_commission_costs() enforces it). */
+    seeCommissionCosts: can("view_reports") && can("view_commissions"),
+
     /** 21: review customer app accounts. UI convenience only: the review functions check the permission themselves. */
     manageCustomerAccounts: can("manage_customer_accounts"),
 

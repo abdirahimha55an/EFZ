@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Loader2, RefreshCw, Shield } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { AdminProfile, Customer, Order, Product } from "@/lib/types";
+import type { AdminProfile, CommissionCost, Customer, ExpenseCategory, ExpenseCost, Order, Product } from "@/lib/types";
 import { getDb, describeDbError } from "@/lib/supabase/db";
 import { derivePermissions } from "@/lib/permissions";
 import { efzToday, formatEfzTime } from "@/lib/dates";
@@ -21,11 +21,19 @@ import { NO_FILTERS, buildDataset, productKeyOf, type SalesFilters } from "@/lib
 import { monthStart, type PeriodPreset } from "@/lib/analytics/period";
 import { officersOnOrders } from "@/lib/analytics/officers";
 import { buildFinanceModel, receivableOrders, type ReceivableFilter } from "@/lib/finance/model";
+import { profitModel } from "@/lib/finance/profit";
 import { Controls, type Option } from "@/components/analytics/Controls";
 import { CashFlowSection, CollectionsSection, FinanceKpis, FinancialChecksSection, ProfitabilitySection, ReceivablesSection } from "@/components/finance/FinanceSections";
+import { ApprovedExpensesSection, ProfitChainSection, type ProfitState } from "@/components/finance/ExpenseSections";
 import { RecordPaymentDialog, canRecordPayment } from "@/components/admin/RecordPaymentDialog";
 
-type Loaded = { orders: Order[]; products: Product[]; customers: Customer[]; today: string; loadedAt: string };
+/** 33: the expense and commission costs behind contribution and net profit. Present only with explicit access; never partial. */
+type Extras =
+  | { status: "ready"; costs: ExpenseCost[]; commissions: CommissionCost[]; categories: ExpenseCategory[] }
+  | { status: "needs_access"; missing: string[] }
+  | { status: "error"; message: string };
+
+type Loaded = { orders: Order[]; products: Product[]; customers: Customer[]; today: string; loadedAt: string; extras: Extras };
 
 export default function FinancialPage() {
   const [profile, setProfile] = useState<AdminProfile | null>(null);
@@ -70,7 +78,27 @@ export default function FinancialPage() {
           db.customers.list({ includeArchived: true }),
         ]);
         if (cancelled) return;
-        setData({ orders, products, customers, today: efzToday(), loadedAt: new Date().toISOString() });
+        // 33: contribution and net profit need reports + explicit expense access + commission access (the database refuses otherwise).
+        const access = derivePermissions(me);
+        let extras: Extras;
+        if (!access.seeExpenseProfit || !access.seeCommissionCosts) {
+          const missing: string[] = [];
+          if (!access.viewExpenses && !access.approveExpenses) missing.push("View All Expenses or Approve Expenses");
+          if (!access.viewCommissions) missing.push("View Commissions");
+          extras = { status: "needs_access", missing };
+        } else {
+          try {
+            const [costs, commissions, categories] = await Promise.all([db.financeCosts.expenses(), db.financeCosts.commissions(), db.expenses.categories()]);
+            extras = { status: "ready", costs, commissions, categories };
+          } catch (error) {
+            const code = (error as { code?: string } | null)?.code ?? "";
+            // Migration 33 not applied yet (or access revoked since): say so instead of showing a figure that ignores expenses.
+            const notInstalled = ["PGRST202", "PGRST205", "42883", "42P01"].includes(code);
+            extras = { status: "error", message: notInstalled ? "Expense management is not set up on this database yet." : describeDbError(error) };
+          }
+        }
+        if (cancelled) return;
+        setData({ orders, products, customers, today: efzToday(), loadedAt: new Date().toISOString(), extras });
         setLoadError(null);
         setStatus("ready");
       } catch (error) {
@@ -91,6 +119,15 @@ export default function FinancialPage() {
     () => (ds && data ? buildFinanceModel({ ds, filters: effectiveFilters, preset, custom, compare, today: data.today }) : null),
     [ds, data, effectiveFilters, preset, custom, compare]
   );
+
+  const profit: ProfitState = useMemo(() => {
+    if (!data || !ds || !model) return { status: "loading" };
+    if (data.extras.status !== "ready") return data.extras;
+    return {
+      status: "ready",
+      model: profitModel({ ds, filters: effectiveFilters, range: model.period, expenses: data.extras.costs, commissions: data.extras.commissions }),
+    };
+  }, [data, ds, model, effectiveFilters]);
 
   const orderRows = useMemo(() => (ds ? receivableOrders(ds, effectiveFilters, receivableStatus) : []), [ds, effectiveFilters, receivableStatus]);
   const paymentOrder = paymentOrderId && data ? data.orders.find((o) => o.id === paymentOrderId) ?? null : null;
@@ -177,6 +214,10 @@ export default function FinancialPage() {
       <CollectionsSection m={model} />
       <CashFlowSection m={model} />
       <ProfitabilitySection m={model} />
+      <ProfitChainSection state={profit} costVisible={model.costVisible} productFiltered={model.productFiltered} />
+      {data.extras.status === "ready" && (
+        <ApprovedExpensesSection costs={data.extras.costs} categories={data.extras.categories} range={model.period} today={data.today} />
+      )}
       <ReceivablesSection m={model} orderRows={orderRows} status={receivableStatus} onStatus={setReceivableStatus}
         onRecordPayment={canRecordPayment(perms) ? setPaymentOrderId : undefined} />
       <FinancialChecksSection m={model} />

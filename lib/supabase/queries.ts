@@ -46,6 +46,17 @@ import type {
   WebsiteRequestNote,
   WebsiteRequestStatus,
   ProductDesign,
+  Expense,
+  ExpenseCategory,
+  ExpenseCost,
+  ExpenseEvent,
+  ExpenseEventName,
+  ExpenseInput,
+  ExpenseKind,
+  ExpensePayment,
+  ExpensePaymentStatus,
+  ExpenseStatus,
+  CommissionCost,
 } from "@/lib/types";
 
 import type {
@@ -2236,6 +2247,112 @@ export function createDb(client: EfzSupabaseClient) {
     },
   };
 
+  // -------------------------------------------------------------------------
+  // Expenses (33): every write is an RPC (the tables have no client write access); reads follow the table's row rules
+  // -------------------------------------------------------------------------
+  type LooseOutcome = { data: unknown; error: PostgrestError | null };
+  type LooseQuery = PromiseLike<LooseOutcome> & {
+    select: (columns?: string) => LooseQuery;
+    eq: (column: string, value: string) => LooseQuery;
+    order: (column: string, options?: { ascending: boolean }) => LooseQuery;
+  };
+  const looseClient = client as unknown as {
+    from: (table: string) => LooseQuery;
+    rpc: (fn: string, args?: Record<string, unknown>) => PromiseLike<LooseOutcome>;
+  };
+  const rpcOrThrow = async (context: string, fn: string, args?: Record<string, unknown>): Promise<unknown> => {
+    const { data, error } = await looseClient.rpc(fn, args);
+    if (error) throw new EfzDbError(context, error);
+    return data;
+  };
+  const rowsOrThrow = async (context: string, query: LooseQuery): Promise<Record<string, unknown>[]> => {
+    const { data, error } = await query;
+    if (error) throw new EfzDbError(context, error);
+    return (data as Record<string, unknown>[] | null) ?? [];
+  };
+  const num = (v: unknown) => Number(v ?? 0);
+  const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
+  const strOrNull = (v: unknown) => (v === null || v === undefined ? null : String(v));
+  const expensePayload = (input: ExpenseInput) => ({
+    categoryId: input.categoryId, description: input.description, amount: input.amount, expenseDate: input.expenseDate,
+    paymentMethod: input.paymentMethod ?? "", vendor: input.vendor ?? "", orderId: input.orderId ?? "", notes: input.notes ?? "",
+  });
+  const toExpense = (r: Record<string, unknown>): Expense => ({
+    id: str(r.id), reference: str(r.reference), kind: r.kind as ExpenseKind, categoryId: str(r.category_id), description: str(r.description),
+    amount: num(r.amount), expenseDate: str(r.expense_date), paymentMethod: str(r.payment_method), vendor: str(r.vendor),
+    orderId: strOrNull(r.order_id), notes: str(r.notes), receiptPath: strOrNull(r.receipt_path),
+    submittedBy: str(r.submitted_by), submittedByName: str(r.submitted_by_name), submittedAt: str(r.submitted_at),
+    status: r.approval_status as ExpenseStatus, decidedBy: strOrNull(r.decided_by), decidedByName: str(r.decided_by_name),
+    decidedAt: strOrNull(r.decided_at), rejectionReason: strOrNull(r.rejection_reason), voidReason: strOrNull(r.void_reason),
+    voidedByName: str(r.voided_by_name), voidedAt: strOrNull(r.voided_at),
+    paidAmount: num(r.paid_amount), outstandingAmount: num(r.outstanding_amount),
+    paymentStatus: (r.payment_status as ExpensePaymentStatus | null) ?? null,
+  });
+  const expenses = {
+    async categories(): Promise<ExpenseCategory[]> {
+      const rows = await rowsOrThrow("expenses.categories", looseClient.from("expense_categories").select("*").order("sort_order"));
+      return rows.map((r) => ({ id: str(r.id), name: str(r.name), kind: r.kind as ExpenseKind, isActive: Boolean(r.is_active), sortOrder: num(r.sort_order) }));
+    },
+    /** Every expense the caller may see (own, or all with view/approve/pay), with paid and outstanding derived from payments. */
+    async list(): Promise<Expense[]> {
+      const rows = await rowsOrThrow("expenses.list", looseClient.from("expense_overview").select("*").order("expense_date", { ascending: false }).order("submitted_at", { ascending: false }));
+      return rows.map(toExpense);
+    },
+    async events(expenseId: string): Promise<ExpenseEvent[]> {
+      const rows = await rowsOrThrow("expenses.events", looseClient.from("expense_events").select("*").eq("expense_id", expenseId).order("seq"));
+      return rows.map((r) => ({
+        id: str(r.id), expenseId: str(r.expense_id), event: r.event as ExpenseEventName, fromStatus: strOrNull(r.from_status), toStatus: strOrNull(r.to_status),
+        actorName: str(r.actor_name), note: strOrNull(r.note), details: (r.details as Record<string, unknown>) ?? {}, occurredAt: str(r.occurred_at),
+      }));
+    },
+    async payments(expenseId: string): Promise<ExpensePayment[]> {
+      const rows = await rowsOrThrow("expenses.payments", looseClient.from("expense_payments").select("*").eq("expense_id", expenseId).order("recorded_at"));
+      return rows.map((r) => ({
+        id: str(r.id), expenseId: str(r.expense_id), amount: num(r.amount), paidOn: str(r.paid_on), method: str(r.method), reference: str(r.reference),
+        recordedByName: str(r.recorded_by_name), recordedAt: str(r.recorded_at), voidedAt: strOrNull(r.voided_at), voidReason: strOrNull(r.void_reason),
+      }));
+    },
+    async submit(input: ExpenseInput): Promise<string> {
+      return String(await rpcOrThrow("expenses.submit", "submit_expense", { p_payload: expensePayload(input) }));
+    },
+    async edit(id: string, input: ExpenseInput): Promise<void> {
+      await rpcOrThrow("expenses.edit", "edit_expense", { p_expense_id: id, p_payload: expensePayload(input) });
+    },
+    async decide(id: string, decision: "approve" | "reject", reason?: string): Promise<void> {
+      await rpcOrThrow("expenses.decide", "decide_expense", { p_expense_id: id, p_decision: decision, p_reason: reason ?? null });
+    },
+    async void(id: string, reason: string): Promise<void> {
+      await rpcOrThrow("expenses.void", "void_expense", { p_expense_id: id, p_reason: reason });
+    },
+    async recordPayment(id: string, input: { amount: string; paidOn: string; method: string; reference?: string }): Promise<string> {
+      return String(await rpcOrThrow("expenses.recordPayment", "record_expense_payment", {
+        p_expense_id: id, p_amount: Number(input.amount), p_paid_on: input.paidOn, p_method: input.method, p_reference: input.reference ?? "",
+      }));
+    },
+    async voidPayment(paymentId: string, reason: string): Promise<void> {
+      await rpcOrThrow("expenses.voidPayment", "void_expense_payment", { p_payment_id: paymentId, p_reason: reason });
+    },
+  };
+
+  /** The two reads behind the profit chain. Each refuses (42501) unless the caller holds the explicit permissions; never a partial figure. */
+  const financeCosts = {
+    async expenses(): Promise<ExpenseCost[]> {
+      const rows = (await rpcOrThrow("financeCosts.expenses", "finance_expense_costs")) as Record<string, unknown>[] | null;
+      return (rows ?? []).map((r) => ({
+        expenseId: str(r.expense_id), reference: str(r.reference), kind: r.kind as ExpenseKind, categoryId: str(r.category_id), amount: num(r.amount),
+        expenseDate: str(r.expense_date), orderId: strOrNull(r.order_id), orderStatus: strOrNull(r.order_status),
+        paymentStatus: (r.payment_status as ExpensePaymentStatus | null) ?? null, paidAmount: num(r.paid_amount),
+      }));
+    },
+    async commissions(): Promise<CommissionCost[]> {
+      const rows = (await rpcOrThrow("financeCosts.commissions", "finance_commission_costs")) as Record<string, unknown>[] | null;
+      return (rows ?? []).map((r) => ({
+        commissionId: str(r.commission_id), orderId: str(r.order_id), kind: str(r.kind), status: str(r.status), amount: num(r.amount),
+        attributedAt: str(r.attributed_at), earned: Boolean(r.earned), reviewRequired: Boolean(r.review_required),
+      }));
+    },
+  };
+
   return {
     client,
     auth,
@@ -2251,6 +2368,8 @@ export function createDb(client: EfzSupabaseClient) {
     financeAdmin,
     pricing,
     commissions,
+    expenses,
+    financeCosts,
     analytics,
     logs,
     issues,

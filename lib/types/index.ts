@@ -13,7 +13,9 @@ export const OFFICIAL_PERMISSIONS = [
   'view_website_requests', 'view_all_website_requests', 'assign_website_requests',
   'reject_website_requests', 'convert_website_requests',
   // 30: Contact / Wholesale inquiries (granted explicitly, never by role)
-  'view_inquiries', 'view_all_inquiries', 'manage_inquiries', 'assign_inquiries'
+  'view_inquiries', 'view_all_inquiries', 'manage_inquiries', 'assign_inquiries',
+  // 33: expense management (granted explicitly, never by role)
+  'view_expenses', 'submit_expenses', 'approve_expenses', 'pay_expenses'
 ] as const;
 
 export type Permission = typeof OFFICIAL_PERMISSIONS[number];
@@ -258,6 +260,49 @@ export type ProductDesign = {
   createdAt: string;
   updatedAt: string;
 };
+
+/** 33: expense management. Amounts are USD numbers exactly as the database stores them (2 decimals). */
+export type ExpenseKind = "direct_order" | "operating";
+export type ExpenseStatus = "pending" | "approved" | "rejected" | "void";
+export type ExpensePaymentStatus = "unpaid" | "partial" | "paid";
+export type ExpenseCategory = { id: string; name: string; kind: ExpenseKind; isActive: boolean; sortOrder: number };
+export type Expense = {
+  id: string;
+  reference: string;
+  kind: ExpenseKind;
+  categoryId: string;
+  description: string;
+  amount: number;
+  expenseDate: string;
+  paymentMethod: string;
+  vendor: string;
+  orderId: string | null;
+  notes: string;
+  receiptPath: string | null;
+  submittedBy: string;
+  submittedByName: string;
+  submittedAt: string;
+  status: ExpenseStatus;
+  decidedBy: string | null;
+  decidedByName: string;
+  decidedAt: string | null;
+  rejectionReason: string | null;
+  voidReason: string | null;
+  voidedByName: string;
+  voidedAt: string | null;
+  paidAmount: number;
+  outstandingAmount: number;
+  /** Null unless the expense is approved. */
+  paymentStatus: ExpensePaymentStatus | null;
+};
+export type ExpensePayment = { id: string; expenseId: string; amount: number; paidOn: string; method: string; reference: string; recordedByName: string; recordedAt: string; voidedAt: string | null; voidReason: string | null };
+export type ExpenseEventName = "submitted" | "edited" | "resubmitted" | "approved" | "rejected" | "voided" | "payment_recorded" | "payment_voided";
+export type ExpenseEvent = { id: string; expenseId: string; event: ExpenseEventName; fromStatus: string | null; toStatus: string | null; actorName: string; note: string | null; details: Record<string, unknown>; occurredAt: string };
+/** What finance_expense_costs() returns: approved expenses only, with no description, vendor or notes. */
+export type ExpenseCost = { expenseId: string; reference: string; kind: ExpenseKind; categoryId: string; amount: number; expenseDate: string; orderId: string | null; orderStatus: string | null; paymentStatus: ExpensePaymentStatus | null; paidAmount: number };
+/** What finance_commission_costs() returns: one non-void commission, dated by earned_at (legacy rows fall back to the order). */
+export type CommissionCost = { commissionId: string; orderId: string; kind: string; status: string; amount: number; attributedAt: string; earned: boolean; reviewRequired: boolean };
+export type ExpenseInput = { categoryId: string; description: string; amount: string; expenseDate: string; paymentMethod?: string; vendor?: string; orderId?: string; notes?: string };
 
 /** Football is the only active category (enforced by the database since 12). */
 export const ACTIVE_PRODUCT_CATEGORIES = ["Football"] as const;

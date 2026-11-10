@@ -38,7 +38,7 @@ import {
   Moon,
   Wallet,
   Inbox,
-  Landmark, CreditCard, Tag, BadgeCheck, MessageSquare, Palette } from "lucide-react";
+  Landmark, CreditCard, Tag, BadgeCheck, MessageSquare, Palette, Receipt } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -106,6 +106,8 @@ const NAV_MODULES: NavModule[] = [
     id: "finance", label: "Finance", icon: Landmark, items: [
       // 14: cash, receivables, profitability and reconciliation (read only; cost only via can_view_cost).
       { name: "Financial Management", href: "/admin/financial", icon: Landmark, permission: 'view_reports' as Permission },
+      // 33: expenses. Shown with any expense permission (see navAllowed); the database decides what each person may see and do.
+      { name: "Expenses", href: "/admin/expenses", icon: Receipt, permission: 'submit_expenses' as Permission },
       // 23: payment methods, credit policy and customer credit for the Android app (Super Admin only; the database enforces it).
       { name: "Customer Payments & Credit", href: "/admin/customer-credit", icon: CreditCard, permission: 'manage_system' as Permission, superAdminOnly: true },
       // Legacy orders without recorded payment terms: Super Admin only (the page and the database both enforce it).
@@ -532,6 +534,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const navAllowed = (link: NavItem): boolean => {
     if (link.href === '/admin/customers') return hasAnyPermission(['view_customers' as Permission, 'view_own_customers_only' as Permission]);
     if (link.href === '/admin/orders') return hasAnyPermission(['view_orders' as Permission, 'create_orders' as Permission]);
+    if (link.href === '/admin/expenses') return hasAnyPermission(['submit_expenses' as Permission, 'view_expenses' as Permission, 'approve_expenses' as Permission, 'pay_expenses' as Permission]);
     if (link.href === '/admin/commissions') return perms.isMarketingOfficer && hasPermission('view_commissions' as Permission);   // officers' own ledger; management uses the payout tools
     if (link.superAdminOnly && !perms.isSuperAdmin) return false;
     if (link.pricingOnly && !perms.managePricing) return false;

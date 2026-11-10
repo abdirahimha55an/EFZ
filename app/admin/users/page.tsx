@@ -75,6 +75,12 @@ const PERMISSIONS_LIST: { id: Permission, label: string, category: string }[] = 
   { id: 'manage_inquiries', label: 'Work Inquiries (notes, contacted, closed)', category: 'Inquiries' },
   { id: 'assign_inquiries', label: 'Assign / Reassign Inquiries', category: 'Inquiries' },
 
+  // 33: expenses. Submitting also shows a person their own; the rest is explicit. Nobody approves their own expense, Super Admin included.
+  { id: 'submit_expenses', label: 'Submit Expenses (and see own)', category: 'Finance' },
+  { id: 'view_expenses', label: 'View All Expenses', category: 'Finance' },
+  { id: 'approve_expenses', label: 'Approve / Reject / Void Expenses', category: 'Finance' },
+  { id: 'pay_expenses', label: 'Record Expense Payments', category: 'Finance' },
+
   { id: 'view_customers', label: 'View Customer List', category: 'CRM' },
   { id: 'add_customers', label: 'Register New Customers', category: 'CRM' },
   { id: 'edit_customers', label: 'Edit Customer Info', category: 'CRM' },
