@@ -93,8 +93,11 @@ switch ($Step) {
     $bytes = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
     $secret = ([BitConverter]::ToString($bytes) -replace '-', '').ToLower()
     $sql = "do `$d`$ begin if exists (select 1 from public.inquiry_signing_secret) then raise exception 'a secret is already stored - refusing'; end if; insert into public.inquiry_signing_secret (secret) values ('$secret'); end `$d`$;"
+    $ErrorActionPreference = 'Continue'   # Windows PowerShell 5.1 turns native stderr into a terminating error under Stop
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue; $env:PGPASSFILE = 'C:\nonexistent-pgpass'
     $sql | & $psql $conn -W -q -v ON_ERROR_STOP=1 -f - 2> "$out\stderr.txt"
-    if ($LASTEXITCODE -ne 0) { Get-Content "$out\stderr.txt"; Stop-Guard 'the secret was NOT stored (see message); the clipboard was not touched' }
+    $pcode = $LASTEXITCODE; $ErrorActionPreference = 'Stop'; Remove-Item Env:PGPASSFILE -ErrorAction SilentlyContinue
+    if ($pcode -ne 0) { Get-Content "$out\stderr.txt"; Stop-Guard 'the secret was NOT stored (see message); the clipboard was not touched' }
     Set-Clipboard -Value $secret
     Remove-Variable secret, sql, bytes
     Write-Host 'Secret stored in the Production database and copied to the clipboard (not shown).' -ForegroundColor Green
