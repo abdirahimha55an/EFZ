@@ -1,4 +1,3 @@
-import { createSupabaseAdminClient } from "./admin";
 import { createSupabaseServerClient } from "./server";
 import { createDb, type EfzDb } from "./queries";
 
@@ -11,15 +10,6 @@ import { createDb, type EfzDb } from "./queries";
  */
 export async function getServerDb(): Promise<EfzDb> {
   return createDb(await createSupabaseServerClient());
-}
-
-/**
- * Query surface that bypasses RLS. For trusted server-side jobs only -
- * imports, scheduled backups, repair scripts. Never call this from anything
- * that renders for a visitor.
- */
-export function getAdminDb(): EfzDb {
-  return createDb(createSupabaseAdminClient());
 }
 
 export type { EfzDb };
