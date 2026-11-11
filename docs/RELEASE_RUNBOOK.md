@@ -29,3 +29,37 @@ Reverse order, one file at a time, from `supabase\rollback\`: `29e_enforce_dispa
 
 ## 6. Things that stay OFF in Production
 Payment providers and credit (migration 23/25 leave both OFF; the post-check proves it), the `stg_test` payment method and the `staging-test-payment` / `payments` / `credit-daily` Edge Functions, customer email verification (`REQUIRE_EMAIL_VERIFICATION`), and email password recovery in the Android Production build (`EXPO_PUBLIC_EMAIL_RECOVERY_ENABLED` unset => the sign-in screen tells customers to contact EFZ). Turn each on only after its end-to-end test on the Production project.
+
+## 7. Security log: Vercel credential cleanup (2026-11-11)
+Production was NOT touched in the database and nothing was redeployed. Only Vercel environment variables of project `efz` (team `efz1`) changed. Values are never recorded here, only names and scopes.
+
+**Context (2026-11-10).** `INQUIRY_HMAC_SECRET` did not exist in Vercel: the first inquiry-signing attempt left two test inquiries with `ip_verified = false`. The single row of `public.inquiry_signing_secret` was rotated in one guarded transaction, the new value was entered in Vercel by the owner (Sensitive, Production only, created 2026-11-10 15:03Z) and Production was redeployed (deployment `dpl_6ks3NSzZ5YHRmCG5Tgj3kEBtZrFp`, commit `60cb998`, READY 15:12Z). A new test inquiry then had `ip_verified = true`; exactly one secret row remained; the seven business-data counts matched their baselines.
+
+**Findings that led to the cleanup**
+- `SUPABASE_SERVICE_ROLE_KEY` was one manual entry shared by Production and Preview. No code reads it: only `lib/supabase/admin.ts` did, imported only by `db.server.ts` (`getAdminDb`), which nothing imports. No script, workflow, cron or `vercel.json` uses it; Edge Functions use Supabase's own injected copy.
+- A Supabase integration (marketplace, installed 2026-09-24, Production project `rodmdvfjashiohgwople`, only the `efz` Vercel project selected) had created 13 Production-only variables. The Hub reads only one of them (`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`).
+- Deployment checks: none on any recent deployment. The "Supabase Preview" GitHub check comes from Supabase's GitHub app, not from these variables; the repo has no `supabase/config.toml` or `migrations/`.
+
+**Before and after (Vercel environment entries)**
+| | Before | After |
+|---|---|---|
+| Entries in total | 19 | **6** |
+| Integration-managed entries | 13 | 1 |
+| Entries in Preview | 3 | 2 (Staging URL, Staging publishable key) |
+| Entries in Development | 0 | 0 |
+
+Removed: `SUPABASE_SERVICE_ROLE_KEY` (Production+Preview, 2026-11-10 15:49Z); then on 2026-11-11, in this order: `POSTGRES_USER` (test, watched 5 minutes), then `POSTGRES_HOST`, `POSTGRES_DATABASE`, `POSTGRES_PASSWORD`, `POSTGRES_URL`, `POSTGRES_URL_NON_POOLING`, `POSTGRES_PRISMA_URL`, then `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWT_SECRET`.
+Kept: `NEXT_PUBLIC_SUPABASE_URL` (Production, Preview), `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (Production = integration-managed, Preview = manual), `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Production, fallback only), `INQUIRY_HMAC_SECRET` (Production only).
+
+**Verification evidence**
+- Preview URL names the Staging project; the Preview publishable key is accepted by Staging's auth endpoint (a Staging key). Production URL names the Production project; its publishable key is rejected by Staging and equals the key inlined in the live bundle (fingerprint `ea0f381ccc`).
+- Five minutes after the last deletion Vercel still listed 6 entries; none of the 13 removed variables had been re-added by the integration.
+- Live site after each step: `/`, `/contact`, `/wholesale`, `/order` = 200; `/api/inquiries` answers 405 to a GET (route live). The public JavaScript contains no `sb_secret_` key, no JWT-shaped token and no reference to the removed variable names.
+- Values-free before/after snapshots: `C:\EFZ-checks\vercel_env_housekeeping\`.
+
+**Rules from this cleanup**
+- The Supabase integration remains connected (write access to project variables). To remove it entirely, first turn the Production publishable key into a manual entry (its value is public), verify, then disconnect. Deleted values can be restored from the Supabase dashboard, or by reconnecting the integration (re-syncs all 13).
+- Vercel CLI logins last 8 hours and refresh through the CLI's refresh token; direct API calls must refresh the same way. Run `vercel logout` when Vercel work is finished.
+- Preview has no `INQUIRY_HMAC_SECRET`: Preview inquiries fall into the unverified bucket (harmless). A Preview value must be Staging's secret, never Production's.
+- Code follow-up (branch `chore/security-cleanup-2026-11-11`, not merged): `lib/supabase/admin.ts`, `getAdminDb()` and the service-role line of `.env.example` removed.
+
